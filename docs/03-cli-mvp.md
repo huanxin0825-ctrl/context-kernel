@@ -5,12 +5,12 @@
 ### Install And Wake
 
 ```powershell
-.\setup.ps1
-.\wake.ps1
+.\setup.cmd
+.\wake.cmd
 akernel doctor
 ```
 
-`setup.ps1` creates `.venv`, installs the editable CLI, and keeps provider credentials in project `.env`. `wake.ps1` activates `.venv`, loads `.env`, and prints common commands.
+`setup.cmd` creates `.venv`, installs the editable CLI, keeps provider credentials in project `.env`, and installs user-level launchers so `akernel` and `akernel-chat` can run from any directory after opening a new terminal. `wake.cmd` activates `.venv`, loads `.env`, and prints common commands.
 
 `akernel doctor` also prints the workspace command allowlist resolved from `.akernel/config.json`.
 

@@ -58,6 +58,8 @@ cd context-kernel
 
 `setup.cmd` creates `.venv`, installs the local CLI in editable mode, and prepares project-local `.env` if needed. `wake.cmd` activates the environment, loads `.env`, and prints common commands. The `.cmd` wrappers avoid local PowerShell execution-policy friction.
 
+`setup.cmd` also installs user-level launchers in `%USERPROFILE%\.context-kernel\bin` and adds that directory to the user PATH. After opening a new terminal, `akernel` works from any directory and `akernel-chat` starts the interactive agent session directly.
+
 ### Manual Python Install
 
 ```powershell
@@ -77,6 +79,7 @@ akernel --workspace .sandbox memory add --kind preference --text "Prefer CLI-fir
 akernel --workspace .sandbox plan "Plan a CLI context budget prototype"
 akernel --workspace .sandbox run "Summarize the project goal" --provider mock
 akernel --workspace .sandbox chat
+akernel-chat
 ```
 
 Run the benchmark suite and gate it against the latest matching baseline:
@@ -112,7 +115,8 @@ The base URL should include `/v1`.
 ## CLI Highlights
 
 ```powershell
-akernel chat --workspace .sandbox
+akernel --workspace .sandbox chat
+akernel-chat
 akernel context "Continue this task" --task <task-id> --resume
 akernel compare "Summarize the project goal"
 akernel eval run examples\evals\phase2.json
