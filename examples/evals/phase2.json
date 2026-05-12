@@ -1,0 +1,22 @@
+{
+  "name": "Phase 2 context routing smoke eval",
+  "tasks": [
+    {
+      "id": "budget_plan",
+      "request": "Plan a CLI context budget prototype",
+      "profile": "lean",
+      "expected_skills": ["context_budget"],
+      "expected_memory_terms": ["cli"],
+      "expected_response_terms": ["context"],
+      "minimum_savings_percent": 10
+    },
+    {
+      "id": "edit_docs",
+      "request": "Edit a documentation file while preserving unrelated changes",
+      "profile": "balanced",
+      "expected_skills": ["edit_file"],
+      "expected_response_terms": ["context"],
+      "minimum_savings_percent": 10
+    }
+  ]
+}

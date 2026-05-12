@@ -1,0 +1,1331 @@
+from __future__ import annotations
+
+import io
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from context_kernel.agent_reports import build_agent_cost_report, render_agent_cost_report
+from context_kernel.benchmarks import BenchmarkRunner, render_benchmark_markdown
+from context_kernel.budget import allocate_budget
+from context_kernel.cli import load_batch_patch_specs, main
+from context_kernel.context import ContextBuilder
+from context_kernel.evals import EvalRunner
+from context_kernel.loop import AgentLoop
+from context_kernel.memory import MemoryStore, is_relevant_memory_match
+from context_kernel.planner import ExecutionPlanner
+from context_kernel.policy import assess_request_policy, check_command_policy, check_file_policy
+from context_kernel.providers import build_messages, extract_text, normalize_openai_base_url, parse_env_file
+from context_kernel.report_costs import build_benchmark_cost_report, build_eval_cost_report, diff_cost_reports, render_cost_report
+from context_kernel.runner import AgentRunner
+from context_kernel.state_writer import StateWriter, marker_candidates, redact
+from context_kernel.skills import (
+    SkillRegistry,
+    compile_markdown_skill,
+    extract_json_object,
+    inspect_skill,
+    validate_skill_file,
+)
+from context_kernel.storage import Workspace
+from context_kernel.tasks import TaskStore
+from context_kernel.tools import ToolExecutor
+from context_kernel.verifier import verify_trace
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class RuntimeTests(unittest.TestCase):
+    def test_context_builder_selects_relevant_skill_and_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+
+            packet = ContextBuilder(workspace).build("Plan a CLI context budget prototype", 900)
+
+            self.assertFalse(packet["budget"]["over_budget"])
+            self.assertEqual(packet["skills"][0]["contract"]["id"], "context_budget")
+            self.assertEqual(packet["memory"][0]["record"]["kind"], "preference")
+            self.assertIn("context", packet["skills"][0]["matched_terms"])
+
+    def test_skill_fallback_is_only_used_when_nothing_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            registry = SkillRegistry(workspace)
+            registry.register(ROOT / "examples" / "skills" / "edit_file.json")
+            registry.register(ROOT / "examples" / "skills" / "context_budget.json")
+
+            selected = registry.select("unrelated astronomy request", budget_tokens=300)
+
+            self.assertEqual(len(selected), 1)
+            self.assertEqual(selected[0].score, 0)
+            self.assertEqual(selected[0].level, "l0")
+
+    def test_compare_reports_savings_against_full_load_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            registry = SkillRegistry(workspace)
+            registry.register(ROOT / "examples" / "skills" / "edit_file.json")
+            registry.register(ROOT / "examples" / "skills" / "context_budget.json")
+            memory = MemoryStore(workspace)
+            memory.add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            memory.add("fact", "This project is a context-native agent runtime.", ["architecture"])
+
+            comparison = ContextBuilder(workspace).compare("Plan a CLI context budget prototype", 900)
+
+            self.assertLess(
+                comparison["kernel"]["estimated_tokens"],
+                comparison["baseline"]["estimated_tokens"],
+            )
+            self.assertGreater(comparison["savings"]["estimated_tokens"], 0)
+            self.assertEqual(comparison["baseline"]["skill_level"], "l3")
+
+    def test_budget_profiles_change_default_totals(self) -> None:
+        lean = allocate_budget("Plan a CLI context budget prototype", profile="lean")
+        deep = allocate_budget("Plan a CLI context budget prototype", profile="deep")
+
+        self.assertEqual(lean.profile, "lean")
+        self.assertEqual(deep.profile, "deep")
+        self.assertLess(lean.total, deep.total)
+
+    def test_eval_runner_reports_checks_and_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            registry = SkillRegistry(workspace)
+            registry.register(ROOT / "examples" / "skills" / "edit_file.json")
+            registry.register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+
+            runner = EvalRunner(workspace)
+            report = runner.run_fixture(ROOT / "examples" / "evals" / "phase2.json")
+
+            self.assertEqual(report["summary"]["task_count"], 2)
+            self.assertEqual(report["summary"]["passed_checks"], report["summary"]["total_checks"])
+            self.assertGreater(report["summary"]["total_savings_tokens"], 0)
+            self.assertTrue((workspace.evals_dir / f"{report['id']}.json").exists())
+            self.assertEqual(runner.list_reports()[0]["id"], report["id"])
+            self.assertEqual(runner.get_report(report["id"])["id"], report["id"])
+
+    def test_eval_diff_reports_summary_and_task_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            registry = SkillRegistry(workspace)
+            registry.register(ROOT / "examples" / "skills" / "edit_file.json")
+            registry.register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            runner = EvalRunner(workspace)
+            before = runner.run_fixture(ROOT / "examples" / "evals" / "phase2.json")
+            MemoryStore(workspace).add("fact", "Extra unrelated memory increases baseline context.", ["noise"])
+            after = runner.run_fixture(ROOT / "examples" / "evals" / "phase2.json")
+
+            diff = runner.diff_reports(before["id"], after["id"])
+
+            self.assertIn("summary_delta", diff)
+            self.assertIn("cost_diff", diff)
+            self.assertEqual(len(diff["tasks"]), 2)
+            self.assertGreater(diff["summary_delta"]["baseline_tokens"], 0)
+            self.assertGreater(len(diff["cost_regressions"]), 0)
+            self.assertTrue(any(item["kind"] == "weakest_savings_percent" for item in diff["cost_regressions"]))
+
+    def test_eval_diff_can_fail_on_regression_for_cli_gating(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "edit_file.json")
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            runner = EvalRunner(workspace)
+            before = runner.run_fixture(ROOT / "examples" / "evals" / "phase2.json")
+            MemoryStore(workspace).add("fact", "Extra unrelated memory increases baseline context.", ["noise"])
+            after = runner.run_fixture(ROOT / "examples" / "evals" / "phase2.json")
+
+            with patch("sys.stdout", new=io.StringIO()):
+                with self.assertRaises(SystemExit) as exc:
+                    main(
+                        [
+                            "--workspace",
+                            str(workspace.root),
+                            "eval",
+                            "diff",
+                            before["id"],
+                            after["id"],
+                            "--fail-on-regression",
+                        ]
+                    )
+
+            self.assertIn("eval diff found regressions", str(exc.exception))
+
+    def test_cost_diff_detects_hotspot_and_execution_regressions(self) -> None:
+        before = {
+            "kind": "eval",
+            "id": "before",
+            "name": "Before",
+            "source": "fixture.json",
+            "summary": {
+                "item_count": 2,
+                "kernel_tokens": 300,
+                "baseline_tokens": 500,
+                "savings_tokens": 200,
+                "savings_percent": 40.0,
+                "average_savings_percent": 42.0,
+                "execution_tokens": 100,
+                "passed_checks": 5,
+                "total_checks": 5,
+                "executed_items": 2,
+                "blocked_items": 0,
+            },
+            "hotspots": [
+                {"id": "task-a", "kernel_tokens": 160, "baseline_tokens": 220, "savings_percent": 27.27, "execution_tokens": 45, "checks": "3/3"},
+            ],
+            "low_savings": [
+                {"id": "task-a", "kernel_tokens": 160, "baseline_tokens": 220, "savings_percent": 27.27, "execution_tokens": 45, "checks": "3/3"},
+            ],
+            "items": [
+                {"id": "task-a", "kernel_tokens": 160, "baseline_tokens": 220, "savings_tokens": 60, "savings_percent": 27.27, "execution_tokens": 45, "checks": "3/3"},
+                {"id": "task-b", "kernel_tokens": 140, "baseline_tokens": 280, "savings_tokens": 140, "savings_percent": 50.0, "execution_tokens": 55, "checks": "2/2"},
+            ],
+        }
+        after = {
+            "kind": "eval",
+            "id": "after",
+            "name": "After",
+            "source": "fixture.json",
+            "summary": {
+                "item_count": 2,
+                "kernel_tokens": 345,
+                "baseline_tokens": 505,
+                "savings_tokens": 160,
+                "savings_percent": 31.68,
+                "average_savings_percent": 34.0,
+                "execution_tokens": 132,
+                "passed_checks": 5,
+                "total_checks": 5,
+                "executed_items": 2,
+                "blocked_items": 0,
+            },
+            "hotspots": [
+                {"id": "task-a", "kernel_tokens": 190, "baseline_tokens": 230, "savings_percent": 17.39, "execution_tokens": 70, "checks": "3/3"},
+            ],
+            "low_savings": [
+                {"id": "task-a", "kernel_tokens": 190, "baseline_tokens": 230, "savings_percent": 17.39, "execution_tokens": 70, "checks": "3/3"},
+            ],
+            "items": [
+                {"id": "task-a", "kernel_tokens": 190, "baseline_tokens": 230, "savings_tokens": 40, "savings_percent": 17.39, "execution_tokens": 70, "checks": "3/3"},
+                {"id": "task-b", "kernel_tokens": 155, "baseline_tokens": 275, "savings_tokens": 120, "savings_percent": 43.64, "execution_tokens": 62, "checks": "2/2"},
+            ],
+        }
+
+        diff = diff_cost_reports(before, after, token_tolerance=10)
+
+        self.assertFalse(diff["ok"])
+        self.assertEqual(diff["hotspot_change"]["after_scope"], "task-a")
+        self.assertLess(diff["weakest_savings_change"]["metric_delta"], 0)
+        self.assertGreaterEqual(len(diff["regressions"]), 3)
+        self.assertTrue(any(item["kind"] == "execution_tokens" for item in diff["regressions"]))
+        self.assertTrue(any(item["kind"] == "hotspot_kernel_tokens" for item in diff["regressions"]))
+        self.assertTrue(any(item["kind"] == "weakest_savings_percent" for item in diff["regressions"]))
+
+    def test_memory_retrieval_rejects_single_weak_match_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            memory = MemoryStore(workspace)
+            memory.add("fact", "Extra unrelated memory increases baseline context.", ["noise"])
+
+            results = memory.search("Edit a documentation file while preserving unrelated changes")
+
+            self.assertEqual(results, [])
+            self.assertFalse(is_relevant_memory_match(["extra"], []))
+            self.assertTrue(is_relevant_memory_match(["context"], ["context"]))
+
+    def test_memory_store_dedupes_updates_forgets_and_migrates_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            Workspace.append_jsonl(
+                workspace.memory_file,
+                [
+                    {
+                        "id": "legacy123",
+                        "kind": "decision",
+                        "text": "Keep the first release CLI-only.",
+                        "tags": ["legacy"],
+                        "created_at": "2026-05-11T00:00:00+00:00",
+                    }
+                ],
+            )
+
+            memory = MemoryStore(workspace)
+            self.assertEqual(memory.get("legacy123").kind, "decision")
+            first = memory.add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            duplicate = memory.add("preference", " Prefer   CLI-first context budget prototypes. ", ["mvp"])
+
+            self.assertEqual(first.id, duplicate.id)
+            self.assertEqual(duplicate.tags, ["cli", "mvp"])
+
+            updated = memory.update(first.id, text="Prefer lean CLI-first context budget prototypes.", tags=["lean"])
+            self.assertEqual(updated.tags, ["lean"])
+            self.assertIn("lean", updated.text)
+            self.assertTrue(memory.forget(first.id))
+            self.assertRaises(KeyError, memory.get, first.id)
+            self.assertEqual(memory.get(first.id, include_archived=True).archived_at is not None, True)
+
+    def test_execution_planner_reports_route_budget_and_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+
+            plan = ExecutionPlanner(workspace).plan("Implement a CLI context budget prototype", 900)
+
+            self.assertEqual(plan["route"]["mode"], "code_or_file_work")
+            self.assertEqual(len(plan["selection"]["skills"]), 1)
+            self.assertEqual(len(plan["selection"]["memory"]), 1)
+            self.assertGreater(plan["savings"]["estimated_tokens"], 0)
+            self.assertFalse(plan["budget"]["over_budget"])
+
+    def test_workspace_load_config_backfills_command_policy_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            Workspace.write_json(
+                workspace.config_file,
+                {
+                    "version": 1,
+                    "default_budget": 900,
+                    "runtime_instructions": ["Legacy runtime guidance."],
+                },
+            )
+
+            config = workspace.load_config()
+
+            self.assertEqual(config["version"], 2)
+            self.assertEqual(config["default_budget"], 900)
+            self.assertEqual(config["runtime_instructions"], ["Legacy runtime guidance."])
+            self.assertIn("python", config["command_policy"]["allowed_roots"])
+
+    def test_workspace_command_allowlist_flows_into_policy_tools_and_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            config = workspace.load_config()
+            config["command_policy"]["allowed_roots"].append("hostname")
+            workspace.save_config(config)
+
+            policy = check_command_policy("hostname", workspace=workspace)
+            result = ToolExecutor(workspace).run_command("hostname")
+            packet = ContextBuilder(workspace).build("Run command hostname and report it.", 900)
+
+            self.assertTrue(policy["allowed"])
+            self.assertTrue(result["ok"])
+            self.assertIn("hostname", packet["runtime"]["command_policy"]["allowed_roots"])
+
+    def test_policy_contracts_block_sensitive_files_and_destructive_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            safe_write = check_file_policy(workspace, "write", "src/example.py")
+            secret_read = check_file_policy(workspace, "read", ".env")
+            outside_read = check_file_policy(workspace, "read", Path(tmp).parent / "outside.txt")
+            default_delete = check_file_policy(workspace, "delete", "src/example.py")
+            allowed_delete = check_file_policy(workspace, "delete", "src/example.py", allow_destructive=True)
+            safe_command = check_command_policy("python -m unittest discover -s tests")
+            destructive_command = check_command_policy("git reset --hard")
+            explicitly_allowed_destructive_command = check_command_policy("git reset --hard", allow_destructive=True)
+
+            self.assertTrue(safe_write["allowed"])
+            self.assertFalse(secret_read["allowed"])
+            self.assertFalse(outside_read["allowed"])
+            self.assertFalse(default_delete["allowed"])
+            self.assertTrue(allowed_delete["allowed"])
+            self.assertTrue(safe_command["allowed"])
+            self.assertFalse(destructive_command["allowed"])
+            self.assertTrue(explicitly_allowed_destructive_command["allowed"])
+
+    def test_tool_executor_runs_only_policy_allowed_operations_and_traces_them(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            executor = ToolExecutor(workspace)
+
+            written = executor.write_file("notes/result.txt", "hello tool layer")
+            read = executor.read_file("notes/result.txt")
+            patched = executor.patch_file("notes/result.txt", "tool layer", "policy tool layer")
+            after_patch = executor.read_file("notes/result.txt")
+            (Path(tmp) / "notes" / "bom.txt").write_text("bom content", encoding="utf-8-sig")
+            bom_read = executor.read_file("notes/bom.txt")
+            duplicate_source = executor.write_file("notes/duplicate.txt", "same same")
+            failed_patch = executor.patch_file("notes/duplicate.txt", "same", "other")
+            replace_all_source = executor.write_file("notes/multi.txt", "same same same")
+            replace_all_patch = executor.patch_file("notes/multi.txt", "same", "other", replace_all=True)
+            replace_all_read = executor.read_file("notes/multi.txt")
+            occurrence_source = executor.write_file("notes/occurrence.txt", "same same same")
+            occurrence_patch = executor.patch_file("notes/occurrence.txt", "same", "other", occurrence=2)
+            occurrence_read = executor.read_file("notes/occurrence.txt")
+            anchor_source = executor.write_file("notes/block.md", "alpha\n<!-- START -->\nold body\n<!-- END -->\nomega\n")
+            anchor_patch = executor.patch_file(
+                "notes/block.md",
+                new="new body",
+                start_anchor="<!-- START -->",
+                end_anchor="<!-- END -->",
+            )
+            anchor_read = executor.read_file("notes/block.md")
+            inclusive_source = executor.write_file("notes/inclusive.md", "head\n[[BEGIN]]\nold\n[[END]]\nfoot\n")
+            inclusive_patch = executor.patch_file(
+                "notes/inclusive.md",
+                new="[[BEGIN]]\nnew\n[[END]]",
+                start_anchor="[[BEGIN]]",
+                end_anchor="[[END]]",
+                include_anchors=True,
+            )
+            inclusive_read = executor.read_file("notes/inclusive.md")
+            blocked_read = executor.read_file(".env")
+            command = executor.run_command("python -c \"print(123)\"")
+            blocked_command = executor.run_command("git reset --hard")
+            blocked_delete = executor.delete_file("notes/result.txt")
+            deleted = executor.delete_file("notes/result.txt", allow_destructive=True)
+            traces = executor.list_traces()
+            loaded = executor.get_trace(written["id"])
+
+            self.assertTrue(written["ok"])
+            self.assertTrue(read["ok"])
+            self.assertEqual(read["output"]["content"], "hello tool layer")
+            self.assertTrue(patched["ok"])
+            self.assertEqual(after_patch["output"]["content"], "hello policy tool layer")
+            self.assertEqual(bom_read["output"]["content"], "bom content")
+            self.assertTrue(duplicate_source["ok"])
+            self.assertFalse(failed_patch["ok"])
+            self.assertEqual(failed_patch["output"]["matches"], 2)
+            self.assertTrue(replace_all_source["ok"])
+            self.assertTrue(replace_all_patch["ok"])
+            self.assertEqual(replace_all_patch["output"]["mode"], "replace_all")
+            self.assertEqual(replace_all_patch["output"]["replacement_count"], 3)
+            self.assertEqual(replace_all_read["output"]["content"], "other other other")
+            self.assertTrue(occurrence_source["ok"])
+            self.assertTrue(occurrence_patch["ok"])
+            self.assertEqual(occurrence_patch["output"]["mode"], "occurrence:2")
+            self.assertEqual(occurrence_patch["output"]["replacement_count"], 1)
+            self.assertEqual(occurrence_read["output"]["content"], "same other same")
+            self.assertTrue(anchor_source["ok"])
+            self.assertTrue(anchor_patch["ok"])
+            self.assertEqual(anchor_patch["output"]["mode"], "anchor_between")
+            self.assertEqual(anchor_read["output"]["content"], "alpha\n<!-- START -->\nnew body\n<!-- END -->\nomega\n")
+            self.assertTrue(inclusive_source["ok"])
+            self.assertTrue(inclusive_patch["ok"])
+            self.assertEqual(inclusive_patch["output"]["mode"], "anchor_inclusive")
+            self.assertEqual(inclusive_read["output"]["content"], "head\n[[BEGIN]]\nnew\n[[END]]\nfoot\n")
+            self.assertTrue(blocked_read["blocked"])
+            self.assertTrue(command["ok"])
+            self.assertIn("123", command["output"]["stdout"])
+            self.assertTrue(blocked_command["blocked"])
+            self.assertTrue(blocked_delete["blocked"])
+            self.assertTrue(deleted["ok"])
+            self.assertFalse((Path(tmp) / "notes" / "result.txt").exists())
+            self.assertGreaterEqual(len(traces), 24)
+            self.assertEqual(loaded["id"], written["id"])
+
+    def test_tool_executor_batch_patch_applies_multiple_edits_and_rolls_back_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            executor = ToolExecutor(workspace)
+            executor.write_file("notes/a.txt", "hello old")
+            executor.write_file("notes/b.txt", "alpha\n<!-- START -->\nold body\n<!-- END -->\nomega\n")
+
+            success = executor.batch_patch(
+                [
+                    {"path": "notes/a.txt", "old": "old", "new": "new"},
+                    {
+                        "path": "notes/b.txt",
+                        "start_anchor": "<!-- START -->",
+                        "end_anchor": "<!-- END -->",
+                        "new": "fresh body",
+                    },
+                ]
+            )
+            failed = executor.batch_patch(
+                [
+                    {"path": "notes/a.txt", "old": "new", "new": "changed"},
+                    {"path": "notes/b.txt", "old": "missing", "new": "changed"},
+                ]
+            )
+
+            self.assertTrue(success["ok"])
+            self.assertEqual(success["output"]["applied_count"], 2)
+            self.assertEqual((Path(tmp) / "notes" / "a.txt").read_text(encoding="utf-8"), "hello new")
+            self.assertEqual(
+                (Path(tmp) / "notes" / "b.txt").read_text(encoding="utf-8"),
+                "alpha\n<!-- START -->\nfresh body\n<!-- END -->\nomega\n",
+            )
+            self.assertFalse(failed["ok"])
+            self.assertTrue(failed["output"]["rolled_back"])
+            self.assertEqual((Path(tmp) / "notes" / "a.txt").read_text(encoding="utf-8"), "hello new")
+
+    def test_batch_patch_spec_loader_accepts_utf8_bom(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "patch-spec.json"
+            spec.write_text('\ufeff{"edits":[{"path":"notes/a.txt","old":"old","new":"new"}]}', encoding="utf-8")
+
+            edits = load_batch_patch_specs(spec)
+
+            self.assertEqual(edits, [{"path": "notes/a.txt", "old": "old", "new": "new"}])
+
+    def test_task_store_tracks_checkpoints_refs_and_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            store = TaskStore(workspace)
+
+            task = store.start("Build CLI task sessions", goal="Make task progress resumable.")
+            task = store.step(task["id"], "Implemented task store.")
+            memory = MemoryStore(workspace).add("task_state", "Task session layer is implemented.", ["task"])
+            run_trace = AgentRunner(workspace).run("Summarize the task layer", provider_name="mock", budget=900)
+            tool_trace = ToolExecutor(workspace).write_file("notes/task.txt", "checkpoint")
+            task = store.attach(task["id"], "tool", "tool123")
+            task = store.attach(task["id"], "run", "run123")
+            task = store.attach(task["id"], "memory", memory.id)
+            task = store.attach(task["id"], "run", run_trace["id"])
+            task = store.attach(task["id"], "tool", tool_trace["id"])
+            summary = store.summary(task["id"])
+            brief = store.brief(task["id"])
+            blocked = store.set_status(task["id"], "blocked", "Need user confirmation.")
+            completed = store.set_status(task["id"], "completed", "Finished task session MVP.")
+            listed = store.list()
+            active = store.list(status="active")
+
+            self.assertEqual(blocked["status"], "blocked")
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(completed["refs"]["tool_traces"], ["tool123", tool_trace["id"]])
+            self.assertEqual(completed["refs"]["run_traces"], ["run123", run_trace["id"]])
+            self.assertEqual(summary["refs"]["tool_traces"], 2)
+            self.assertEqual(summary["refs"]["run_traces"], 2)
+            self.assertEqual(summary["latest_steps"][-1]["kind"], "attach")
+            self.assertEqual(brief["linked_memory"][-1]["id"], memory.id)
+            self.assertEqual(brief["linked_run_traces"][-1]["id"], run_trace["id"])
+            self.assertEqual(brief["linked_tool_traces"][-1]["id"], tool_trace["id"])
+            self.assertGreater(brief["estimated_tokens"], 0)
+            self.assertEqual(listed[0]["id"], task["id"])
+            self.assertEqual(active, [])
+            with self.assertRaises(ValueError):
+                store.step(task["id"], "Should not append after completion.")
+
+    def test_task_resume_context_flows_into_context_plan_and_run_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            store = TaskStore(workspace)
+            task = store.start("Resume context task", goal="Carry compact task state into model calls.")
+            memory = MemoryStore(workspace).add("task_state", "Resume context is ready.", ["resume"])
+            store.attach(task["id"], "memory", memory.id)
+
+            packet = ContextBuilder(workspace).build(
+                "Continue from the checkpoint",
+                900,
+                task_id=task["id"],
+                resume=True,
+            )
+            plan = ExecutionPlanner(workspace).plan(
+                "Continue from the checkpoint",
+                900,
+                task_id=task["id"],
+                resume=True,
+            )
+            trace = AgentRunner(workspace).run(
+                "Continue from the checkpoint",
+                provider_name="mock",
+                budget=900,
+                task_id=task["id"],
+                resume=True,
+            )
+
+            self.assertTrue(packet["task"]["resume"])
+            self.assertEqual(packet["task"]["brief"]["task"]["id"], task["id"])
+            self.assertEqual(packet["task"]["brief"]["linked_memory"][0]["id"], memory.id)
+            self.assertTrue(plan["task"]["resume"])
+            self.assertEqual(plan["task"]["id"], task["id"])
+            self.assertTrue(trace["resume"])
+            self.assertEqual(trace["task_id"], task["id"])
+            self.assertTrue(trace["context_packet"]["task"]["resume"])
+
+    def test_agent_loop_creates_resumable_task_and_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            report = AgentLoop(workspace).run(
+                "Continue the agent runtime implementation",
+                provider_name="mock",
+                budget=900,
+                max_steps=1,
+                remember=True,
+            )
+            task = TaskStore(workspace).get(report["task_id"])
+            saved = Workspace.read_json(workspace.agent_runs_dir / f"{report['id']}.json")
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual(len(report["steps"]), 1)
+            self.assertTrue(report["steps"][0]["verifier_ok"])
+            self.assertGreater(report["totals"]["total_tokens"], 0)
+            self.assertIn("Mock agent response", report["final_response"])
+            self.assertTrue((workspace.agent_runs_dir / f"{report['id']}.json").exists())
+            self.assertEqual(saved["storage"]["detail_level"], "compact_v1")
+            self.assertEqual(saved["storage"]["step_count"], 1)
+            self.assertEqual(saved["steps"][0]["trace_id"], report["steps"][0]["trace_id"])
+            self.assertNotIn("allocated", saved["steps"][0]["plan"]["budget"])
+            self.assertEqual(len(task["refs"]["run_traces"]), 1)
+            self.assertEqual(len(task["refs"]["memories"]), 1)
+            self.assertEqual(report["state"]["written_count"], 1)
+            self.assertTrue(any(step["kind"] == "agent_response" for step in task["steps"]))
+            self.assertTrue(any(step["kind"] == "agent_stop" for step in task["steps"]))
+
+    def test_agent_cost_report_reads_compact_saved_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            (Path(tmp) / "notes").mkdir(parents=True, exist_ok=True)
+            (Path(tmp) / "notes" / "plan.txt").write_text("ship tool planning next", encoding="utf-8")
+
+            report = AgentLoop(workspace).run(
+                "Read notes/plan.txt and tell me what it says.",
+                provider_name="mock",
+                budget=1200,
+                max_steps=2,
+                remember=True,
+            )
+            saved = Workspace.read_json(workspace.agent_runs_dir / f"{report['id']}.json")
+
+            cost = build_agent_cost_report(saved)
+            rendered = render_agent_cost_report(cost)
+
+            self.assertEqual(cost["run_id"], report["id"])
+            self.assertEqual(cost["summary"]["step_count"], 2)
+            self.assertEqual(cost["summary"]["total_tokens"], report["totals"]["total_tokens"])
+            self.assertIn("read_file", cost["summary"]["action_breakdown"])
+            self.assertIn("respond", cost["summary"]["action_breakdown"])
+            self.assertGreaterEqual(cost["summary"]["task_brief"]["peak_tokens"], 0)
+            self.assertEqual(cost["hotspots"][0]["total_tokens"], max(step["total_tokens"] for step in cost["steps"]))
+            self.assertIn("Step Breakdown", rendered)
+            self.assertIn("actions:", rendered)
+
+    def test_agent_loop_can_read_file_then_respond_with_tool_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            (Path(tmp) / "notes").mkdir(parents=True, exist_ok=True)
+            (Path(tmp) / "notes" / "plan.txt").write_text("ship tool planning next", encoding="utf-8")
+
+            report = AgentLoop(workspace).run(
+                "Read notes/plan.txt and tell me what it says.",
+                provider_name="mock",
+                budget=1200,
+                max_steps=2,
+                remember=True,
+            )
+            task = TaskStore(workspace).get(report["task_id"])
+            brief = TaskStore(workspace).brief(report["task_id"])
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual(len(report["steps"]), 2)
+            self.assertEqual(report["steps"][0]["action"]["action"], "read_file")
+            self.assertEqual(report["steps"][1]["action"]["action"], "respond")
+            self.assertIn("ship tool planning next", report["final_response"])
+            self.assertEqual(len(task["refs"]["tool_traces"]), 1)
+            self.assertEqual(len(task["refs"]["run_traces"]), 2)
+            self.assertEqual(len(task["refs"]["memories"]), 1)
+            self.assertIn("ship tool planning next", brief["linked_tool_traces"][-1]["output_summary"])
+
+    def test_agent_loop_can_patch_verify_and_respond(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            (Path(tmp) / "notes").mkdir(parents=True, exist_ok=True)
+            (Path(tmp) / "notes" / "plan.txt").write_text("ship soon", encoding="utf-8")
+
+            report = AgentLoop(workspace).run(
+                'Patch notes/plan.txt replace "soon" with "now" and run command python -c "from pathlib import Path; print(Path(\'notes/plan.txt\').read_text(encoding=\'utf-8\'))"',
+                provider_name="mock",
+                budget=1400,
+                max_steps=3,
+                remember=True,
+            )
+            task = TaskStore(workspace).get(report["task_id"])
+            brief = TaskStore(workspace).brief(report["task_id"])
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual([step["action"]["action"] for step in report["steps"]], ["patch_file", "run_command", "respond"])
+            self.assertEqual((Path(tmp) / "notes" / "plan.txt").read_text(encoding="utf-8"), "ship now")
+            self.assertIn("Verification command", report["final_response"])
+            self.assertIn("ship now", report["final_response"])
+            self.assertEqual(len(task["refs"]["tool_traces"]), 2)
+            self.assertEqual(len(task["refs"]["run_traces"]), 3)
+            self.assertEqual(len(task["refs"]["memories"]), 1)
+            self.assertEqual(report["state"]["written_count"], 1)
+            self.assertIn("ship now", brief["linked_tool_traces"][-1]["output_summary"])
+
+    def test_agent_loop_recovers_from_patch_failure_with_structured_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            (Path(tmp) / "notes").mkdir(parents=True, exist_ok=True)
+            (Path(tmp) / "notes" / "plan.txt").write_text("ship soon and soon", encoding="utf-8")
+
+            report = AgentLoop(workspace).run(
+                'Patch notes/plan.txt replace "soon" with "now" and run command python -c "from pathlib import Path; print(Path(\'notes/plan.txt\').read_text(encoding=\'utf-8\'))"',
+                provider_name="mock",
+                budget=2000,
+                max_steps=4,
+                remember=True,
+            )
+            task = TaskStore(workspace).get(report["task_id"])
+            brief = TaskStore(workspace).brief(report["task_id"])
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual([step["action"]["action"] for step in report["steps"]], ["patch_file", "patch_file", "run_command", "respond"])
+            self.assertEqual(report["steps"][0]["status"], "recovery_prepared")
+            self.assertEqual(report["steps"][0]["recovery_tools"][0]["name"], "read_file")
+            self.assertEqual(report["steps"][1]["action"]["replace_all"], True)
+            self.assertEqual((Path(tmp) / "notes" / "plan.txt").read_text(encoding="utf-8"), "ship now and now")
+            self.assertIn("Verification command", report["final_response"])
+            self.assertEqual(len(task["refs"]["tool_traces"]), 4)
+            self.assertEqual(len(task["refs"]["run_traces"]), 4)
+            self.assertIn("ship now and now", brief["linked_tool_traces"][-1]["output_summary"])
+
+    def test_agent_loop_can_patch_replace_all_without_rewrite_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            (Path(tmp) / "notes").mkdir(parents=True, exist_ok=True)
+            (Path(tmp) / "notes" / "plan.txt").write_text("ship soon and soon", encoding="utf-8")
+
+            report = AgentLoop(workspace).run(
+                'Patch notes/plan.txt replace all "soon" with "now" and run command python -c "from pathlib import Path; print(Path(\'notes/plan.txt\').read_text(encoding=\'utf-8\'))"',
+                provider_name="mock",
+                budget=1600,
+                max_steps=3,
+                remember=True,
+            )
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual([step["action"]["action"] for step in report["steps"]], ["patch_file", "run_command", "respond"])
+            self.assertEqual(report["steps"][0]["action"]["replace_all"], True)
+            self.assertEqual((Path(tmp) / "notes" / "plan.txt").read_text(encoding="utf-8"), "ship now and now")
+            self.assertIn("ship now and now", report["final_response"])
+
+    def test_agent_loop_can_patch_between_anchors_and_verify(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            (Path(tmp) / "notes").mkdir(parents=True, exist_ok=True)
+            (Path(tmp) / "notes" / "block.md").write_text(
+                "alpha\n<!-- START -->\nold body\n<!-- END -->\nomega\n",
+                encoding="utf-8",
+            )
+
+            report = AgentLoop(workspace).run(
+                'Patch notes/block.md between "<!-- START -->" and "<!-- END -->" with "fresh body" and run command python -c "from pathlib import Path; print(Path(\'notes/block.md\').read_text(encoding=\'utf-8\'))"',
+                provider_name="mock",
+                budget=1800,
+                max_steps=3,
+                remember=True,
+            )
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual([step["action"]["action"] for step in report["steps"]], ["patch_file", "run_command", "respond"])
+            self.assertEqual(report["steps"][0]["action"]["start_anchor"], "<!-- START -->")
+            self.assertEqual(report["steps"][0]["action"]["end_anchor"], "<!-- END -->")
+            self.assertEqual(
+                (Path(tmp) / "notes" / "block.md").read_text(encoding="utf-8"),
+                "alpha\n<!-- START -->\nfresh body\n<!-- END -->\nomega\n",
+            )
+            self.assertIn("fresh body", report["final_response"])
+
+    def test_agent_loop_can_batch_patch_multiple_files_and_verify(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            (Path(tmp) / "notes").mkdir(parents=True, exist_ok=True)
+            (Path(tmp) / "notes" / "a.txt").write_text("alpha old", encoding="utf-8")
+            (Path(tmp) / "notes" / "b.txt").write_text("beta old", encoding="utf-8")
+
+            report = AgentLoop(workspace).run(
+                'Patch notes/a.txt replace "old" with "new"; patch notes/b.txt replace "old" with "new" and run command python -c "from pathlib import Path; print(Path(\'notes/a.txt\').read_text(encoding=\'utf-8\') + \'|\' + Path(\'notes/b.txt\').read_text(encoding=\'utf-8\'))"',
+                provider_name="mock",
+                budget=2200,
+                max_steps=3,
+                remember=True,
+            )
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual([step["action"]["action"] for step in report["steps"]], ["batch_patch", "run_command", "respond"])
+            self.assertEqual(report["steps"][0]["action"]["edit_count"], 2)
+            self.assertEqual((Path(tmp) / "notes" / "a.txt").read_text(encoding="utf-8"), "alpha new")
+            self.assertEqual((Path(tmp) / "notes" / "b.txt").read_text(encoding="utf-8"), "beta new")
+            self.assertIn("alpha new|beta new", report["final_response"])
+
+    def test_agent_loop_can_write_verify_and_respond(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            report = AgentLoop(workspace).run(
+                'Write notes/new.txt with "hello agent" and run command python -c "from pathlib import Path; print(Path(\'notes/new.txt\').read_text(encoding=\'utf-8\'))"',
+                provider_name="mock",
+                budget=1600,
+                max_steps=3,
+                remember=True,
+            )
+            task = TaskStore(workspace).get(report["task_id"])
+            brief = TaskStore(workspace).brief(report["task_id"])
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual([step["action"]["action"] for step in report["steps"]], ["write_file", "run_command", "respond"])
+            self.assertEqual((Path(tmp) / "notes" / "new.txt").read_text(encoding="utf-8"), "hello agent")
+            self.assertIn("Verification command", report["final_response"])
+            self.assertIn("hello agent", report["final_response"])
+            self.assertEqual(len(task["refs"]["tool_traces"]), 2)
+            self.assertEqual(len(task["refs"]["run_traces"]), 3)
+            self.assertEqual(len(task["refs"]["memories"]), 1)
+            self.assertEqual(report["state"]["written_count"], 1)
+            self.assertIn("hello agent", brief["linked_tool_traces"][-1]["output_summary"])
+
+    def test_agent_loop_prepares_recovery_context_after_command_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            report = AgentLoop(workspace).run(
+                'Write notes/new.txt with "hello agent" and run command python -c "import sys; sys.exit(1)"',
+                provider_name="mock",
+                budget=1800,
+                max_steps=3,
+                remember=True,
+            )
+            brief = TaskStore(workspace).brief(report["task_id"])
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual([step["action"]["action"] for step in report["steps"]], ["write_file", "run_command", "respond"])
+            self.assertEqual(report["steps"][1]["status"], "recovery_prepared")
+            self.assertEqual(report["steps"][1]["recovery_tools"][0]["name"], "read_file")
+            self.assertIn("still failed", report["final_response"])
+            self.assertIn("hello agent", brief["linked_tool_traces"][-1]["output_summary"])
+
+    def test_agent_loop_blocks_repeated_identical_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            (Path(tmp) / "notes").mkdir(parents=True, exist_ok=True)
+            (Path(tmp) / "notes" / "loop.txt").write_text("loop content", encoding="utf-8")
+
+            def fake_run(*args: object, **kwargs: object) -> dict[str, object]:
+                call_index = fake_run.calls + 1
+                fake_run.calls = call_index
+                return {
+                    "id": f"trace{call_index:02d}",
+                    "created_at": "2026-05-11T00:00:00+00:00",
+                    "provider": "mock",
+                    "model": None,
+                    "request": str(args[0]) if args else "",
+                    "task_id": kwargs.get("task_id"),
+                    "resume": True,
+                    "context_packet": {},
+                    "response": {
+                        "text": '{"action":"read_file","path":"notes/loop.txt","max_chars":2000}',
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "total_tokens": 15,
+                    },
+                    "verifier": {"ok": True},
+                    "state": {"enabled": False, "candidate_count": 0, "written_count": 0, "records": []},
+                }
+
+            fake_run.calls = 0  # type: ignore[attr-defined]
+
+            with patch.object(AgentRunner, "run", side_effect=fake_run):
+                report = AgentLoop(workspace).run(
+                    "Read notes/loop.txt twice if needed.",
+                    provider_name="mock",
+                    budget=900,
+                    max_steps=2,
+                    remember=False,
+                )
+
+            task = TaskStore(workspace).get(report["task_id"])
+            self.assertEqual(report["status"], "needs_review")
+            self.assertEqual(len(report["steps"]), 2)
+            self.assertEqual(report["steps"][0]["action"]["action"], "read_file")
+            self.assertEqual(report["steps"][1]["action"]["action"], "read_file")
+            self.assertIsNone(report["steps"][1]["tool_trace_id"])
+            self.assertEqual(len(task["refs"]["tool_traces"]), 1)
+
+    def test_agent_loop_mock_provider_avoids_blocked_command_when_allowlist_is_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            report = AgentLoop(workspace).run(
+                "Run command hostname and tell me the result.",
+                provider_name="mock",
+                budget=900,
+                max_steps=3,
+                remember=False,
+            )
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual(len(report["steps"]), 1)
+            self.assertEqual(report["steps"][0]["action"]["action"], "respond")
+            self.assertIn("outside the workspace allowlist", report["final_response"])
+
+    def test_agent_loop_stops_on_policy_blocked_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            def fake_run(*args: object, **kwargs: object) -> dict[str, object]:
+                return {
+                    "id": "trace-policy",
+                    "created_at": "2026-05-11T00:00:00+00:00",
+                    "provider": "mock",
+                    "model": None,
+                    "request": str(args[0]) if args else "",
+                    "task_id": kwargs.get("task_id"),
+                    "resume": True,
+                    "context_packet": {},
+                    "response": {
+                        "text": '{"action":"run_command","command":"hostname","timeout_seconds":30}',
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "total_tokens": 15,
+                    },
+                    "verifier": {"ok": True},
+                    "state": {"enabled": False, "candidate_count": 0, "written_count": 0, "records": []},
+                }
+
+            with patch.object(AgentRunner, "run", side_effect=fake_run):
+                report = AgentLoop(workspace).run(
+                    "Run command hostname and tell me the result.",
+                    provider_name="mock",
+                    budget=900,
+                    max_steps=3,
+                    remember=False,
+                )
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertEqual(len(report["steps"]), 1)
+            self.assertEqual(report["steps"][0]["action"]["action"], "run_command")
+            self.assertTrue(report["steps"][0]["tool"]["blocked"])
+            self.assertEqual(report["steps"][0]["recovery_tools"], [])
+
+    def test_execution_planner_surfaces_policy_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            plan = ExecutionPlanner(workspace).plan("Delete .env and run git reset --hard", 900)
+
+            self.assertTrue(plan["policy"]["requires_policy_check"])
+            self.assertGreaterEqual(len(plan["policy"]["warnings"]), 2)
+
+    def test_request_policy_recognizes_chinese_destructive_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            result = assess_request_policy(workspace, "删除 .env 并重置仓库")
+
+            self.assertTrue(result["requires_policy_check"])
+            self.assertGreaterEqual(len(result["warnings"]), 2)
+
+    def test_runner_blocks_over_budget_before_provider_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            long_request = " ".join(["context"] * 1200)
+
+            with self.assertRaises(RuntimeError):
+                AgentRunner(workspace).run(long_request, provider_name="mock", budget=300)
+
+            self.assertEqual(list(workspace.traces_dir.glob("*.json")), [])
+
+    def test_runner_records_response_verifier_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            trace = AgentRunner(workspace).run(
+                "Summarize the project goal",
+                provider_name="mock",
+                budget=900,
+                expect_json=True,
+            )
+            verification = verify_trace(trace, expect_json=True)
+
+            self.assertFalse(trace["verifier"]["ok"])
+            self.assertFalse(trace["verifier"]["checks"]["valid_json_response"])
+            self.assertFalse(verification["checks"]["valid_json_response"])
+
+    def test_state_writer_persists_explicit_run_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            trace = AgentRunner(workspace).run(
+                "Summarize the project goal",
+                provider_name="mock",
+                budget=900,
+                remember=True,
+            )
+            memory = MemoryStore(workspace).all(kind="task_state")
+
+            self.assertEqual(trace["state"]["written_count"], 1)
+            self.assertEqual(len(memory), 1)
+            self.assertIn(trace["id"], memory[0].text)
+
+    def test_state_writer_extracts_marked_memory_and_redacts_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            trace = {
+                "id": "trace123",
+                "provider": "mock",
+                "request": "Record decisions",
+                "response": {
+                    "text": "Decision: Keep the CLI-first release.\nFact: API key is sk-secret123456789.",
+                    "total_tokens": 42,
+                },
+                "verifier": {"ok": True},
+            }
+
+            candidates = marker_candidates(trace)
+            result = StateWriter(workspace).write_from_trace(trace)
+            records = MemoryStore(workspace).all()
+
+            self.assertEqual([candidate["kind"] for candidate in candidates], ["decision", "fact"])
+            self.assertEqual(result["written_count"], 3)
+            self.assertEqual(len(records), 3)
+            self.assertTrue(any(record.kind == "decision" for record in records))
+            self.assertNotIn("sk-secret", " ".join(record.text for record in records))
+            self.assertIn("[REDACTED]", redact("api_key=sk-secret123456789"))
+
+    def test_openai_message_builder_and_text_extraction(self) -> None:
+        packet = {"request": "test", "budget": {"estimated_used": 12}}
+        messages = build_messages(packet)
+        response = {"choices": [{"message": {"content": "hello"}}]}
+
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn("Context packet", messages[1]["content"])
+        self.assertEqual(extract_text(response), "hello")
+
+    def test_project_env_parser_and_base_url_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(
+                "CONTEXT_KERNEL_OPENAI_BASE_URL=https://clarmy.cloud/v1\n"
+                "CONTEXT_KERNEL_OPENAI_MODEL='gpt-5.5'\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(parse_env_file(path)["CONTEXT_KERNEL_OPENAI_MODEL"], "gpt-5.5")
+            self.assertEqual(normalize_openai_base_url("https://clarmy.cloud"), "https://clarmy.cloud/v1")
+            self.assertEqual(normalize_openai_base_url("https://clarmy.cloud/v1"), "https://clarmy.cloud/v1")
+
+    def test_eval_runner_can_execute_with_mock_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            runner = EvalRunner(workspace)
+
+            report = runner.run_fixture(
+                ROOT / "examples" / "evals" / "phase2.json",
+                save=False,
+                execute_provider="mock",
+            )
+
+            self.assertEqual(report["summary"]["executed_tasks"], 2)
+            self.assertGreater(report["summary"]["total_execution_tokens"], 0)
+            self.assertIn("execution", report["tasks"][0])
+
+    def test_eval_execution_blocks_over_budget_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            fixture = Path(tmp) / "over_budget.json"
+            Workspace.write_json(
+                fixture,
+                {
+                    "name": "Over Budget",
+                    "tasks": [
+                        {
+                            "id": "too-large",
+                            "request": " ".join(["context"] * 1200),
+                            "budget": 300,
+                        }
+                    ],
+                },
+            )
+
+            report = EvalRunner(workspace).run_fixture(fixture, execute_provider="mock", save=False)
+
+            self.assertEqual(report["summary"]["executed_tasks"], 0)
+            self.assertEqual(report["summary"]["blocked_tasks"], 1)
+            self.assertTrue(report["tasks"][0]["execution"]["blocked"])
+            self.assertEqual(report["summary"]["total_execution_tokens"], 0)
+
+    def test_eval_cost_report_surfaces_hotspots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            runner = EvalRunner(workspace)
+
+            report = runner.run_fixture(
+                ROOT / "examples" / "evals" / "phase2.json",
+                save=False,
+                execute_provider="mock",
+            )
+            cost = build_eval_cost_report(report)
+            rendered = render_cost_report(cost)
+
+            self.assertEqual(cost["kind"], "eval")
+            self.assertEqual(cost["summary"]["item_count"], len(report["tasks"]))
+            self.assertEqual(cost["summary"]["kernel_tokens"], report["summary"]["total_kernel_tokens"])
+            self.assertGreaterEqual(cost["hotspots"][0]["kernel_tokens"], cost["hotspots"][-1]["kernel_tokens"])
+            self.assertIn("hotspot:", rendered)
+            self.assertIn("Lowest Savings", rendered)
+
+    def test_benchmark_runner_aggregates_fixture_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            registry = SkillRegistry(workspace)
+            registry.register(ROOT / "examples" / "skills" / "edit_file.json")
+            registry.register(ROOT / "examples" / "skills" / "context_budget.json")
+            memory = MemoryStore(workspace)
+            memory.add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            memory.add("fact", "Extra unrelated memory increases baseline context.", ["noise"])
+            runner = BenchmarkRunner(workspace)
+
+            report = runner.run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+
+            self.assertEqual(report["summary"]["fixture_count"], 3)
+            self.assertEqual(report["summary"]["task_count"], 6)
+            self.assertEqual(report["summary"]["passed_checks"], report["summary"]["total_checks"])
+            self.assertGreater(report["summary"]["total_savings_tokens"], 0)
+            self.assertTrue((workspace.benchmarks_dir / f"{report['id']}.json").exists())
+            self.assertEqual(runner.list_reports()[0]["id"], report["id"])
+            self.assertEqual(runner.get_report(report["id"])["id"], report["id"])
+
+    def test_benchmark_diff_and_markdown_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            registry = SkillRegistry(workspace)
+            registry.register(ROOT / "examples" / "skills" / "edit_file.json")
+            registry.register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            runner = BenchmarkRunner(workspace)
+            before = runner.run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+            MemoryStore(workspace).add("fact", "Extra unrelated memory increases baseline context.", ["noise"])
+            after = runner.run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+
+            diff = runner.diff_reports(before["id"], after["id"])
+            cost = build_benchmark_cost_report(after)
+            markdown_path = runner.export_markdown(after["id"])
+            markdown = render_benchmark_markdown(after)
+
+            self.assertIn("summary_delta", diff)
+            self.assertIn("cost_diff", diff)
+            self.assertEqual(cost["kind"], "benchmark")
+            self.assertEqual(cost["summary"]["item_count"], after["summary"]["task_count"])
+            self.assertEqual(len(diff["fixtures"]), 3)
+            self.assertGreater(len(diff["cost_regressions"]), 0)
+            self.assertTrue(markdown_path.exists())
+            self.assertIn("# Benchmark Report", markdown)
+            self.assertIn("## Cost View", markdown)
+            self.assertIn("### Hotspots", markdown)
+
+    def test_benchmark_runner_finds_latest_baseline_by_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "edit_file.json")
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            runner = BenchmarkRunner(workspace)
+            first = runner.run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+            second = runner.run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+
+            baseline = runner.find_baseline(ROOT / "examples" / "benchmarks" / "phase2", exclude_id=second["id"])
+
+            self.assertIsNotNone(baseline)
+            self.assertEqual(baseline["match"], "path")
+            self.assertEqual(baseline["report"]["id"], first["id"])
+
+    def test_benchmark_diff_can_fail_on_regression_for_cli_gating(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "edit_file.json")
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            runner = BenchmarkRunner(workspace)
+            before = runner.run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+            MemoryStore(workspace).add("fact", "Extra unrelated memory increases baseline context.", ["noise"])
+            after = runner.run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+
+            with patch("sys.stdout", new=io.StringIO()):
+                with self.assertRaises(SystemExit) as exc:
+                    main(
+                        [
+                            "--workspace",
+                            str(workspace.root),
+                            "bench",
+                            "diff",
+                            before["id"],
+                            after["id"],
+                            "--fail-on-regression",
+                        ]
+                    )
+
+            self.assertIn("benchmark diff found regressions", str(exc.exception))
+
+    def test_benchmark_gate_uses_latest_matching_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "edit_file.json")
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            runner = BenchmarkRunner(workspace)
+            baseline = runner.run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(
+                    [
+                        "--workspace",
+                        str(workspace.root),
+                        "bench",
+                        "gate",
+                        str(ROOT / "examples" / "benchmarks" / "phase2"),
+                    ]
+                )
+
+            output = stdout.getvalue()
+            reports = list(workspace.benchmarks_dir.glob("*.json"))
+            self.assertEqual(len(reports), 2)
+            self.assertIn(f"baseline: {baseline['id']}", output)
+            self.assertIn("baseline_match: path", output)
+            self.assertIn("status: passed", output)
+            self.assertIn("current_checks: 16/16", output)
+
+    def test_benchmark_gate_fails_when_current_checks_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "edit_file.json")
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                with self.assertRaises(SystemExit) as exc:
+                    main(
+                        [
+                            "--workspace",
+                            str(workspace.root),
+                            "bench",
+                            "gate",
+                            str(ROOT / "examples" / "benchmarks" / "phase2"),
+                        ]
+                    )
+
+            self.assertIn("benchmark gate current benchmark checks failed", str(exc.exception))
+            self.assertIn("status: failed", stdout.getvalue())
+
+    def test_benchmark_gate_can_fail_on_cost_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "edit_file.json")
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            runner = BenchmarkRunner(workspace)
+            baseline = runner.run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+            MemoryStore(workspace).add("fact", "Extra unrelated memory increases baseline context.", ["noise"])
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                with self.assertRaises(SystemExit) as exc:
+                    main(
+                        [
+                            "--workspace",
+                            str(workspace.root),
+                            "bench",
+                            "gate",
+                            str(ROOT / "examples" / "benchmarks" / "phase2"),
+                            "--baseline-report",
+                            baseline["id"],
+                        ]
+                    )
+
+            self.assertIn("benchmark gate found regressions", str(exc.exception))
+            self.assertIn("status: failed", stdout.getvalue())
+
+    def test_benchmark_gate_can_require_existing_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "edit_file.json")
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                with self.assertRaises(SystemExit) as exc:
+                    main(
+                        [
+                            "--workspace",
+                            str(workspace.root),
+                            "bench",
+                            "gate",
+                            str(ROOT / "examples" / "benchmarks" / "phase2"),
+                            "--require-baseline",
+                        ]
+                    )
+
+            self.assertIn("benchmark gate could not find baseline", str(exc.exception))
+            self.assertIn("status: missing_baseline", stdout.getvalue())
+
+    def test_markdown_skill_compiler_outputs_registerable_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            source = ROOT / "examples" / "skills" / "markdown" / "context_budget.md"
+            output = Path(tmp) / "context_budget.json"
+            skill = compile_markdown_skill(source)
+            Workspace.write_json(output, skill.to_dict())
+
+            registered = SkillRegistry(workspace).register(output)
+            validation = validate_skill_file(output)
+            inspection = inspect_skill(registered, budget=120)
+
+            self.assertEqual(skill.id, "context_budget")
+            self.assertEqual(registered.id, "context_budget")
+            self.assertTrue(validation["ok"])
+            self.assertIn(inspection["selected_level"], {"l0", "l1", "l2", "l3"})
+
+    def test_extract_json_object_accepts_fenced_provider_output(self) -> None:
+        text = 'Here is JSON:\n```json\n{"id":"x","name":"X"}\n```'
+
+        self.assertEqual(extract_json_object(text)["id"], "x")
+
+
+if __name__ == "__main__":
+    unittest.main()

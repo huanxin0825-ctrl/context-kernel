@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-smoke:
+    name: Test and Smoke (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -p test_runtime.py
+
+      - name: CLI smoke
+        run: |
+          python -m context_kernel init .sandbox-ci
+          python -m context_kernel --workspace .sandbox-ci skill register examples/skills/edit_file.json
+          python -m context_kernel --workspace .sandbox-ci skill register examples/skills/context_budget.json
+          python -m context_kernel --workspace .sandbox-ci memory add --kind preference --text "Prefer CLI-first context budget prototypes." --tags cli
+          python -m context_kernel --workspace .sandbox-ci bench run examples/benchmarks/phase2
+          python -m context_kernel --workspace .sandbox-ci bench gate examples/benchmarks/phase2 --require-baseline
+
+      - name: Build package
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: python -m build
+
+  windows-wake:
+    name: Windows Wake Flow
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run setup wrapper
+        shell: cmd
+        run: setup.cmd -Verify
+
+      - name: Run wake wrapper
+        shell: cmd
+        run: wake.cmd -InitWorkspace -Workspace .sandbox-wake
+
+      - name: Validate wake workspace
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath ".sandbox-wake\.akernel")) {
+            throw "wake.cmd did not initialize the workspace."
+          }

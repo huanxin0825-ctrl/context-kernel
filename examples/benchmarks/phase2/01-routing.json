@@ -1,0 +1,22 @@
+{
+  "name": "Routing and skill selection",
+  "tasks": [
+    {
+      "id": "route_context_budget",
+      "request": "Plan a CLI context budget prototype",
+      "profile": "lean",
+      "expected_skills": ["context_budget"],
+      "expected_memory_terms": ["cli"],
+      "expected_response_terms": ["context"],
+      "minimum_savings_percent": 10
+    },
+    {
+      "id": "route_edit_file",
+      "request": "Edit a documentation file while preserving unrelated changes",
+      "profile": "balanced",
+      "expected_skills": ["edit_file"],
+      "expected_response_terms": ["context"],
+      "minimum_savings_percent": 10
+    }
+  ]
+}

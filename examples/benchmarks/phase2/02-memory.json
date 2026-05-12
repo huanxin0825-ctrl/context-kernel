@@ -1,0 +1,20 @@
+{
+  "name": "Memory retrieval and noise control",
+  "tasks": [
+    {
+      "id": "recall_cli_preference",
+      "request": "Use the CLI preference while planning a context budget prototype",
+      "profile": "lean",
+      "expected_skills": ["context_budget"],
+      "expected_memory_terms": ["cli"],
+      "minimum_savings_percent": 10
+    },
+    {
+      "id": "ignore_weak_noise",
+      "request": "Edit a documentation file while preserving unrelated changes",
+      "profile": "balanced",
+      "expected_skills": ["edit_file"],
+      "minimum_savings_percent": 10
+    }
+  ]
+}

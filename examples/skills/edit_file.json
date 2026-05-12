@@ -1,0 +1,28 @@
+{
+  "id": "edit_file",
+  "name": "Edit File",
+  "summary": "Modify local files with scoped, reviewable changes.",
+  "intent": "Use when a request requires changing source files, documentation, or project configuration.",
+  "inputs": ["file_path", "change_request"],
+  "outputs": ["patch", "verification_result"],
+  "constraints": [
+    "Preserve unrelated changes.",
+    "Prefer patch-based edits.",
+    "Verify behavior with the smallest relevant command."
+  ],
+  "failure_modes": [
+    "Target file is ambiguous.",
+    "Existing changes conflict with the requested edit.",
+    "Verification command is unavailable."
+  ],
+  "procedure": [
+    "Inspect the relevant files.",
+    "Make the smallest focused edit.",
+    "Run targeted verification.",
+    "Report changed files and verification result."
+  ],
+  "examples": [
+    "Update a CLI help string and run the command smoke test."
+  ]
+}
+

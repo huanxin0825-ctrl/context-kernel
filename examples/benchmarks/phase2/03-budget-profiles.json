@@ -1,0 +1,21 @@
+{
+  "name": "Budget profile behavior",
+  "tasks": [
+    {
+      "id": "lean_budget",
+      "request": "Plan a CLI context budget prototype",
+      "profile": "lean",
+      "expected_skills": ["context_budget"],
+      "expected_memory_terms": ["cli"],
+      "minimum_savings_percent": 10
+    },
+    {
+      "id": "deep_budget",
+      "request": "Plan a CLI context budget prototype with deeper runtime reasoning",
+      "profile": "deep",
+      "expected_skills": ["context_budget"],
+      "expected_memory_terms": ["cli"],
+      "minimum_savings_percent": 5
+    }
+  ]
+}

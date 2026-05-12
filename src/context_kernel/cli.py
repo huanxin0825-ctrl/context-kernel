@@ -1,0 +1,1364 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import sys
+from typing import Any
+
+from .agent_reports import build_agent_cost_report, load_agent_report, render_agent_cost_report
+from .benchmarks import BenchmarkRunner, benchmark_ref
+from .budget import DEFAULT_PROFILE, profile_names
+from .context import ContextBuilder
+from .evals import EvalRunner
+from .loop import AgentLoop
+from .memory import ALLOWED_KINDS, MemoryStore
+from .planner import ExecutionPlanner
+from .policy import FILE_OPERATIONS, check_command_policy, check_file_policy, summarize_command_policy
+from .providers import env_value, list_provider_models, normalize_openai_base_url
+from .report_costs import build_benchmark_cost_report, build_eval_cost_report, render_cost_report
+from .runner import AgentRunner
+from .skills import (
+    SkillRegistry,
+    compile_markdown_skill,
+    compile_markdown_skill_with_provider,
+    inspect_skill,
+    validate_skill_file,
+)
+from .state_writer import StateWriter
+from .storage import Workspace
+from .tasks import TASK_STATUSES, TaskStore
+from .tools import ToolExecutor
+from .verifier import verify_trace
+
+
+def main(argv: list[str] | None = None) -> None:
+    configure_console_output()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        args.func(args)
+    except Exception as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="akernel", description="Context Kernel CLI")
+    parser.add_argument("--workspace", default=".", help="Workspace root containing .akernel state.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    init_parser = subparsers.add_parser("init", help="Initialize a Context Kernel workspace.")
+    init_parser.add_argument("path", nargs="?", default=".")
+    init_parser.set_defaults(func=cmd_init)
+
+    skill_parser = subparsers.add_parser("skill", help="Manage skill contracts.")
+    skill_sub = skill_parser.add_subparsers(dest="skill_command", required=True)
+    skill_register = skill_sub.add_parser("register", help="Register a skill JSON file.")
+    skill_register.add_argument("json_file")
+    skill_register.set_defaults(func=cmd_skill_register)
+    skill_list = skill_sub.add_parser("list", help="List registered skills.")
+    skill_list.set_defaults(func=cmd_skill_list)
+    skill_show = skill_sub.add_parser("show", help="Show a registered skill.")
+    skill_show.add_argument("skill_id")
+    skill_show.add_argument("--level", choices=["l0", "l1", "l2", "l3"], default="l1")
+    skill_show.set_defaults(func=cmd_skill_show)
+    skill_compile = skill_sub.add_parser("compile", help="Compile a Markdown skill into structured JSON.")
+    skill_compile.add_argument("markdown_file")
+    skill_compile.add_argument("--id", default=None, help="Override compiled skill id.")
+    skill_compile.add_argument("--output", default=None, help="Output JSON path. Defaults next to source.")
+    skill_compile.add_argument("--provider", choices=["local", "openai"], default="local")
+    skill_compile.add_argument("--model", default=None, help="Provider model id used when --provider is openai.")
+    skill_compile.add_argument("--base-url", default=None, help="OpenAI-compatible base URL override.")
+    skill_compile.add_argument("--register", action="store_true", help="Register the compiled skill in the current workspace.")
+    skill_compile.set_defaults(func=cmd_skill_compile)
+    skill_validate = skill_sub.add_parser("validate", help="Validate a skill JSON file.")
+    skill_validate.add_argument("json_file")
+    skill_validate.set_defaults(func=cmd_skill_validate)
+    skill_inspect = skill_sub.add_parser("inspect", help="Inspect skill load levels and token estimates.")
+    skill_inspect.add_argument("skill_id")
+    skill_inspect.add_argument("--budget", type=int, default=300)
+    skill_inspect.set_defaults(func=cmd_skill_inspect)
+
+    memory_parser = subparsers.add_parser("memory", help="Manage structured memory.")
+    memory_sub = memory_parser.add_subparsers(dest="memory_command", required=True)
+    memory_add = memory_sub.add_parser("add", help="Add a memory record.")
+    memory_add.add_argument("--kind", required=True, choices=sorted(ALLOWED_KINDS))
+    memory_add.add_argument("--text", required=True)
+    memory_add.add_argument("--tags", default="", help="Comma-separated tags.")
+    memory_add.set_defaults(func=cmd_memory_add)
+    memory_show = memory_sub.add_parser("show", help="Show one memory record.")
+    memory_show.add_argument("record_id")
+    memory_show.add_argument("--include-archived", action="store_true")
+    memory_show.set_defaults(func=cmd_memory_show)
+    memory_list = memory_sub.add_parser("list", help="List memory records.")
+    memory_list.add_argument("--kind", choices=sorted(ALLOWED_KINDS))
+    memory_list.add_argument("--all", action="store_true", help="Include archived records.")
+    memory_list.set_defaults(func=cmd_memory_list)
+    memory_search = memory_sub.add_parser("search", help="Search memory records.")
+    memory_search.add_argument("query")
+    memory_search.add_argument("--kind", choices=sorted(ALLOWED_KINDS))
+    memory_search.add_argument("--limit", type=int, default=5)
+    memory_search.set_defaults(func=cmd_memory_search)
+    memory_update = memory_sub.add_parser("update", help="Update an active memory record.")
+    memory_update.add_argument("record_id")
+    memory_update.add_argument("--kind", choices=sorted(ALLOWED_KINDS))
+    memory_update.add_argument("--text")
+    memory_update.add_argument("--tags", default=None, help="Comma-separated tags. Pass an empty value to clear.")
+    memory_update.set_defaults(func=cmd_memory_update)
+    memory_forget = memory_sub.add_parser("forget", help="Archive a memory record so it no longer enters context.")
+    memory_forget.add_argument("record_id")
+    memory_forget.set_defaults(func=cmd_memory_forget)
+
+    run_parser = subparsers.add_parser("run", help="Build context and run a provider.")
+    run_parser.add_argument("request")
+    add_provider_args(run_parser)
+    add_budget_args(run_parser)
+    run_parser.add_argument("--show-packet", action="store_true")
+    run_parser.add_argument("--allow-over-budget", action="store_true", help="Execute even when preflight budget verification fails.")
+    run_parser.add_argument("--expect-json", action="store_true", help="Require the provider response to be valid JSON.")
+    run_parser.add_argument("--remember", action="store_true", help="Write an explicit task-state memory from the run trace.")
+    run_parser.add_argument("--task", default=None, help="Attach the run trace and written memories to a task session.")
+    run_parser.add_argument("--resume", action="store_true", help="Inject the task brief into the context packet. Requires --task.")
+    run_parser.set_defaults(func=cmd_run)
+
+    agent_parser = subparsers.add_parser("agent", help="Run bounded agent loops.")
+    agent_sub = agent_parser.add_subparsers(dest="agent_command", required=True)
+    agent_run = agent_sub.add_parser("run", help="Run a bounded plan/run/verify/state loop.")
+    agent_run.add_argument("request")
+    add_provider_args(agent_run)
+    add_budget_args(agent_run)
+    agent_run.add_argument("--task", default=None, help="Continue an existing task; otherwise create a new one.")
+    agent_run.add_argument("--max-steps", type=int, default=5, help="Maximum loop steps to run.")
+    agent_run.add_argument("--no-remember", action="store_true", help="Do not write explicit task-state memory.")
+    agent_run.add_argument("--allow-over-budget", action="store_true", help="Execute even when preflight budget verification fails.")
+    agent_run.add_argument("--expect-json", action="store_true", help="Require provider responses to be valid JSON.")
+    agent_run.add_argument("--json", action="store_true")
+    agent_run.set_defaults(func=cmd_agent_run)
+    agent_list = agent_sub.add_parser("list", help="List saved agent loop reports.")
+    agent_list.set_defaults(func=cmd_agent_list)
+    agent_show = agent_sub.add_parser("show", help="Show a saved agent loop report.")
+    agent_show.add_argument("run_id")
+    agent_show.set_defaults(func=cmd_agent_show)
+    agent_cost = agent_sub.add_parser("cost", help="Inspect token cost and pressure for a saved agent loop report.")
+    agent_cost.add_argument("run_id")
+    agent_cost.add_argument("--json", action="store_true")
+    agent_cost.set_defaults(func=cmd_agent_cost)
+
+    models_parser = subparsers.add_parser("models", help="List models from a provider.")
+    models_parser.add_argument("--provider", choices=["mock", "openai"], default="openai")
+    models_parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL override.")
+    models_parser.set_defaults(func=cmd_models)
+
+    doctor_parser = subparsers.add_parser("doctor", help="Check local project configuration.")
+    doctor_parser.set_defaults(func=cmd_doctor)
+
+    plan_parser = subparsers.add_parser("plan", help="Create an execution plan without calling a provider.")
+    plan_parser.add_argument("request")
+    add_budget_args(plan_parser)
+    plan_parser.add_argument("--task", default=None, help="Use a task session for planning.")
+    plan_parser.add_argument("--resume", action="store_true", help="Inject the task brief into the planned context. Requires --task.")
+    plan_parser.add_argument("--json", action="store_true", help="Print the full plan JSON.")
+    plan_parser.set_defaults(func=cmd_plan)
+
+    policy_parser = subparsers.add_parser("policy", help="Check tool and file operation policy contracts.")
+    policy_sub = policy_parser.add_subparsers(dest="policy_command", required=True)
+    policy_file = policy_sub.add_parser("file", help="Check a planned file operation.")
+    policy_file.add_argument("operation", choices=sorted(FILE_OPERATIONS))
+    policy_file.add_argument("path")
+    policy_file.add_argument("--allow-destructive", action="store_true")
+    policy_file.add_argument("--json", action="store_true")
+    policy_file.set_defaults(func=cmd_policy_file)
+    policy_command = policy_sub.add_parser("command", help="Check a planned shell command without running it.")
+    policy_command.add_argument("--allow-destructive", action="store_true")
+    policy_command.add_argument("--json", action="store_true")
+    policy_command.add_argument("command", nargs=argparse.REMAINDER)
+    policy_command.set_defaults(func=cmd_policy_command)
+
+    tool_parser = subparsers.add_parser("tool", help="Execute local tools through policy contracts.")
+    tool_sub = tool_parser.add_subparsers(dest="tool_command", required=True)
+    tool_read = tool_sub.add_parser("read", help="Read a workspace file through policy.")
+    tool_read.add_argument("path")
+    tool_read.add_argument("--max-chars", type=int, default=8000)
+    tool_read.add_argument("--json", action="store_true")
+    tool_read.add_argument("--task", default=None, help="Attach the tool trace to a task session.")
+    tool_read.set_defaults(func=cmd_tool_read)
+    tool_write = tool_sub.add_parser("write", help="Write a workspace file through policy.")
+    tool_write.add_argument("path")
+    tool_write.add_argument("--text", required=True)
+    tool_write.add_argument("--json", action="store_true")
+    tool_write.add_argument("--task", default=None, help="Attach the tool trace to a task session.")
+    tool_write.set_defaults(func=cmd_tool_write)
+    tool_patch = tool_sub.add_parser("patch", help="Patch a workspace file with structured replacement modes.")
+    tool_patch.add_argument("path")
+    tool_patch.add_argument("--old")
+    tool_patch.add_argument("--new", required=True)
+    tool_patch.add_argument("--replace-all", action="store_true", help="Replace every match of --old instead of requiring a single match.")
+    tool_patch.add_argument("--occurrence", type=int, default=None, help="Replace only the nth match of --old.")
+    tool_patch.add_argument("--start-anchor", default=None, help="Replace the block that starts after this anchor.")
+    tool_patch.add_argument("--end-anchor", default=None, help="Replace the block that ends before this anchor.")
+    tool_patch.add_argument("--include-anchors", action="store_true", help="Replace the anchors together with the block body.")
+    tool_patch.add_argument("--json", action="store_true")
+    tool_patch.add_argument("--task", default=None, help="Attach the tool trace to a task session.")
+    tool_patch.set_defaults(func=cmd_tool_patch)
+    tool_batch_patch = tool_sub.add_parser("batch-patch", help="Apply multiple structured patches from a JSON spec file.")
+    tool_batch_patch.add_argument("--specs-file", required=True, help="JSON file containing an array of patch specs, or an object with an edits array.")
+    tool_batch_patch.add_argument("--json", action="store_true")
+    tool_batch_patch.add_argument("--task", default=None, help="Attach the batch trace to a task session.")
+    tool_batch_patch.set_defaults(func=cmd_tool_batch_patch)
+    tool_delete = tool_sub.add_parser("delete", help="Delete a workspace file through destructive policy.")
+    tool_delete.add_argument("path")
+    tool_delete.add_argument("--allow-destructive", action="store_true")
+    tool_delete.add_argument("--json", action="store_true")
+    tool_delete.add_argument("--task", default=None, help="Attach the tool trace to a task session.")
+    tool_delete.set_defaults(func=cmd_tool_delete)
+    tool_exec = tool_sub.add_parser("exec", help="Run a safe command through policy.")
+    tool_exec.add_argument("--allow-destructive", action="store_true")
+    tool_exec.add_argument("--timeout", type=int, default=30)
+    tool_exec.add_argument("--json", action="store_true")
+    tool_exec.add_argument("--task", default=None, help="Attach the tool trace to a task session.")
+    tool_exec.add_argument("command", nargs=argparse.REMAINDER)
+    tool_exec.set_defaults(func=cmd_tool_exec)
+    tool_list = tool_sub.add_parser("list", help="List tool execution traces.")
+    tool_list.set_defaults(func=cmd_tool_list)
+    tool_show = tool_sub.add_parser("show", help="Show a tool execution trace.")
+    tool_show.add_argument("trace_id")
+    tool_show.set_defaults(func=cmd_tool_show)
+
+    task_parser = subparsers.add_parser("task", help="Manage resumable task sessions.")
+    task_sub = task_parser.add_subparsers(dest="task_command", required=True)
+    task_start = task_sub.add_parser("start", help="Start a task session.")
+    task_start.add_argument("title")
+    task_start.add_argument("--goal", default=None)
+    task_start.set_defaults(func=cmd_task_start)
+    task_list = task_sub.add_parser("list", help="List task sessions.")
+    task_list.add_argument("--status", choices=sorted(TASK_STATUSES))
+    task_list.set_defaults(func=cmd_task_list)
+    task_status = task_sub.add_parser("status", help="Show a task session.")
+    task_status.add_argument("task_id")
+    task_status.add_argument("--json", action="store_true")
+    task_status.set_defaults(func=cmd_task_status)
+    task_brief = task_sub.add_parser("brief", help="Build a compact resume brief for a task.")
+    task_brief.add_argument("task_id")
+    task_brief.add_argument("--json", action="store_true")
+    task_brief.set_defaults(func=cmd_task_brief)
+    task_step = task_sub.add_parser("step", help="Append a checkpoint note.")
+    task_step.add_argument("task_id")
+    task_step.add_argument("--note", required=True)
+    task_step.set_defaults(func=cmd_task_step)
+    task_attach = task_sub.add_parser("attach", help="Attach a run/tool/memory reference.")
+    task_attach.add_argument("task_id")
+    task_attach.add_argument("kind", choices=["run", "tool", "memory"])
+    task_attach.add_argument("ref_id")
+    task_attach.set_defaults(func=cmd_task_attach)
+    task_block = task_sub.add_parser("block", help="Mark a task as blocked.")
+    task_block.add_argument("task_id")
+    task_block.add_argument("--note", required=True)
+    task_block.set_defaults(func=cmd_task_block)
+    task_complete = task_sub.add_parser("complete", help="Mark a task as completed.")
+    task_complete.add_argument("task_id")
+    task_complete.add_argument("--note", default=None)
+    task_complete.set_defaults(func=cmd_task_complete)
+
+    context_parser = subparsers.add_parser("context", help="Inspect context assembly without provider execution.")
+    context_parser.add_argument("request")
+    add_budget_args(context_parser)
+    context_parser.add_argument("--task", default=None, help="Use a task session for context assembly.")
+    context_parser.add_argument("--resume", action="store_true", help="Inject the task brief into the context packet. Requires --task.")
+    context_parser.set_defaults(func=cmd_context)
+
+    compare_parser = subparsers.add_parser("compare", help="Compare minimal context against a full-load baseline.")
+    compare_parser.add_argument("request")
+    add_budget_args(compare_parser)
+    compare_parser.add_argument("--json", action="store_true", help="Print the full comparison JSON.")
+    compare_parser.set_defaults(func=cmd_compare)
+
+    eval_parser = subparsers.add_parser("eval", help="Run comparison fixtures.")
+    eval_sub = eval_parser.add_subparsers(dest="eval_command", required=True)
+    eval_run = eval_sub.add_parser("run", help="Run eval fixture JSON.")
+    eval_run.add_argument("fixture")
+    add_budget_args(eval_run)
+    add_eval_provider_args(eval_run)
+    eval_run.add_argument("--json", action="store_true", help="Print the full eval report JSON.")
+    eval_run.add_argument("--no-save", action="store_true", help="Do not persist the eval report.")
+    eval_run.set_defaults(func=cmd_eval_run)
+    eval_list = eval_sub.add_parser("list", help="List saved eval reports.")
+    eval_list.set_defaults(func=cmd_eval_list)
+    eval_show = eval_sub.add_parser("show", help="Show a saved eval report.")
+    eval_show.add_argument("report_id")
+    eval_show.set_defaults(func=cmd_eval_show)
+    eval_cost = eval_sub.add_parser("cost", help="Inspect token cost hotspots for a saved eval report.")
+    eval_cost.add_argument("report_id")
+    eval_cost.add_argument("--json", action="store_true", help="Print the full eval cost JSON.")
+    eval_cost.set_defaults(func=cmd_eval_cost)
+    eval_diff = eval_sub.add_parser("diff", help="Compare two saved eval reports.")
+    eval_diff.add_argument("before_id")
+    eval_diff.add_argument("after_id")
+    eval_diff.add_argument("--json", action="store_true", help="Print the full diff JSON.")
+    eval_diff.add_argument("--fail-on-regression", action="store_true", help="Exit non-zero when regressions are detected.")
+    eval_diff.set_defaults(func=cmd_eval_diff)
+
+    bench_parser = subparsers.add_parser("bench", help="Run benchmark fixture directories.")
+    bench_sub = bench_parser.add_subparsers(dest="bench_command", required=True)
+    bench_run = bench_sub.add_parser("run", help="Run all eval fixtures in a directory.")
+    bench_run.add_argument("directory")
+    add_budget_args(bench_run)
+    add_eval_provider_args(bench_run)
+    bench_run.add_argument("--json", action="store_true", help="Print the full benchmark report JSON.")
+    bench_run.add_argument("--no-save", action="store_true", help="Do not persist the benchmark report.")
+    bench_run.set_defaults(func=cmd_bench_run)
+    bench_gate = bench_sub.add_parser("gate", help="Run a benchmark and fail if it regresses against a saved baseline.")
+    bench_gate.add_argument("directory")
+    add_budget_args(bench_gate)
+    add_eval_provider_args(bench_gate)
+    bench_gate.add_argument("--baseline-report", default=None, help="Saved benchmark report id to compare against.")
+    bench_gate.add_argument("--require-baseline", action="store_true", help="Exit non-zero when no matching baseline report exists.")
+    bench_gate.add_argument("--json", action="store_true", help="Print the full benchmark gate JSON.")
+    bench_gate.set_defaults(func=cmd_bench_gate)
+    bench_list = bench_sub.add_parser("list", help="List saved benchmark reports.")
+    bench_list.set_defaults(func=cmd_bench_list)
+    bench_show = bench_sub.add_parser("show", help="Show a saved benchmark report.")
+    bench_show.add_argument("report_id")
+    bench_show.set_defaults(func=cmd_bench_show)
+    bench_cost = bench_sub.add_parser("cost", help="Inspect token cost hotspots for a saved benchmark report.")
+    bench_cost.add_argument("report_id")
+    bench_cost.add_argument("--json", action="store_true", help="Print the full benchmark cost JSON.")
+    bench_cost.set_defaults(func=cmd_bench_cost)
+    bench_diff = bench_sub.add_parser("diff", help="Compare two saved benchmark reports.")
+    bench_diff.add_argument("before_id")
+    bench_diff.add_argument("after_id")
+    bench_diff.add_argument("--json", action="store_true", help="Print the full benchmark diff JSON.")
+    bench_diff.add_argument("--fail-on-regression", action="store_true", help="Exit non-zero when regressions are detected.")
+    bench_diff.set_defaults(func=cmd_bench_diff)
+    bench_export = bench_sub.add_parser("export", help="Export a benchmark report as Markdown.")
+    bench_export.add_argument("report_id")
+    bench_export.add_argument("--output", default=None, help="Output markdown path.")
+    bench_export.set_defaults(func=cmd_bench_export)
+
+    trace_parser = subparsers.add_parser("trace", help="Inspect run traces.")
+    trace_sub = trace_parser.add_subparsers(dest="trace_command", required=True)
+    trace_list = trace_sub.add_parser("list", help="List traces.")
+    trace_list.set_defaults(func=cmd_trace_list)
+    trace_show = trace_sub.add_parser("show", help="Show a trace.")
+    trace_show.add_argument("trace_id")
+    trace_show.set_defaults(func=cmd_trace_show)
+    trace_verify = trace_sub.add_parser("verify", help="Re-run verifier checks on a saved trace.")
+    trace_verify.add_argument("trace_id")
+    trace_verify.add_argument("--expect-json", action="store_true")
+    trace_verify.set_defaults(func=cmd_trace_verify)
+    trace_remember = trace_sub.add_parser("remember", help="Write memory records from a saved trace.")
+    trace_remember.add_argument("trace_id")
+    trace_remember.add_argument("--dry-run", action="store_true", help="Show proposed memory records without writing them.")
+    trace_remember.set_defaults(func=cmd_trace_remember)
+
+    return parser
+
+
+def configure_console_output() -> None:
+    for stream in [sys.stdout, sys.stderr]:
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+def add_budget_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--budget", type=int, default=None, help="Override the selected profile's token budget.")
+    parser.add_argument("--profile", choices=profile_names(), default=DEFAULT_PROFILE, help="Budget profile.")
+
+
+def add_provider_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--provider", choices=["mock", "openai"], default="mock")
+    parser.add_argument("--model", default=None, help="Provider model id. Defaults to gpt-5.5 for openai.")
+    parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL override.")
+
+
+def add_eval_provider_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--execute", action="store_true", help="Execute each eval task with a provider.")
+    parser.add_argument("--provider", choices=["mock", "openai"], default="mock", help="Provider used with --execute.")
+    parser.add_argument("--model", default=None, help="Provider model id used with --execute.")
+    parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL override used with --execute.")
+
+
+def workspace_from_args(args: argparse.Namespace, *, initialized: bool = True) -> Workspace:
+    workspace = Workspace(Path(args.workspace))
+    if initialized:
+        workspace.require_initialized()
+    return workspace
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    workspace = Workspace(Path(args.path))
+    workspace.init()
+    print(f"initialized: {workspace.state}")
+
+
+def cmd_skill_register(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    skill = SkillRegistry(workspace).register(Path(args.json_file))
+    print(f"registered skill: {skill.id} ({skill.name})")
+
+
+def cmd_skill_list(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    skills = SkillRegistry(workspace).all()
+    if not skills:
+        print("no skills registered")
+        return
+    for skill in skills:
+        print(f"{skill.id}\t{skill.name}\t{skill.summary}")
+
+
+def cmd_skill_show(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    skill = SkillRegistry(workspace).get(args.skill_id)
+    print_json(skill.render_level(args.level))
+
+
+def cmd_skill_compile(args: argparse.Namespace) -> None:
+    source = Path(args.markdown_file)
+    metadata = None
+    if args.provider == "local":
+        skill = compile_markdown_skill(source, skill_id=args.id)
+    else:
+        skill, metadata = compile_markdown_skill_with_provider(
+            source,
+            provider_name=args.provider,
+            model=args.model,
+            base_url=args.base_url,
+            skill_id=args.id,
+        )
+    output = Path(args.output) if args.output else source.with_suffix(".json")
+    Workspace.write_json(output, skill.to_dict())
+    print(f"compiled skill: {skill.id} -> {output}")
+    if metadata:
+        print(f"provider: {metadata['provider']} model={metadata['model']} tokens={metadata['total_tokens']}")
+    if args.register:
+        workspace = workspace_from_args(args)
+        registered = SkillRegistry(workspace).register(output)
+        print(f"registered skill: {registered.id} ({registered.name})")
+
+
+def cmd_skill_validate(args: argparse.Namespace) -> None:
+    print_json(validate_skill_file(Path(args.json_file)))
+
+
+def cmd_skill_inspect(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    skill = SkillRegistry(workspace).get(args.skill_id)
+    print_json(inspect_skill(skill, args.budget))
+
+
+def cmd_memory_add(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    tags = [tag.strip() for tag in args.tags.split(",") if tag.strip()]
+    record = MemoryStore(workspace).add(kind=args.kind, text=args.text, tags=tags)
+    print(f"memory: {record.id} ({record.kind})")
+
+
+def cmd_memory_show(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    record = MemoryStore(workspace).get(args.record_id, include_archived=args.include_archived)
+    print_json(record.to_dict())
+
+
+def cmd_memory_list(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    records = MemoryStore(workspace).all(kind=args.kind, include_archived=args.all)
+    if not records:
+        print("no memory records")
+        return
+    for record in records:
+        status = "archived" if record.archived_at else "active"
+        print(f"{record.id}\t{record.kind}\t{status}\t{record.text}")
+
+
+def cmd_memory_search(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    results = MemoryStore(workspace).search(args.query, kind=args.kind, limit=args.limit)
+    if not results:
+        print("no matching memory")
+        return
+    for item in results:
+        print(f"{item.record.id}\t{item.record.kind}\tscore={item.score}\t{item.record.text}")
+
+
+def cmd_memory_update(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    tags = None if args.tags is None else [tag.strip() for tag in args.tags.split(",") if tag.strip()]
+    record = MemoryStore(workspace).update(args.record_id, kind=args.kind, text=args.text, tags=tags)
+    print(f"updated memory: {record.id} ({record.kind})")
+
+
+def cmd_memory_forget(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    removed = MemoryStore(workspace).forget(args.record_id)
+    if not removed:
+        raise KeyError(f"Memory record not found: {args.record_id}")
+    print(f"forgot memory: {args.record_id}")
+
+
+def cmd_context(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    ensure_resume_args(args)
+    packet = ContextBuilder(workspace).build(
+        args.request,
+        args.budget,
+        args.profile,
+        task_id=args.task,
+        resume=args.resume,
+    )
+    print_json(packet)
+
+
+def cmd_compare(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    comparison = ContextBuilder(workspace).compare(args.request, args.budget, args.profile)
+    if args.json:
+        print_json(comparison)
+        return
+
+    print(f"request: {comparison['request']}")
+    print(f"profile: {comparison['profile']}")
+    print(f"budget: {comparison['budget']}")
+    print(f"kernel_tokens: {comparison['kernel']['estimated_tokens']}")
+    print(f"baseline_tokens: {comparison['baseline']['estimated_tokens']}")
+    print(f"savings: {comparison['savings']['estimated_tokens']} tokens ({comparison['savings']['percent']}%)")
+    print(f"kernel_selected: memory={comparison['kernel']['selected_memory']} skills={comparison['kernel']['selected_skills']}")
+    print(f"baseline_loaded: memory={comparison['baseline']['loaded_memory']} skills={comparison['baseline']['loaded_skills']} level={comparison['baseline']['skill_level']}")
+
+
+def cmd_run(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    ensure_resume_args(args)
+    ensure_task_attachable(workspace, args.task)
+    trace = AgentRunner(workspace).run(
+        args.request,
+        provider_name=args.provider,
+        budget=args.budget,
+        profile=args.profile,
+        model=args.model,
+        base_url=args.base_url,
+        allow_over_budget=args.allow_over_budget,
+        expect_json=args.expect_json,
+        remember=args.remember,
+        task_id=args.task,
+        resume=args.resume,
+    )
+    print(trace["response"]["text"])
+    print("")
+    print(f"trace: {trace['id']}")
+    print(f"tokens: input={trace['response']['input_tokens']} output={trace['response']['output_tokens']} total={trace['response']['total_tokens']}")
+    print(f"verifier: {'ok' if trace['verifier']['ok'] else 'failed'}")
+    if trace.get("state", {}).get("enabled"):
+        print(f"state: wrote {trace['state']['written_count']} memory record(s)")
+    if args.task:
+        attach_run_to_task(workspace, args.task, trace)
+        print(f"task: attached run {trace['id']} to {args.task}")
+    if args.show_packet:
+        print_json(trace["context_packet"])
+
+
+def cmd_agent_run(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    ensure_task_attachable(workspace, args.task)
+    report = AgentLoop(workspace).run(
+        args.request,
+        provider_name=args.provider,
+        budget=args.budget,
+        profile=args.profile,
+        model=args.model,
+        base_url=args.base_url,
+        task_id=args.task,
+        max_steps=args.max_steps,
+        remember=not args.no_remember,
+        allow_over_budget=args.allow_over_budget,
+        expect_json=args.expect_json,
+    )
+    if args.json:
+        print_json(report)
+        return
+
+    print(f"agent_run: {report['id']}")
+    print(f"task: {report['task_id']}")
+    print(f"status: {report['status']}")
+    print(f"steps: {len(report['steps'])}/{report['max_steps']}")
+    print(f"tokens: total={report['totals']['total_tokens']} input={report['totals']['input_tokens']} output={report['totals']['output_tokens']}")
+    if report.get("state", {}).get("enabled"):
+        print(f"state: wrote {report['state']['written_count']} memory record(s)")
+    for step in report["steps"]:
+        trace = step["trace_id"] or "none"
+        tokens = step.get("tokens", {}).get("total_tokens", 0)
+        action = (step.get("action") or {}).get("action", "none")
+        tool = step.get("tool", {})
+        tool_part = f" tool={tool.get('name')}:{tool.get('id')}" if tool else ""
+        print(f"- step {step['index']}: {step['status']} action={action} trace={trace} tokens={tokens}{tool_part}")
+    if report.get("final_response"):
+        print("")
+        print(report["final_response"])
+
+
+def cmd_agent_list(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    reports = list_agent_reports(workspace)
+    if not reports:
+        print("no agent runs")
+        return
+    for report in reports:
+        print(
+            f"{report['id']}\t"
+            f"{report.get('created_at', '')}\t"
+            f"{report.get('status', '')}\t"
+            f"steps={len(report.get('steps', []))}\t"
+            f"task={report.get('task_id', '')}\t"
+            f"{report.get('request', '')}"
+        )
+
+
+def cmd_agent_show(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    print_json(load_agent_report(workspace, args.run_id))
+
+
+def cmd_agent_cost(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    cost = build_agent_cost_report(load_agent_report(workspace, args.run_id))
+    if args.json:
+        print_json(cost)
+        return
+    print(render_agent_cost_report(cost))
+
+
+def cmd_models(args: argparse.Namespace) -> None:
+    for model in list_provider_models(args.provider, base_url=args.base_url):
+        print(model)
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    workspace = Workspace(Path(args.workspace))
+    config = workspace.load_config()
+    command_policy = summarize_command_policy(workspace)
+    base_url = env_value("CONTEXT_KERNEL_OPENAI_BASE_URL")
+    api_key = env_value("CONTEXT_KERNEL_OPENAI_API_KEY")
+    model = env_value("CONTEXT_KERNEL_OPENAI_MODEL") or "gpt-5.5"
+    print(f"project_root: {Path.cwd().resolve()}")
+    print(f"workspace: {workspace.root}")
+    print(f"workspace_initialized: {workspace.state.exists()}")
+    print(f"workspace_config: {workspace.config_file}")
+    print(f"workspace_config_version: {config.get('version')}")
+    print(f"project_env_api_key_set: {bool(api_key)}")
+    print(f"project_env_base_url: {normalize_openai_base_url(base_url or '') if base_url else ''}")
+    print(f"project_env_model: {model}")
+    print(f"command_allowed_roots: {', '.join(command_policy['allowed_roots'])}")
+    print(f"command_blocked_terms: {', '.join(command_policy['blocked_terms'])}")
+
+
+def cmd_plan(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    ensure_resume_args(args)
+    plan = ExecutionPlanner(workspace).plan(
+        args.request,
+        args.budget,
+        args.profile,
+        task_id=args.task,
+        resume=args.resume,
+    )
+    if args.json:
+        print_json(plan)
+        return
+
+    print(f"request: {plan['request']}")
+    print(f"profile: {plan['profile']}")
+    print(f"route: {plan['route']['mode']} ({plan['route']['complexity']})")
+    if plan["task"]["resume"]:
+        print(f"task: {plan['task']['id']} resume tokens={plan['task']['estimated_tokens']}")
+    print(f"tokens: used={plan['budget']['estimated_used']} total={plan['budget']['total']} remaining={plan['budget']['estimated_remaining']}")
+    print(f"savings: {plan['savings']['estimated_tokens']} tokens ({plan['savings']['percent']}%)")
+    print(f"selected: memory={len(plan['selection']['memory'])} skills={len(plan['selection']['skills'])}")
+    print(f"policy: {'review required' if plan['policy']['requires_policy_check'] else 'clear'}")
+    print(f"command_roots: {', '.join(plan['policy']['command_policy']['allowed_roots'])}")
+    if plan["warnings"]:
+        print("warnings:")
+        for warning in plan["warnings"]:
+            print(f"- {warning}")
+
+
+def cmd_policy_file(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    result = check_file_policy(
+        workspace,
+        args.operation,
+        args.path,
+        allow_destructive=args.allow_destructive,
+    )
+    print_policy_result(result, args.json)
+
+
+def cmd_policy_command(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args, initialized=False)
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    result = check_command_policy(
+        " ".join(command),
+        workspace=workspace if workspace.state.exists() else None,
+        allow_destructive=args.allow_destructive,
+    )
+    print_policy_result(result, args.json)
+
+
+def cmd_tool_read(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    ensure_task_attachable(workspace, args.task)
+    result = ToolExecutor(workspace).read_file(args.path, max_chars=args.max_chars)
+    attach_tool_to_task_if_requested(workspace, args.task, result)
+    if args.json:
+        print_json(result)
+        return
+    print_tool_result(result)
+    if result["ok"]:
+        print(result["output"]["content"])
+
+
+def cmd_tool_write(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    ensure_task_attachable(workspace, args.task)
+    result = ToolExecutor(workspace).write_file(args.path, args.text)
+    attach_tool_to_task_if_requested(workspace, args.task, result)
+    if args.json:
+        print_json(result)
+        return
+    print_tool_result(result)
+
+
+def cmd_tool_patch(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    ensure_task_attachable(workspace, args.task)
+    if (args.start_anchor or args.end_anchor) and args.old:
+        raise ValueError("tool patch cannot combine --old with --start-anchor/--end-anchor")
+    if not (args.start_anchor or args.end_anchor) and not args.old:
+        raise ValueError("tool patch requires --old, or both --start-anchor and --end-anchor")
+    result = ToolExecutor(workspace).patch_file(
+        args.path,
+        args.old or "",
+        args.new,
+        replace_all=args.replace_all,
+        occurrence=args.occurrence,
+        start_anchor=args.start_anchor,
+        end_anchor=args.end_anchor,
+        include_anchors=args.include_anchors,
+    )
+    attach_tool_to_task_if_requested(workspace, args.task, result)
+    if args.json:
+        print_json(result)
+        return
+    print_tool_result(result)
+
+
+def cmd_tool_batch_patch(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    ensure_task_attachable(workspace, args.task)
+    edits = load_batch_patch_specs(Path(args.specs_file))
+    result = ToolExecutor(workspace).batch_patch(edits)
+    attach_tool_to_task_if_requested(workspace, args.task, result)
+    if args.json:
+        print_json(result)
+        return
+    print_tool_result(result)
+    output = result.get("output", {})
+    if "applied_count" in output:
+        print(f"applied_count: {output['applied_count']}")
+    if output.get("rolled_back"):
+        print("rolled_back: true")
+
+
+def load_batch_patch_specs(path: Path) -> list[dict[str, object]]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    edits = payload.get("edits") if isinstance(payload, dict) else payload
+    if not isinstance(edits, list):
+        raise ValueError("batch-patch specs file must contain a JSON array or an object with an `edits` array.")
+    if not all(isinstance(edit, dict) for edit in edits):
+        raise ValueError("batch-patch edits must be JSON objects.")
+    return edits
+
+
+def cmd_tool_delete(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    ensure_task_attachable(workspace, args.task)
+    result = ToolExecutor(workspace).delete_file(args.path, allow_destructive=args.allow_destructive)
+    attach_tool_to_task_if_requested(workspace, args.task, result)
+    if args.json:
+        print_json(result)
+        return
+    print_tool_result(result)
+
+
+def cmd_tool_exec(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    ensure_task_attachable(workspace, args.task)
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    result = ToolExecutor(workspace).run_command(
+        " ".join(command),
+        allow_destructive=args.allow_destructive,
+        timeout_seconds=args.timeout,
+    )
+    attach_tool_to_task_if_requested(workspace, args.task, result)
+    if args.json:
+        print_json(result)
+        return
+    print_tool_result(result)
+    output = result.get("output", {})
+    if "exit_code" in output:
+        print(f"exit_code: {output['exit_code']}")
+    if output.get("stdout"):
+        print("stdout:")
+        print(output["stdout"].rstrip())
+    if output.get("stderr"):
+        print("stderr:")
+        print(output["stderr"].rstrip())
+
+
+def cmd_tool_list(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    traces = ToolExecutor(workspace).list_traces()
+    if not traces:
+        print("no tool traces")
+        return
+    for trace in traces:
+        status = "blocked" if trace["blocked"] else "ok" if trace["ok"] else "failed"
+        print(f"{trace['id']}\t{trace['created_at']}\t{trace['tool']}\t{status}\t{trace['subject']}")
+
+
+def cmd_tool_show(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    print_json(ToolExecutor(workspace).get_trace(args.trace_id))
+
+
+def cmd_task_start(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    task = TaskStore(workspace).start(args.title, args.goal)
+    print(f"task: {task['id']} active {task['title']}")
+
+
+def cmd_task_list(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    tasks = TaskStore(workspace).list(status=args.status)
+    if not tasks:
+        print("no tasks")
+        return
+    for task in tasks:
+        print(f"{task['id']}\t{task['status']}\tsteps={len(task['steps'])}\t{task['title']}")
+
+
+def cmd_task_status(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    task = TaskStore(workspace).get(args.task_id)
+    if args.json:
+        print_json(task)
+        return
+    print(f"task: {task['id']}")
+    print(f"title: {task['title']}")
+    print(f"status: {task['status']}")
+    print(f"steps: {len(task['steps'])}")
+    print(
+        "refs: "
+        f"runs={len(task['refs']['run_traces'])} "
+        f"tools={len(task['refs']['tool_traces'])} "
+        f"memories={len(task['refs']['memories'])}"
+    )
+    if task["steps"]:
+        latest = task["steps"][-1]
+        print(f"latest: [{latest['kind']}] {latest['note']}")
+
+
+def cmd_task_brief(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    brief = TaskStore(workspace).brief(args.task_id)
+    if args.json:
+        print_json(brief)
+        return
+    task = brief["task"]
+    print(f"task: {task['id']} {task['status']}")
+    print(f"title: {task['title']}")
+    print(f"goal: {task['goal']}")
+    print(f"estimated_tokens: {brief['estimated_tokens']}")
+    print(f"recent_steps: {len(brief['recent_steps'])}")
+    for step in brief["recent_steps"][-3:]:
+        print(f"- [{step['kind']}] {step['note']}")
+    print(
+        "linked: "
+        f"memory={len(brief['linked_memory'])} "
+        f"runs={len(brief['linked_run_traces'])} "
+        f"tools={len(brief['linked_tool_traces'])}"
+    )
+
+
+def attach_run_to_task(workspace: Workspace, task_id: str, trace: dict[str, Any]) -> None:
+    store = TaskStore(workspace)
+    store.attach(task_id, "run", trace["id"])
+    for record in trace.get("state", {}).get("records", []):
+        store.attach(task_id, "memory", record["id"])
+
+
+def ensure_task_attachable(workspace: Workspace, task_id: str | None) -> None:
+    if not task_id:
+        return
+    task = TaskStore(workspace).get(task_id)
+    if task.get("status") == "completed":
+        raise ValueError(f"Task is completed and cannot receive new traces: {task_id}")
+
+
+def ensure_resume_args(args: argparse.Namespace) -> None:
+    if getattr(args, "resume", False) and not getattr(args, "task", None):
+        raise ValueError("--resume requires --task <task-id>")
+
+
+def attach_tool_to_task_if_requested(workspace: Workspace, task_id: str | None, result: dict[str, Any]) -> None:
+    if not task_id:
+        return
+    TaskStore(workspace).attach(task_id, "tool", result["id"])
+
+
+def cmd_task_step(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    task = TaskStore(workspace).step(args.task_id, args.note)
+    print(f"task: {task['id']} step added steps={len(task['steps'])}")
+
+
+def cmd_task_attach(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    task = TaskStore(workspace).attach(args.task_id, args.kind, args.ref_id)
+    print(f"task: {task['id']} attached {args.kind}:{args.ref_id}")
+
+
+def cmd_task_block(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    task = TaskStore(workspace).set_status(args.task_id, "blocked", note=args.note)
+    print(f"task: {task['id']} blocked")
+
+
+def cmd_task_complete(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    task = TaskStore(workspace).set_status(args.task_id, "completed", note=args.note)
+    print(f"task: {task['id']} completed")
+
+
+def cmd_eval_run(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    report = EvalRunner(workspace).run_fixture(
+        Path(args.fixture),
+        default_budget=args.budget,
+        default_profile=args.profile,
+        save=not args.no_save,
+        execute_provider=args.provider if args.execute else None,
+        execute_model=args.model,
+        execute_base_url=args.base_url,
+    )
+    if args.json:
+        print_json(report)
+        return
+
+    summary = report["summary"]
+    print(f"report: {report['id']}")
+    print(f"fixture: {report['fixture']}")
+    print(f"tasks: {summary['task_count']}")
+    print(f"profile: {args.profile}")
+    print(f"avg_savings: {summary['average_savings_percent']}%")
+    print(f"total_kernel_tokens: {summary['total_kernel_tokens']}")
+    print(f"total_baseline_tokens: {summary['total_baseline_tokens']}")
+    if summary["executed_tasks"]:
+        print(f"executed_tasks: {summary['executed_tasks']}")
+        print(f"execution_tokens: {summary['total_execution_tokens']}")
+    if summary.get("blocked_tasks"):
+        print(f"blocked_tasks: {summary['blocked_tasks']}")
+    print(f"checks: {summary['passed_checks']}/{summary['total_checks']}")
+    for task in report["tasks"]:
+        execution = task.get("execution", {})
+        execution_text = f"\texec_tokens={execution.get('total_tokens')}" if execution else ""
+        print(
+            f"{task['id']}\t"
+            f"savings={task['savings']['percent']}%\t"
+            f"kernel={task['kernel']['estimated_tokens']}\t"
+            f"baseline={task['baseline']['estimated_tokens']}\t"
+            f"checks={task['checks']['passed']}/{task['checks']['total']}"
+            f"{execution_text}"
+        )
+
+
+def cmd_eval_list(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    reports = EvalRunner(workspace).list_reports()
+    if not reports:
+        print("no eval reports")
+        return
+    for report in reports:
+        print(
+            f"{report['id']}\t"
+            f"{report['created_at']}\t"
+            f"tasks={report['task_count']}\t"
+            f"avg_savings={report['average_savings_percent']}%\t"
+            f"checks={report['checks']}\t"
+            f"{report['name']}"
+        )
+
+
+def cmd_eval_show(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    print_json(EvalRunner(workspace).get_report(args.report_id))
+
+
+def cmd_eval_cost(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    cost = build_eval_cost_report(EvalRunner(workspace).get_report(args.report_id))
+    if args.json:
+        print_json(cost)
+        return
+    print(render_cost_report(cost))
+
+
+def cmd_eval_diff(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    diff = EvalRunner(workspace).diff_reports(args.before_id, args.after_id)
+    if args.json:
+        print_json(diff)
+        enforce_regression_gate(diff, enabled=args.fail_on_regression, label="eval diff")
+        return
+
+    summary = diff["summary_delta"]
+    print(f"before: {diff['before']['id']}")
+    print(f"after: {diff['after']['id']}")
+    print(f"kernel_tokens_delta: {summary['kernel_tokens']}")
+    print(f"baseline_tokens_delta: {summary['baseline_tokens']}")
+    print(f"savings_tokens_delta: {summary['savings_tokens']}")
+    print(f"savings_percent_delta: {summary['savings_percent']}")
+    print(f"checks_delta: {summary['passed_checks']}/{summary['total_checks']}")
+    print(f"regressions: {len(diff['regressions'])}")
+    cost_diff = diff.get("cost_diff", {})
+    if cost_diff:
+        hotspot = cost_diff.get("hotspot_change", {})
+        weakest = cost_diff.get("weakest_savings_change", {})
+        print(f"cost_regressions: {len(diff.get('cost_regressions', []))}")
+        print(
+            f"hotspot_delta: {hotspot.get('before_scope', '')} -> {hotspot.get('after_scope', '')} "
+            f"({hotspot.get('metric_delta', 0)})"
+        )
+        print(
+            f"weakest_savings_delta: {weakest.get('before_scope', '')} -> {weakest.get('after_scope', '')} "
+            f"({weakest.get('metric_delta', 0)})"
+        )
+    for task in diff["tasks"]:
+        if task["status"] != "changed":
+            print(f"{task['id']}\t{task['status']}")
+            continue
+        print(
+            f"{task['id']}\t"
+            f"kernel_delta={task['kernel_token_delta']}\t"
+            f"savings_delta={task['savings_percent_delta']}%\t"
+            f"checks_delta={task['passed_check_delta']}/{task['total_check_delta']}"
+        )
+    enforce_regression_gate(diff, enabled=args.fail_on_regression, label="eval diff")
+
+
+def cmd_bench_run(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    report = BenchmarkRunner(workspace).run_directory(
+        Path(args.directory),
+        default_budget=args.budget,
+        default_profile=args.profile,
+        save=not args.no_save,
+        execute_provider=args.provider if args.execute else None,
+        execute_model=args.model,
+        execute_base_url=args.base_url,
+    )
+    if args.json:
+        print_json(report)
+        return
+
+    print_benchmark_report(report)
+
+
+def cmd_bench_gate(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    runner = BenchmarkRunner(workspace)
+    report = runner.run_directory(
+        Path(args.directory),
+        default_budget=args.budget,
+        default_profile=args.profile,
+        save=True,
+        execute_provider=args.provider if args.execute else None,
+        execute_model=args.model,
+        execute_base_url=args.base_url,
+    )
+    baseline_result = runner.find_baseline(
+        Path(args.directory),
+        baseline_id=args.baseline_report,
+        exclude_id=report["id"],
+    )
+
+    if baseline_result is None:
+        report_ok = benchmark_report_ok(report)
+        result = {
+            "status": "missing_baseline" if report_ok else "failed",
+            "report": report,
+            "report_ok": report_ok,
+            "baseline": None,
+            "baseline_match": None,
+            "diff": None,
+        }
+        if args.json:
+            print_json(result)
+        else:
+            print(f"report: {report['id']}")
+            print(f"benchmark: {report['benchmark']}")
+            print("baseline: none")
+            print(f"status: {result['status']}")
+            print_benchmark_check_summary(report)
+            print("note: no saved benchmark report matched this directory")
+        enforce_benchmark_report_gate(report, label="benchmark gate")
+        if args.require_baseline:
+            raise RuntimeError(f"benchmark gate could not find baseline for {Path(args.directory)}")
+        return
+
+    baseline = baseline_result["report"]
+    diff = runner.diff_reports(baseline["id"], report["id"])
+    report_ok = benchmark_report_ok(report)
+    result = {
+        "status": "passed" if diff.get("ok", False) and report_ok else "failed",
+        "report": report,
+        "report_ok": report_ok,
+        "baseline": benchmark_ref(baseline),
+        "baseline_match": baseline_result["match"],
+        "diff": diff,
+    }
+    if args.json:
+        print_json(result)
+        enforce_benchmark_report_gate(report, label="benchmark gate")
+        enforce_regression_gate(diff, enabled=True, label="benchmark gate")
+        return
+
+    print(f"report: {report['id']}")
+    print(f"benchmark: {report['benchmark']}")
+    print(f"baseline: {baseline['id']}")
+    print(f"baseline_match: {baseline_result['match']}")
+    print(f"status: {result['status']}")
+    print_benchmark_check_summary(report)
+    print_benchmark_diff(diff)
+    enforce_benchmark_report_gate(report, label="benchmark gate")
+    enforce_regression_gate(diff, enabled=True, label="benchmark gate")
+
+
+def cmd_bench_list(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    reports = BenchmarkRunner(workspace).list_reports()
+    if not reports:
+        print("no benchmark reports")
+        return
+    for report in reports:
+        print(
+            f"{report['id']}\t"
+            f"{report['created_at']}\t"
+            f"fixtures={report['fixture_count']}\t"
+            f"tasks={report['task_count']}\t"
+            f"avg_savings={report['average_savings_percent']}%\t"
+            f"checks={report['checks']}\t"
+            f"{report['name']}"
+        )
+
+
+def cmd_bench_show(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    print_json(BenchmarkRunner(workspace).get_report(args.report_id))
+
+
+def cmd_bench_cost(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    cost = build_benchmark_cost_report(BenchmarkRunner(workspace).get_report(args.report_id))
+    if args.json:
+        print_json(cost)
+        return
+    print(render_cost_report(cost))
+
+
+def cmd_bench_diff(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    diff = BenchmarkRunner(workspace).diff_reports(args.before_id, args.after_id)
+    if args.json:
+        print_json(diff)
+        enforce_regression_gate(diff, enabled=args.fail_on_regression, label="benchmark diff")
+        return
+
+    print_benchmark_diff(diff)
+    enforce_regression_gate(diff, enabled=args.fail_on_regression, label="benchmark diff")
+
+
+def cmd_bench_export(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    output = Path(args.output) if args.output else None
+    path = BenchmarkRunner(workspace).export_markdown(args.report_id, output=output)
+    print(f"exported: {path}")
+
+
+def cmd_trace_list(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    paths = sorted(workspace.traces_dir.glob("*.json"))
+    if not paths:
+        print("no traces")
+        return
+    for path in paths:
+        trace = Workspace.read_json(path)
+        response = trace.get("response", {})
+        print(f"{trace['id']}\t{trace['created_at']}\t{trace['provider']}\ttokens={response.get('total_tokens')}\t{trace['request']}")
+
+
+def cmd_trace_show(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    path = workspace.traces_dir / f"{args.trace_id}.json"
+    if not path.exists():
+        raise KeyError(f"Unknown trace: {args.trace_id}")
+    print_json(Workspace.read_json(path))
+
+
+def cmd_trace_verify(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    path = workspace.traces_dir / f"{args.trace_id}.json"
+    if not path.exists():
+        raise KeyError(f"Unknown trace: {args.trace_id}")
+    result = verify_trace(Workspace.read_json(path), expect_json=args.expect_json)
+    print_json(result)
+
+
+def cmd_trace_remember(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    path = workspace.traces_dir / f"{args.trace_id}.json"
+    if not path.exists():
+        raise KeyError(f"Unknown trace: {args.trace_id}")
+    trace = Workspace.read_json(path)
+    writer = StateWriter(workspace)
+    if args.dry_run:
+        print_json({"enabled": False, "candidates": writer.propose_from_trace(trace)})
+        return
+    result = writer.write_from_trace(trace)
+    trace["state"] = result
+    Workspace.write_json(path, trace)
+    print(f"state: wrote {result['written_count']} memory record(s)")
+
+
+def print_policy_result(result: dict[str, Any], as_json: bool) -> None:
+    if as_json:
+        print_json(result)
+        return
+    print(f"{result['status']}: {result['kind']} {result['operation']} {result['subject']}")
+    for reason in result["reasons"]:
+        print(f"- {reason}")
+
+
+def print_tool_result(result: dict[str, Any]) -> None:
+    status = "blocked" if result["blocked"] else "ok" if result["ok"] else "failed"
+    print(f"{status}: {result['tool']} trace={result['id']}")
+    if result.get("error"):
+        print(f"error: {result['error']}")
+    print(f"policy: {result['policy']['status']}")
+
+
+def list_agent_reports(workspace: Workspace) -> list[dict[str, Any]]:
+    workspace.agent_runs_dir.mkdir(parents=True, exist_ok=True)
+    reports = [Workspace.read_json(path) for path in sorted(workspace.agent_runs_dir.glob("*.json"))]
+    return sorted(reports, key=lambda report: report.get("created_at", ""), reverse=True)
+
+
+def print_benchmark_report(report: dict[str, Any]) -> None:
+    summary = report["summary"]
+    print(f"report: {report['id']}")
+    print(f"benchmark: {report['benchmark']}")
+    print(f"fixtures: {summary['fixture_count']}")
+    print(f"tasks: {summary['task_count']}")
+    print(f"avg_savings: {summary['average_savings_percent']}%")
+    print(f"total_kernel_tokens: {summary['total_kernel_tokens']}")
+    print(f"total_baseline_tokens: {summary['total_baseline_tokens']}")
+    if summary["executed_tasks"]:
+        print(f"executed_tasks: {summary['executed_tasks']}")
+        print(f"execution_tokens: {summary['total_execution_tokens']}")
+    if summary.get("blocked_tasks"):
+        print(f"blocked_tasks: {summary['blocked_tasks']}")
+    print(f"checks: {summary['passed_checks']}/{summary['total_checks']}")
+    for fixture in report["fixtures"]:
+        fixture_summary = fixture["summary"]
+        print(
+            f"{Path(fixture['fixture']).name}\t"
+            f"tasks={fixture_summary['task_count']}\t"
+            f"avg_savings={fixture_summary['average_savings_percent']}%\t"
+            f"checks={fixture_summary['passed_checks']}/{fixture_summary['total_checks']}"
+        )
+
+
+def print_benchmark_check_summary(report: dict[str, Any]) -> None:
+    summary = report.get("summary", {})
+    print(f"current_checks: {summary.get('passed_checks', 0)}/{summary.get('total_checks', 0)}")
+
+
+def benchmark_report_ok(report: dict[str, Any]) -> bool:
+    return bool(report.get("summary", {}).get("ok", False))
+
+
+def enforce_benchmark_report_gate(report: dict[str, Any], *, label: str) -> None:
+    if benchmark_report_ok(report):
+        return
+    summary = report.get("summary", {})
+    passed = summary.get("passed_checks", 0)
+    total = summary.get("total_checks", 0)
+    raise RuntimeError(f"{label} current benchmark checks failed: {passed}/{total}")
+
+
+def print_benchmark_diff(diff: dict[str, Any]) -> None:
+    summary = diff["summary_delta"]
+    print(f"before: {diff['before']['id']}")
+    print(f"after: {diff['after']['id']}")
+    print(f"fixtures_delta: {summary['fixtures']}")
+    print(f"tasks_delta: {summary['tasks']}")
+    print(f"kernel_tokens_delta: {summary['kernel_tokens']}")
+    print(f"baseline_tokens_delta: {summary['baseline_tokens']}")
+    print(f"savings_tokens_delta: {summary['savings_tokens']}")
+    print(f"savings_percent_delta: {summary['savings_percent']}")
+    print(f"checks_delta: {summary['passed_checks']}/{summary['total_checks']}")
+    print(f"execution_tokens_delta: {summary['execution_tokens']}")
+    print(f"regressions: {len(diff['regressions'])}")
+    cost_diff = diff.get("cost_diff", {})
+    if cost_diff:
+        hotspot = cost_diff.get("hotspot_change", {})
+        weakest = cost_diff.get("weakest_savings_change", {})
+        print(f"cost_regressions: {len(diff.get('cost_regressions', []))}")
+        print(
+            f"hotspot_delta: {hotspot.get('before_scope', '')} -> {hotspot.get('after_scope', '')} "
+            f"({hotspot.get('metric_delta', 0)})"
+        )
+        print(
+            f"weakest_savings_delta: {weakest.get('before_scope', '')} -> {weakest.get('after_scope', '')} "
+            f"({weakest.get('metric_delta', 0)})"
+        )
+    for fixture in diff["fixtures"]:
+        if fixture["status"] != "changed":
+            print(f"{fixture['fixture']}\t{fixture['status']}")
+            continue
+        fixture_summary = fixture["summary_delta"]
+        print(
+            f"{fixture['fixture']}\t"
+            f"kernel_delta={fixture_summary['kernel_tokens']}\t"
+            f"savings_delta={fixture_summary['savings_percent']}%\t"
+            f"checks_delta={fixture_summary['passed_checks']}/{fixture_summary['total_checks']}\t"
+            f"regressions={len(fixture['regressions'])}"
+        )
+
+
+def enforce_regression_gate(diff: dict[str, Any], *, enabled: bool, label: str) -> None:
+    if not enabled or diff.get("ok", True):
+        return
+    reasons: list[str] = []
+    regressions = diff.get("regressions", [])
+    cost_regressions = diff.get("cost_regressions", [])
+    if regressions:
+        reasons.append(f"{len(regressions)} behavior regression(s)")
+    if cost_regressions:
+        reasons.append(f"{len(cost_regressions)} cost regression(s)")
+    if not reasons:
+        reasons.append("regressions detected")
+    raise RuntimeError(f"{label} found regressions: {', '.join(reasons)}")
+
+
+def print_json(data: dict[str, Any]) -> None:
+    print(json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True))
