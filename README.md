@@ -76,7 +76,7 @@ Python 3.10 or newer is required.
 After the package is published, users can install from PyPI:
 
 ```powershell
-python -m pip install --user context-kernel
+python -m pip install --user akernel-runtime
 akernel setup
 akernel
 ```

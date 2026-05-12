@@ -32,6 +32,10 @@ Write-Host "Python:" (& $PythonCommand --version)
 Invoke-Checked $PythonCommand @("-m", "unittest", "discover", "-s", "tests", "-p", "test_runtime.py")
 
 if (-not $SkipBuild) {
+  $distDir = Join-Path $RepoRoot "dist"
+  if (Test-Path -LiteralPath $distDir) {
+    Remove-Item -LiteralPath $distDir -Recurse -Force
+  }
   Invoke-Checked $PythonCommand @("-m", "build")
   Invoke-Checked $PythonCommand @("-m", "twine", "check", "dist/*")
 }

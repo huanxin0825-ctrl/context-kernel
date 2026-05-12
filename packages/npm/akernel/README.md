@@ -11,7 +11,7 @@ akernel
 The launcher forwards arguments to `python -m context_kernel.cli`. If the Python package is missing, it attempts a user-level bootstrap with:
 
 ```bash
-python -m pip install --user --upgrade context-kernel
+python -m pip install --user --upgrade akernel-runtime
 ```
 
 Useful environment overrides:

@@ -86,7 +86,7 @@ This keeps the CLI portable while the runtime boundaries are still stabilizing.
 Install from PyPI after publishing:
 
 ```powershell
-python -m pip install --user context-kernel
+python -m pip install --user akernel-runtime
 akernel setup
 akernel
 ```

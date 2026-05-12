@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "context-kernel"
+name = "akernel-runtime"
 version = "0.1.0"
 description = "A CLI-first context-native agent runtime prototype."
 readme = "README.md"

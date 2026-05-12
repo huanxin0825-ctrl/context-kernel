@@ -38,7 +38,7 @@ function bootstrapContextKernel() {
   if (!command) {
     return false;
   }
-  const source = process.env.AKERNEL_PIP_SOURCE || "context-kernel";
+  const source = process.env.AKERNEL_PIP_SOURCE || "akernel-runtime";
   console.error(`akernel: Python package not found; installing ${source} with pip...`);
   const install = spawnPython(command, ["-m", "pip", "install", "--user", "--upgrade", source], "inherit");
   return install.status === 0;
@@ -55,7 +55,7 @@ if (!pythonCommand) {
     console.error(String(lastError.message || lastError));
   }
   console.error("Set AKERNEL_PIP_SOURCE to a package or git URL, or install manually with:");
-  console.error("  python -m pip install --user context-kernel");
+  console.error("  python -m pip install --user akernel-runtime");
   process.exit(1);
 }
 

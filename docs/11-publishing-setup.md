@@ -28,7 +28,7 @@ Configure a PyPI trusted publisher with these values:
 
 | Field | Value |
 | --- | --- |
-| PyPI project name | `context-kernel` |
+| PyPI project name | `akernel-runtime` |
 | Owner | `huanxin0825-ctrl` |
 | Repository name | `context-kernel` |
 | Workflow filename | `release.yml` |
