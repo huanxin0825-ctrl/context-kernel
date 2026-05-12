@@ -110,6 +110,16 @@ target=npm
 
 This avoids trying to republish the same PyPI version.
 
+To create or refresh only the GitHub Release page for an existing tag, open the `Release` workflow manually and run it with:
+
+```text
+publish=true
+target=github-release
+release_tag=v0.1.0
+```
+
+Release notes are read from `.github/release-notes/<tag>.md`.
+
 ## What To Send Back
 
 Send only these confirmations:
