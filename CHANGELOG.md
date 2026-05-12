@@ -9,6 +9,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 ### Changed
 
 - Documented the `akernel` naming convention as Agent Kernel across README, PyPI metadata, and npm launcher docs.
+- Upgraded npm release guidance and workflow support for trusted publishing, provenance, and npm-only manual publishes.
 
 ## 0.1.0 - 2026-05-12
 
