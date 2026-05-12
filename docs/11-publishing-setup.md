@@ -48,20 +48,20 @@ No GitHub secret is needed for PyPI when Trusted Publishing is configured.
 The current npm package name is:
 
 ```text
-@context-kernel/akernel
+@context-akernel/akernel
 ```
 
-Before publishing, confirm that the `context-kernel` npm scope is available to you. Usually that means creating an npm organization named `context-kernel`, or changing `packages/npm/akernel/package.json` to use a scope you control.
+Before publishing, confirm that the `context-akernel` npm scope is available to you. Usually that means creating an npm organization named `context-akernel`, or changing `packages/npm/akernel/package.json` to use a scope you control.
 
 Recommended path: use npm Trusted Publishing. It avoids a long-lived npm token and publishes with GitHub OIDC plus provenance.
 
 1. Create or confirm the npm scope.
-2. Create the package or configure a pending trusted publisher for `@context-kernel/akernel`.
+2. Create the package or configure a pending trusted publisher for `@context-akernel/akernel`.
 3. Use these trusted publisher values:
 
 | Field | Value |
 | --- | --- |
-| Package | `@context-kernel/akernel` |
+| Package | `@context-akernel/akernel` |
 | Owner | `huanxin0825-ctrl` |
 | Repository name | `context-kernel` |
 | Workflow filename | `release.yml` |
@@ -126,7 +126,7 @@ Send only these confirmations:
 
 - PyPI account is ready and Trusted Publisher is configured.
 - GitHub environment `pypi` exists.
-- npm scope decision: keep `@context-kernel/akernel` or change to another scope.
+- npm scope decision: keep `@context-akernel/akernel` or change to another scope.
 - If publishing npm now: npm Trusted Publishing exists, GitHub environment `npm` exists, and `PUBLISH_NPM=true` variable exists.
 - If using the fallback token path: `NPM_TOKEN` secret exists.
 

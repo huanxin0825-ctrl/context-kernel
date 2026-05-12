@@ -102,7 +102,7 @@ akernel
 The npm wrapper can be installed globally after publication:
 
 ```powershell
-npm install -g @context-kernel/akernel
+npm install -g @context-akernel/akernel
 akernel setup
 akernel
 ```

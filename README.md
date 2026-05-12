@@ -18,7 +18,7 @@ Package and command names map to the same idea:
 - Python distribution: `akernel-runtime`
 - Python import package: `context_kernel`
 - CLI command: `akernel`
-- npm launcher: `@context-kernel/akernel`
+- npm launcher: `@context-akernel/akernel`
 
 ## Why This Exists
 
@@ -107,10 +107,10 @@ akernel
 
 ### npm Launcher
 
-The npm launcher is prepared for publication. After `@context-kernel/akernel` is published, it will provide a Node-style entrypoint and bootstrap the Python package if it is missing:
+The npm launcher is prepared for publication. After `@context-akernel/akernel` is published, it will provide a Node-style entrypoint and bootstrap the Python package if it is missing:
 
 ```powershell
-npm install -g @context-kernel/akernel
+npm install -g @context-akernel/akernel
 akernel setup
 akernel
 ```
