@@ -100,6 +100,7 @@ class RuntimeTests(unittest.TestCase):
             root = Path(tmp)
             (root / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
             (root / "README.md").write_text("demo", encoding="utf-8")
+            (root / "AGENTS.md").write_text("Always run the project test command before reporting success.", encoding="utf-8")
             (root / "tests").mkdir()
             (root / "tests" / "test_demo.py").write_text("def test_demo():\n    assert True\n", encoding="utf-8")
             workspace = Workspace(root)
@@ -114,8 +115,10 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("python", profile["languages"])
             self.assertEqual(profile["commands"]["test"], "python -m pytest")
             self.assertIn("README.md", profile["key_files"])
+            self.assertEqual(profile["instructions"][0]["path"], "AGENTS.md")
             self.assertIn("project", packet["runtime"])
             self.assertIn("python", packet["runtime"]["project"]["languages"])
+            self.assertIn("Always run", packet["runtime"]["project"]["instructions"][0]["content"])
             self.assertIn("python", config["command_policy"]["allowed_roots"])
 
     def test_project_scan_cli_outputs_summary(self) -> None:
@@ -132,6 +135,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(workspace.project_file.exists())
             self.assertIn("languages: javascript/typescript", output)
             self.assertIn("command_test:", output)
+            self.assertIn("instructions: none", output)
             self.assertIn("config_updated: True", output)
 
     def test_workspace_read_json_accepts_utf8_bom(self) -> None:

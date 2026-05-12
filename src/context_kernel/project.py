@@ -25,6 +25,9 @@ IGNORED_DIRS = {
     "target",
 }
 KEY_FILE_NAMES = {
+    ".cursorrules",
+    "AGENTS.md",
+    "CLAUDE.md",
     "README.md",
     "README.rst",
     "pyproject.toml",
@@ -38,6 +41,14 @@ KEY_FILE_NAMES = {
     "Cargo.toml",
     "go.mod",
 }
+INSTRUCTION_FILE_NAMES = [
+    "AGENTS.md",
+    ".akernel/AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    ".github/copilot-instructions.md",
+]
+MAX_PROJECT_INSTRUCTION_CHARS = 4000
 
 
 def scan_project(workspace: Workspace, *, update_config: bool = True) -> dict[str, Any]:
@@ -51,6 +62,7 @@ def scan_project(workspace: Workspace, *, update_config: bool = True) -> dict[st
     commands = detect_commands(workspace.root, file_names, top_level, package_managers)
     command_roots = detect_command_roots(languages, package_managers, commands)
     key_files = detect_key_files(workspace.root, files)
+    instructions = detect_project_instructions(workspace.root)
 
     profile = {
         "version": PROJECT_PROFILE_VERSION,
@@ -61,6 +73,7 @@ def scan_project(workspace: Workspace, *, update_config: bool = True) -> dict[st
         "commands": commands,
         "command_roots": command_roots,
         "key_files": key_files,
+        "instructions": instructions,
         "file_summary": {
             "scanned_files": len(files),
             "top_level_entries": sorted(list(top_level))[:40],
@@ -89,6 +102,7 @@ def compact_project_profile(profile: dict[str, Any] | None, *, max_tokens: int =
         "commands": profile.get("commands", {}),
         "key_files": profile.get("key_files", [])[:12],
         "command_roots": profile.get("command_roots", [])[:12],
+        "instructions": compact_project_instructions(profile.get("instructions", [])),
     }
     if estimate_tokens(compact) <= max_tokens:
         return compact
@@ -98,6 +112,7 @@ def compact_project_profile(profile: dict[str, Any] | None, *, max_tokens: int =
         for key, value in compact["commands"].items()
         if key in {"test", "lint", "build"}
     }
+    compact["instructions"] = compact["instructions"][:2]
     return compact
 
 
@@ -220,6 +235,47 @@ def detect_key_files(root: Path, files: list[Path]) -> list[str]:
         if path.name in KEY_FILE_NAMES or relative.startswith(".github/workflows/"):
             key_files.append(relative)
     return sorted(key_files)[:24]
+
+
+def detect_project_instructions(root: Path) -> list[dict[str, Any]]:
+    instructions: list[dict[str, Any]] = []
+    for name in INSTRUCTION_FILE_NAMES:
+        path = root / name
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        content = text.strip()
+        if not content:
+            continue
+        instructions.append(
+            {
+                "path": name.replace("\\", "/"),
+                "content": content[:MAX_PROJECT_INSTRUCTION_CHARS],
+                "truncated": len(content) > MAX_PROJECT_INSTRUCTION_CHARS,
+                "estimated_tokens": estimate_tokens(content[:MAX_PROJECT_INSTRUCTION_CHARS]),
+            }
+        )
+    return instructions
+
+
+def compact_project_instructions(instructions: Any) -> list[dict[str, Any]]:
+    if not isinstance(instructions, list):
+        return []
+    compact: list[dict[str, Any]] = []
+    for item in instructions[:3]:
+        if not isinstance(item, dict):
+            continue
+        compact.append(
+            {
+                "path": str(item.get("path", "")),
+                "content": str(item.get("content", ""))[:1800],
+                "truncated": bool(item.get("truncated", False)),
+            }
+        )
+    return compact
 
 
 def extend_command_policy(workspace: Workspace, command_roots: list[str]) -> None:

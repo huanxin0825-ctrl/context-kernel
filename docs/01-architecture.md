@@ -202,6 +202,7 @@ Current behavior:
 - Tool actions are executed through the existing policy-gated tool executor.
 - The context packet includes `runtime.command_policy.allowed_roots`, so the model can see the workspace command allowlist before deciding whether to request `run_command`.
 - A saved `.akernel/project.json` profile can also enter the packet as `runtime.project`, giving the model compact project metadata such as language, package manager, key files, safe command roots, and likely test/build commands without loading the full repository.
+- Project profiles can include compact local instruction files such as `AGENTS.md`, `.akernel/AGENTS.md`, `CLAUDE.md`, `.cursorrules`, or `.github/copilot-instructions.md`; these are treated as project guidance and do not override runtime policy.
 - When a user asks to run tests, verify, build, lint, or install without naming an exact command, the agent should prefer the matching `runtime.project.commands` entry over guessing a command.
 - Tool output summaries are attached back to the task brief for the next step.
 - Each provider run writes a normal trace and attaches it to the task.

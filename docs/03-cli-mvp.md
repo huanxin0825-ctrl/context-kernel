@@ -26,7 +26,7 @@ akernel project scan
 akernel project show
 ```
 
-Creates `.akernel` state directories. `--scan` and `project scan` also write `.akernel/project.json`, a compact profile containing detected languages, package managers, key files, safe command roots, and likely test/build commands. The profile is injected into context packets as `runtime.project` so the model can understand the repository without loading the whole tree.
+Creates `.akernel` state directories. `--scan` and `project scan` also write `.akernel/project.json`, a compact profile containing detected languages, package managers, key files, safe command roots, likely test/build commands, and short project instruction files such as `AGENTS.md`. The profile is injected into context packets as `runtime.project` so the model can understand the repository without loading the whole tree.
 
 ### Register Skill
 

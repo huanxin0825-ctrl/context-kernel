@@ -1359,6 +1359,8 @@ def print_project_scan_summary(profile: dict[str, Any], *, config_updated: bool)
     else:
         print("commands: none")
     print(f"key_files: {', '.join(profile.get('key_files', [])[:8]) or 'none'}")
+    instructions = profile.get("instructions", [])
+    print(f"instructions: {', '.join(item.get('path', '') for item in instructions[:4]) if instructions else 'none'}")
     print(f"command_roots: {', '.join(profile.get('command_roots', [])[:16])}")
     print(f"config_updated: {config_updated}")
 
