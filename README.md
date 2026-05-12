@@ -216,6 +216,7 @@ The repository CI runs unit tests, package build checks, CLI smoke tests, benchm
 - [Open Source Plan](docs/08-open-source-plan.md)
 - [Product Roadmap](docs/09-product-roadmap.md)
 - [Benchmark Evidence](docs/10-benchmark-evidence.md)
+- [Publishing Setup](docs/11-publishing-setup.md)
 
 ## Project Status
 

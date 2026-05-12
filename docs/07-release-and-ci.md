@@ -111,6 +111,7 @@ Before PyPI publication, set `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0
 
 `bench gate` also requires the current benchmark report itself to pass its checks. This prevents a bad first run from becoming the new normal just because the relative diff has no regression.
 The release workflow also uploads benchmark evidence as a workflow artifact so release preparation carries a reproducible token-savings snapshot.
+See [Publishing Setup](11-publishing-setup.md) for the exact PyPI, npm, and GitHub settings needed before tagging a public release.
 
 ## Why This Matters
 

@@ -30,6 +30,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Scale benchmark fixtures cover context pressure, editing, global memory, and marketplace workflows.
 - `bench evidence` summarizes saved benchmark reports into JSON or Markdown proof pages with aggregate token savings, pass rate, strongest savings, weakest savings, and optional minimum-savings gates.
 - Benchmark evidence documentation records the current deterministic scale snapshot and reproduction commands.
+- Publishing setup documentation lists the PyPI Trusted Publishing, npm token, GitHub environment, and first-release steps needed for public release.
 - Product roadmap documentation defines completion bars for TUI, advanced editing, memory retention, marketplace, distribution, and benchmark maturity.
 - `akernel --ui auto|classic|tui` adds a zero-dependency full-screen terminal UI with transcript, session sidebar, last-run summary, diagnostics, pending context, and input hint.
 - The TUI now uses a cockpit layout with a status header, command strip, task mission panel, model stack, workspace summary, and last-run action timeline.
