@@ -20,6 +20,7 @@ ALLOWED_ACTIONS = TOOL_ACTIONS | {"respond"}
 DEFAULT_PRIMARY_MODEL = "gpt-5.5"
 DEFAULT_AUXILIARY_MODEL = "gpt-5.3-codex"
 MODEL_ROUTING_MODES = {"auto", "primary", "auxiliary"}
+AUX_REVIEW_MODES = {"auto", "off", "always"}
 
 
 class AgentLoop:
@@ -38,6 +39,7 @@ class AgentLoop:
         model: str | None = None,
         aux_model: str | None = None,
         model_routing: str = "auto",
+        aux_review: str = "auto",
         base_url: str | None = None,
         task_id: str | None = None,
         max_steps: int = 5,
@@ -49,6 +51,8 @@ class AgentLoop:
             raise ValueError("max_steps must be at least 1")
         if model_routing not in MODEL_ROUTING_MODES:
             raise ValueError(f"model_routing must be one of: {', '.join(sorted(MODEL_ROUTING_MODES))}")
+        if aux_review not in AUX_REVIEW_MODES:
+            raise ValueError(f"aux_review must be one of: {', '.join(sorted(AUX_REVIEW_MODES))}")
 
         task = self._task_for_request(request, task_id)
         report = {
@@ -64,6 +68,7 @@ class AgentLoop:
                 "mode": model_routing,
                 "primary_model": resolve_role_model(provider_name, model, aux_model, "primary"),
                 "auxiliary_model": resolve_role_model(provider_name, model, aux_model, "auxiliary"),
+                "aux_review": aux_review,
             },
             "state": {"enabled": False, "candidate_count": 0, "written_count": 0, "records": []},
             "totals": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
@@ -82,12 +87,14 @@ class AgentLoop:
                 model=model,
                 aux_model=aux_model,
                 model_routing=model_routing,
+                aux_review=aux_review,
                 base_url=base_url,
                 allow_over_budget=allow_over_budget,
                 expect_json=expect_json,
             )
             report["steps"].append(step)
             add_tokens(report["totals"], step.get("tokens", {}))
+            add_tokens(report["totals"], step.get("aux_review", {}).get("tokens", {}))
             if step.get("final_response") is not None:
                 report["final_response"] = step["final_response"]
 
@@ -128,6 +135,7 @@ class AgentLoop:
         model: str | None,
         aux_model: str | None,
         model_routing: str,
+        aux_review: str,
         base_url: str | None,
         allow_over_budget: bool,
         expect_json: bool,
@@ -162,6 +170,22 @@ class AgentLoop:
             profile=profile,
         )
         selected_model = resolve_role_model(provider_name, model, aux_model, selected_role)
+        review = run_auxiliary_review(
+            self.workspace,
+            request=request,
+            provider_name=provider_name,
+            plan=plan,
+            selected_role=selected_role,
+            selected_model=selected_model,
+            aux_model=aux_model,
+            base_url=base_url,
+            budget=budget,
+            profile=profile,
+            task_id=task_id,
+            allow_over_budget=allow_over_budget,
+            aux_review=aux_review,
+            routing_reason=routing_reason,
+        )
 
         trace = AgentRunner(self.workspace).run(
             request,
@@ -204,6 +228,7 @@ class AgentLoop:
                 "model_role": selected_role,
                 "model": selected_model,
                 "routing_reason": routing_reason,
+                "aux_review": review,
                 "tool_trace_id": None,
                 "action": None,
                 "tokens": {
@@ -234,6 +259,7 @@ class AgentLoop:
                 "model_role": selected_role,
                 "model": selected_model,
                 "routing_reason": routing_reason,
+                "aux_review": review,
                 "tool_trace_id": None,
                 "action": None,
                 "tokens": {
@@ -263,6 +289,7 @@ class AgentLoop:
                 "model_role": selected_role,
                 "model": selected_model,
                 "routing_reason": routing_reason,
+                "aux_review": review,
                 "tool_trace_id": None,
                 "action": summarize_action(action),
                 "tokens": {
@@ -291,6 +318,7 @@ class AgentLoop:
                 "model_role": selected_role,
                 "model": selected_model,
                 "routing_reason": routing_reason,
+                "aux_review": review,
                 "tool_trace_id": None,
                 "action": summarize_action(action),
                 "tokens": {
@@ -342,6 +370,7 @@ class AgentLoop:
             "model_role": selected_role,
             "model": selected_model,
             "routing_reason": routing_reason,
+            "aux_review": review,
             "tool_trace_id": tool_result["id"],
             "action": summarize_action(action),
             "tool": {
@@ -763,6 +792,125 @@ def resolve_role_model(provider_name: str, model: str | None, aux_model: str | N
     return model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
 
 
+def run_auxiliary_review(
+    workspace: Workspace,
+    *,
+    request: str,
+    provider_name: str,
+    plan: dict[str, Any],
+    selected_role: str,
+    selected_model: str | None,
+    aux_model: str | None,
+    base_url: str | None,
+    budget: int | None,
+    profile: str,
+    task_id: str,
+    allow_over_budget: bool,
+    aux_review: str,
+    routing_reason: str,
+) -> dict[str, Any]:
+    resolved_aux = resolve_role_model(provider_name, selected_model, aux_model, "auxiliary")
+    if aux_review == "off":
+        return {"enabled": False, "reason": "disabled by --aux-review off"}
+    if aux_review == "auto" and selected_role != "primary":
+        return {"enabled": False, "reason": "auto review only runs before primary-model steps"}
+    if not resolved_aux:
+        return {"enabled": False, "reason": "no auxiliary model configured for this provider"}
+
+    trace = AgentRunner(workspace).run(
+        request,
+        provider_name=provider_name,
+        budget=budget,
+        profile=profile,
+        model=resolved_aux,
+        base_url=base_url,
+        allow_over_budget=allow_over_budget,
+        expect_json=True,
+        remember=False,
+        task_id=task_id,
+        resume=True,
+        packet_overrides=build_aux_review_packet(
+            plan,
+            selected_role=selected_role,
+            selected_model=selected_model,
+            aux_model=resolved_aux,
+            routing_reason=routing_reason,
+        ),
+    )
+    parsed = parse_aux_review(trace.get("response", {}).get("text", ""))
+    tokens = trace.get("response", {})
+    return {
+        "enabled": True,
+        "trace_id": trace["id"],
+        "model": resolved_aux,
+        "ok": parsed["ok"],
+        "risk": parsed["risk"],
+        "recommendation": parsed["recommendation"],
+        "notes": parsed["notes"],
+        "tokens": {
+            "input_tokens": tokens.get("input_tokens", 0),
+            "output_tokens": tokens.get("output_tokens", 0),
+            "total_tokens": tokens.get("total_tokens", 0),
+        },
+        "verifier_ok": bool(trace.get("verifier", {}).get("ok")),
+    }
+
+
+def build_aux_review_packet(
+    plan: dict[str, Any],
+    *,
+    selected_role: str,
+    selected_model: str | None,
+    aux_model: str | None,
+    routing_reason: str,
+) -> dict[str, Any]:
+    route = plan.get("route", {})
+    return {
+        "agent": {
+            "mode": "aux_review_v1",
+            "review": {
+                "selected_role": selected_role,
+                "selected_model": selected_model,
+                "aux_model": aux_model,
+                "routing_reason": routing_reason,
+                "route_mode": route.get("mode"),
+                "complexity": route.get("complexity"),
+                "warnings": plan.get("warnings", []),
+            },
+            "response_contract": {
+                "type": "json_object",
+                "rules": [
+                    "Return only valid JSON.",
+                    "Schema: {\"ok\": boolean, \"risk\": \"low|medium|high\", \"recommendation\": \"continue|use_primary|reduce_context|stop\", \"notes\": [\"short note\"]}.",
+                    "Be conservative about policy or budget risk, but do not invent missing facts.",
+                ],
+            },
+        }
+    }
+
+
+def parse_aux_review(text: str) -> dict[str, Any]:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = {}
+    risk = str(data.get("risk", "medium")).strip().lower()
+    if risk not in {"low", "medium", "high"}:
+        risk = "medium"
+    recommendation = str(data.get("recommendation", "continue")).strip().lower()
+    if recommendation not in {"continue", "use_primary", "reduce_context", "stop"}:
+        recommendation = "continue"
+    notes = data.get("notes", [])
+    if not isinstance(notes, list):
+        notes = [str(notes)]
+    return {
+        "ok": bool(data.get("ok", True)),
+        "risk": risk,
+        "recommendation": recommendation,
+        "notes": [compact(str(item), limit=160) for item in notes[:5]],
+    }
+
+
 def compact_saved_agent_report(report: dict[str, Any]) -> dict[str, Any]:
     steps = report.get("steps", [])
     return {
@@ -782,7 +930,7 @@ def compact_saved_agent_report(report: dict[str, Any]) -> dict[str, Any]:
             "detail_level": "compact_v1",
             "step_count": len(steps),
             "full_details_in": {
-                "run_traces": unique_non_empty([step.get("trace_id") for step in steps]),
+                "run_traces": unique_non_empty(collect_run_trace_ids(steps)),
                 "tool_traces": unique_non_empty(collect_tool_trace_ids(steps)),
             },
         },
@@ -799,6 +947,7 @@ def compact_saved_step(step: dict[str, Any]) -> dict[str, Any]:
         "model_role": step.get("model_role"),
         "model": step.get("model"),
         "routing_reason": compact(str(step.get("routing_reason", "")), limit=180) or None,
+        "aux_review": compact_saved_aux_review(step.get("aux_review", {})),
         "action": step.get("action"),
         "tokens": compact_saved_tokens(step.get("tokens", {})),
         "verifier_ok": step.get("verifier_ok"),
@@ -820,6 +969,29 @@ def compact_saved_step(step: dict[str, Any]) -> dict[str, Any]:
         ]
     if step.get("final_response"):
         saved["final_response"] = compact(str(step.get("final_response", "")), limit=320)
+    return saved
+
+
+def compact_saved_aux_review(review: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(review, dict) or not review:
+        return {"enabled": False}
+    saved = {
+        "enabled": bool(review.get("enabled")),
+        "reason": compact(str(review.get("reason", "")), limit=180) or None,
+    }
+    if review.get("enabled"):
+        saved.update(
+            {
+                "trace_id": review.get("trace_id"),
+                "model": review.get("model"),
+                "ok": bool(review.get("ok")),
+                "risk": review.get("risk"),
+                "recommendation": review.get("recommendation"),
+                "notes": [compact(str(item), limit=160) for item in review.get("notes", [])[:5]],
+                "tokens": compact_saved_tokens(review.get("tokens", {})),
+                "verifier_ok": bool(review.get("verifier_ok")),
+            }
+        )
     return saved
 
 
@@ -1080,6 +1252,17 @@ def collect_tool_trace_ids(steps: list[dict[str, Any]]) -> list[str]:
         for recovery in step.get("recovery_tools", []):
             if isinstance(recovery, dict) and recovery.get("id"):
                 ids.append(str(recovery.get("id")))
+    return ids
+
+
+def collect_run_trace_ids(steps: list[dict[str, Any]]) -> list[str]:
+    ids: list[str] = []
+    for step in steps:
+        if step.get("trace_id"):
+            ids.append(str(step.get("trace_id")))
+        review = step.get("aux_review", {})
+        if isinstance(review, dict) and review.get("trace_id"):
+            ids.append(str(review.get("trace_id")))
     return ids
 
 

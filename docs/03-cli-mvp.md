@@ -82,7 +82,7 @@ For OpenAI-compatible providers, put credentials in project `.env` using `.env.e
 
 `agent run` is the first bounded loop entrypoint. It creates or resumes a task, generates a plan, calls the provider with task resume context, requires a one-action JSON reply, executes one policy-gated tool when needed, feeds the resulting tool summary back into the task brief, and saves an agent report under `.akernel/agent_runs/`.
 
-`akernel` without a subcommand starts an interactive Claude Code-style session. Each normal line is sent through the same bounded `agent run` loop while reusing one task session, so the runtime can keep compact progress state instead of replaying the full conversation. The shell UI renders a session dashboard, command palette, task progress section, run summary, action trace, memory write count, and assistant response block. The model panel separates the primary execution model from the auxiliary planning/review/compression model. In `--model-routing auto` mode, low/medium first-step planning can run on the auxiliary model while high-risk, deep, warning-heavy, or synthesis steps stay on the primary model. Built-in commands are `/help`, `/status`, `/model`, `/config`, `/task`, `/runs`, `/cost`, `/clear`, and `/exit`.
+`akernel` without a subcommand starts an interactive Claude Code-style session. Each normal line is sent through the same bounded `agent run` loop while reusing one task session, so the runtime can keep compact progress state instead of replaying the full conversation. The shell UI renders a session dashboard, command palette, task progress section, run summary, action trace, memory write count, and assistant response block. The model panel separates the primary execution model from the auxiliary planning/review/compression model. In `--model-routing auto` mode, low/medium first-step planning can run on the auxiliary model while high-risk, deep, warning-heavy, or synthesis steps stay on the primary model. In `--aux-review auto` mode, auxiliary review runs before primary-model steps and is included in saved traces and token reports. Built-in commands are `/help`, `/status`, `/model`, `/config`, `/task`, `/runs`, `/cost`, `/clear`, and `/exit`.
 
 Current action set:
 
@@ -279,8 +279,8 @@ akernel doctor
 akernel models [--provider mock|openai] [--base-url url]
 akernel setup [--api-key key] [--base-url url] [--model model-id] [--aux-model model-id] [--env-file .env] [--force] [--verify]
 akernel plan <request> [--budget n] [--profile lean|balanced|deep] [--task task-id] [--resume] [--json]
-akernel agent run <request> [--provider mock|openai] [--model model-id] [--aux-model model-id] [--model-routing auto|primary|auxiliary] [--base-url url] [--budget n] [--profile lean|balanced|deep] [--task task-id] [--max-steps n(default 5)] [--no-remember] [--allow-over-budget] [--expect-json] [--json]
-akernel chat [--provider mock|openai] [--model model-id] [--aux-model model-id] [--model-routing auto|primary|auxiliary] [--base-url url] [--budget n] [--profile lean|balanced|deep] [--task task-id] [--title title] [--max-steps n(default 5)] [--no-remember] [--allow-over-budget] [--expect-json]
+akernel agent run <request> [--provider mock|openai] [--model model-id] [--aux-model model-id] [--model-routing auto|primary|auxiliary] [--aux-review auto|off|always] [--base-url url] [--budget n] [--profile lean|balanced|deep] [--task task-id] [--max-steps n(default 5)] [--no-remember] [--allow-over-budget] [--expect-json] [--json]
+akernel chat [--provider mock|openai] [--model model-id] [--aux-model model-id] [--model-routing auto|primary|auxiliary] [--aux-review auto|off|always] [--base-url url] [--budget n] [--profile lean|balanced|deep] [--task task-id] [--title title] [--max-steps n(default 5)] [--no-remember] [--allow-over-budget] [--expect-json]
 akernel agent list
 akernel agent show <agent-run-id>
 akernel agent cost <agent-run-id> [--json]

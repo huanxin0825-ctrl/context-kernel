@@ -41,6 +41,7 @@ def build_agent_cost_report(report: dict[str, Any]) -> dict[str, Any]:
             "tool": tool.get("name"),
             "model_role": step.get("model_role"),
             "model": step.get("model"),
+            "aux_review": summarize_aux_review(step.get("aux_review", {})),
         }
         step_summaries.append(step_summary)
 
@@ -113,7 +114,8 @@ def render_agent_cost_report(cost: dict[str, Any]) -> str:
             "model_routing: "
             f"mode={routing.get('mode')} "
             f"primary={routing.get('primary_model')} "
-            f"auxiliary={routing.get('auxiliary_model')}"
+            f"auxiliary={routing.get('auxiliary_model')} "
+            f"review={routing.get('aux_review')}"
         )
     if summary["action_breakdown"]:
         parts = []
@@ -129,9 +131,30 @@ def render_agent_cost_report(cost: dict[str, Any]) -> str:
                 f"tokens={step['total_tokens']} input={step['input_tokens']} output={step['output_tokens']} "
                 f"brief={step['task_brief_tokens']} context={step['planned_context_tokens']} "
                 f"model={step.get('model_role') or 'unknown'}:{step.get('model') or 'default'}"
+                f"{render_aux_review_inline(step.get('aux_review', {}))}"
             )
         )
     return "\n".join(lines)
+
+
+def summarize_aux_review(review: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(review, dict) or not review.get("enabled"):
+        return {"enabled": False}
+    tokens = normalize_tokens(review.get("tokens", {}))
+    return {
+        "enabled": True,
+        "trace_id": review.get("trace_id"),
+        "model": review.get("model"),
+        "risk": review.get("risk"),
+        "recommendation": review.get("recommendation"),
+        "total_tokens": tokens["total_tokens"],
+    }
+
+
+def render_aux_review_inline(review: dict[str, Any]) -> str:
+    if not isinstance(review, dict) or not review.get("enabled"):
+        return ""
+    return f" review={review.get('risk')}:{review.get('recommendation')}:{review.get('total_tokens', 0)}t"
 
 
 def summarize_series(values: list[int]) -> dict[str, int]:

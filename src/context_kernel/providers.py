@@ -31,6 +31,8 @@ class MockProvider:
     name = "mock"
 
     def run(self, packet: dict[str, Any]) -> ProviderResponse:
+        if str(packet.get("agent", {}).get("mode", "")) == "aux_review_v1":
+            return self._run_aux_review(packet)
         if str(packet.get("agent", {}).get("mode", "")).startswith("tool_planning_v"):
             return self._run_tool_planning(packet)
         skill_names = [item["contract"]["name"] for item in packet.get("skills", [])]
@@ -42,6 +44,29 @@ class MockProvider:
             f"Selected memories: {memory_count}\n"
             f"Estimated input tokens: {packet['budget']['estimated_used']}"
         )
+        return ProviderResponse(
+            text=text,
+            input_tokens=estimate_tokens(packet),
+            output_tokens=estimate_tokens(text),
+        )
+
+    def _run_aux_review(self, packet: dict[str, Any]) -> ProviderResponse:
+        budget = packet.get("budget", {})
+        review = packet.get("agent", {}).get("review", {})
+        warnings = review.get("warnings", [])
+        risk = "high" if budget.get("over_budget") else "medium" if warnings else "low"
+        recommendation = "reduce_context" if budget.get("over_budget") else "continue"
+        payload = {
+            "ok": not bool(budget.get("over_budget")),
+            "risk": risk,
+            "recommendation": recommendation,
+            "notes": [
+                f"route={review.get('route_mode', 'unknown')}",
+                f"complexity={review.get('complexity', 'unknown')}",
+                f"estimated_tokens={budget.get('estimated_used', 0)}",
+            ],
+        }
+        text = json.dumps(payload, ensure_ascii=False)
         return ProviderResponse(
             text=text,
             input_tokens=estimate_tokens(packet),

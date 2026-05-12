@@ -621,6 +621,34 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("Step Breakdown", rendered)
             self.assertIn("actions:", rendered)
 
+    def test_agent_loop_aux_review_runs_before_primary_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            report = AgentLoop(workspace).run(
+                "Review this primary-routed request.",
+                provider_name="mock",
+                budget=1200,
+                max_steps=1,
+                model_routing="primary",
+                aux_model="reviewer-small",
+                remember=False,
+            )
+            saved = Workspace.read_json(workspace.agent_runs_dir / f"{report['id']}.json")
+            cost = build_agent_cost_report(saved)
+            rendered = render_agent_cost_report(cost)
+            review = report["steps"][0]["aux_review"]
+
+            self.assertTrue(review["enabled"])
+            self.assertEqual(review["model"], "reviewer-small")
+            self.assertEqual(review["recommendation"], "continue")
+            self.assertEqual(len(list(workspace.traces_dir.glob("*.json"))), 2)
+            self.assertEqual(report["totals"]["total_tokens"], report["steps"][0]["tokens"]["total_tokens"] + review["tokens"]["total_tokens"])
+            self.assertTrue(saved["steps"][0]["aux_review"]["enabled"])
+            self.assertIn(review["trace_id"], saved["storage"]["full_details_in"]["run_traces"])
+            self.assertIn("review=", rendered)
+
     def test_chat_runs_agent_loop_and_cost_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))

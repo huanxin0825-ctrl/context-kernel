@@ -61,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
         model=None,
         aux_model=None,
         model_routing="auto",
+        aux_review="auto",
         base_url=None,
         budget=None,
         profile=DEFAULT_PROFILE,
@@ -166,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_run.add_argument("--task", default=None, help="Continue an existing task; otherwise create a new one.")
     agent_run.add_argument("--max-steps", type=int, default=5, help="Maximum loop steps to run.")
     agent_run.add_argument("--model-routing", choices=["auto", "primary", "auxiliary"], default="auto", help="Choose how agent steps select primary vs auxiliary model.")
+    agent_run.add_argument("--aux-review", choices=["auto", "off", "always"], default="auto", help="Run auxiliary context review before selected agent steps.")
     agent_run.add_argument("--no-remember", action="store_true", help="Do not write explicit task-state memory.")
     agent_run.add_argument("--allow-over-budget", action="store_true", help="Execute even when preflight budget verification fails.")
     agent_run.add_argument("--expect-json", action="store_true", help="Require provider responses to be valid JSON.")
@@ -188,6 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--title", default="Interactive chat", help="Title for a new task session.")
     chat_parser.add_argument("--max-steps", type=int, default=5, help="Maximum agent loop steps per user message.")
     chat_parser.add_argument("--model-routing", choices=["auto", "primary", "auxiliary"], default="auto", help="Choose how agent steps select primary vs auxiliary model.")
+    chat_parser.add_argument("--aux-review", choices=["auto", "off", "always"], default="auto", help="Run auxiliary context review before selected agent steps.")
     chat_parser.add_argument("--no-remember", action="store_true", help="Do not write explicit task-state memory.")
     chat_parser.add_argument("--allow-over-budget", action="store_true", help="Execute even when preflight budget verification fails.")
     chat_parser.add_argument("--expect-json", action="store_true", help="Require provider responses to be valid JSON.")
@@ -725,6 +728,7 @@ def cmd_agent_run(args: argparse.Namespace) -> None:
         model=args.model,
         aux_model=args.aux_model,
         model_routing=args.model_routing,
+        aux_review=args.aux_review,
         base_url=args.base_url,
         task_id=args.task,
         max_steps=args.max_steps,
@@ -805,6 +809,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
             model=args.model,
             aux_model=args.aux_model,
             model_routing=args.model_routing,
+            aux_review=args.aux_review,
             base_url=args.base_url,
             task_id=task_id,
             max_steps=args.max_steps,
@@ -833,6 +838,7 @@ def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespa
             ("primary", model),
             ("auxiliary", auxiliary_model(args)),
             ("routing", args.model_routing),
+            ("review", args.aux_review),
             ("profile", args.profile),
             ("loop", f"max {args.max_steps} steps per message"),
             ("state", workspace_state_summary(workspace)),
@@ -880,6 +886,10 @@ def print_chat_report(report: dict[str, Any]) -> None:
         print(wrap_chat_text(" -> ".join(actions), indent="  "))
     print(chat_color("Models", "cyan"))
     print(wrap_chat_text(model_routing_summary(report), indent="  "))
+    review_text = aux_review_summary(report)
+    if review_text:
+        print(chat_color("Review", "cyan"))
+        print(wrap_chat_text(review_text, indent="  "))
     if report.get("state", {}).get("enabled"):
         print(chat_color(f"Memory  wrote {report['state']['written_count']} record(s)", "dim"))
     if report.get("final_response"):
@@ -934,8 +944,10 @@ def print_model_panel(args: argparse.Namespace) -> None:
             ("provider", args.provider),
             ("primary", primary_model(args)),
             ("auxiliary", auxiliary_model(args)),
-            ("routing", "primary handles agent execution; auxiliary is reserved for planning/review/compression"),
+            ("routing", "auto can delegate low/medium first-step planning to auxiliary"),
+            ("review_role", "auxiliary reviews primary-model steps when enabled"),
             ("mode", args.model_routing),
+            ("review", args.aux_review),
             ("base_url", args.base_url or env_value("CONTEXT_KERNEL_OPENAI_BASE_URL") or "default"),
         ],
     )
@@ -952,6 +964,7 @@ def print_status_panel(workspace: Workspace, task_id: str, args: argparse.Namesp
             ("primary", primary_model(args)),
             ("auxiliary", auxiliary_model(args)),
             ("routing", args.model_routing),
+            ("review", args.aux_review),
             ("profile", args.profile),
             ("state", workspace_state_summary(workspace)),
         ],
@@ -994,6 +1007,20 @@ def model_routing_summary(report: dict[str, Any]) -> str:
     if not parts:
         routing = report.get("model_routing", {})
         return f"{routing.get('mode', 'auto')}: no provider step was executed"
+    return "; ".join(parts)
+
+
+def aux_review_summary(report: dict[str, Any]) -> str:
+    parts = []
+    for step in report.get("steps", []):
+        review = step.get("aux_review", {})
+        if not isinstance(review, dict) or not review.get("enabled"):
+            continue
+        parts.append(
+            f"step {step.get('index')}: {review.get('risk')} risk, "
+            f"{review.get('recommendation')} via {review.get('model')} "
+            f"({review.get('tokens', {}).get('total_tokens', 0)}t)"
+        )
     return "; ".join(parts)
 
 
@@ -1113,7 +1140,8 @@ def print_agent_report(report: dict[str, Any]) -> None:
             "model_routing: "
             f"mode={routing.get('mode')} "
             f"primary={routing.get('primary_model')} "
-            f"auxiliary={routing.get('auxiliary_model')}"
+            f"auxiliary={routing.get('auxiliary_model')} "
+            f"review={routing.get('aux_review')}"
         )
     if report.get("state", {}).get("enabled"):
         print(f"state: wrote {report['state']['written_count']} memory record(s)")
@@ -1122,9 +1150,13 @@ def print_agent_report(report: dict[str, Any]) -> None:
         tokens = step.get("tokens", {}).get("total_tokens", 0)
         action = (step.get("action") or {}).get("action", "none")
         model_part = f" model={step.get('model_role')}:{step.get('model') or 'default'}" if step.get("model_role") else ""
+        review = step.get("aux_review", {})
+        review_part = ""
+        if isinstance(review, dict) and review.get("enabled"):
+            review_part = f" review={review.get('risk')}:{review.get('recommendation')}"
         tool = step.get("tool", {})
         tool_part = f" tool={tool.get('name')}:{tool.get('id')}" if tool else ""
-        print(f"- step {step['index']}: {step['status']} action={action} trace={trace} tokens={tokens}{model_part}{tool_part}")
+        print(f"- step {step['index']}: {step['status']} action={action} trace={trace} tokens={tokens}{model_part}{review_part}{tool_part}")
     if report.get("final_response"):
         print("")
         print(report["final_response"])
