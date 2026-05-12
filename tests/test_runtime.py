@@ -10,7 +10,7 @@ from unittest.mock import patch
 from context_kernel.agent_reports import build_agent_cost_report, render_agent_cost_report
 from context_kernel.benchmarks import BenchmarkRunner, render_benchmark_markdown
 from context_kernel.budget import allocate_budget
-from context_kernel.cli import load_batch_patch_specs, main
+from context_kernel.cli import load_batch_patch_specs, main, print_agent_report
 from context_kernel.context import ContextBuilder
 from context_kernel.evals import EvalRunner
 from context_kernel.loop import AgentLoop, parse_agent_action
@@ -240,6 +240,36 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(all(step["contract_recovered"] for step in report["steps"]))
             self.assertFalse(any(step["verifier_ok"] for step in report["steps"]))
             self.assertIn("ship small reliable loops", report["final_response"])
+
+    def test_agent_reports_provider_configuration_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            with patch.object(
+                AgentRunner,
+                "run",
+                side_effect=ValueError("Missing CONTEXT_KERNEL_OPENAI_API_KEY for OpenAI-compatible provider."),
+            ):
+                report = AgentLoop(workspace).run(
+                    "Reply with OK.",
+                    provider_name="openai",
+                    budget=1200,
+                    max_steps=1,
+                    remember=False,
+                    aux_review="off",
+                )
+
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(report["diagnostic"]["category"], "provider_configuration")
+            self.assertIn("akernel setup", report["diagnostic"]["suggestion"])
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                print_agent_report(report)
+
+            output = stdout.getvalue()
+            self.assertIn("diagnostic: provider_configuration", output)
+            self.assertIn("next: Run `akernel setup`", output)
 
     def test_eval_runner_reports_checks_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1382,6 +1382,7 @@ def print_agent_report(report: dict[str, Any]) -> None:
         )
     if report.get("state", {}).get("enabled"):
         print(f"state: wrote {report['state']['written_count']} memory record(s)")
+    print_agent_diagnostic(report.get("diagnostic"))
     for step in report["steps"]:
         trace = step["trace_id"] or "none"
         tokens = step.get("tokens", {}).get("total_tokens", 0)
@@ -1394,9 +1395,23 @@ def print_agent_report(report: dict[str, Any]) -> None:
         tool = step.get("tool", {})
         tool_part = f" tool={tool.get('name')}:{tool.get('id')}" if tool else ""
         print(f"- step {step['index']}: {step['status']} action={action} trace={trace} tokens={tokens}{model_part}{review_part}{tool_part}")
+        print_agent_diagnostic(step.get("diagnostic"), prefix="  ")
     if report.get("final_response"):
         print("")
         print(report["final_response"])
+
+
+def print_agent_diagnostic(diagnostic: Any, *, prefix: str = "") -> None:
+    if not isinstance(diagnostic, dict) or not diagnostic:
+        return
+    category = diagnostic.get("category") or "unknown"
+    message = diagnostic.get("message") or ""
+    suggestion = diagnostic.get("suggestion") or ""
+    print(f"{prefix}diagnostic: {category}")
+    if message:
+        print(f"{prefix}reason: {message}")
+    if suggestion:
+        print(f"{prefix}next: {suggestion}")
 
 
 def cmd_agent_list(args: argparse.Namespace) -> None:

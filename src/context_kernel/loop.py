@@ -72,6 +72,7 @@ class AgentLoop:
                 "auxiliary_model": resolve_role_model(provider_name, model, aux_model, "auxiliary"),
                 "aux_review": aux_review,
             },
+            "diagnostic": None,
             "state": {"enabled": False, "candidate_count": 0, "written_count": 0, "records": []},
             "totals": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
         }
@@ -102,6 +103,7 @@ class AgentLoop:
 
             if not step["continue"]:
                 report["status"] = step["status"]
+                report["diagnostic"] = step.get("diagnostic")
                 self.tasks.step(task["id"], step["stop_reason"], kind="agent_stop")
                 break
         else:
@@ -150,12 +152,18 @@ class AgentLoop:
             resume=True,
         )
         if plan["budget"]["over_budget"] and not allow_over_budget:
+            diagnostic = {
+                "category": "context_budget",
+                "message": "Context packet is over budget.",
+                "suggestion": "Use a leaner profile, increase --budget, run /compact, or pass --allow-over-budget when you intentionally want to continue.",
+            }
             return {
                 "index": index,
                 "status": "blocked",
                 "continue": False,
                 "stop_reason": "Agent loop stopped: context packet is over budget.",
                 "reason": "context packet is over budget",
+                "diagnostic": diagnostic,
                 "plan": summarize_plan(plan),
                 "trace_id": None,
                 "tool_trace_id": None,
@@ -189,27 +197,53 @@ class AgentLoop:
             routing_reason=routing_reason,
         )
 
-        trace = AgentRunner(self.workspace).run(
-            request,
-            provider_name=provider_name,
-            budget=budget,
-            profile=profile,
-            model=selected_model,
-            base_url=base_url,
-            allow_over_budget=allow_over_budget,
-            expect_json=True,
-            remember=False,
-            task_id=task_id,
-            resume=True,
-            packet_overrides=build_agent_packet(
+        try:
+            trace = AgentRunner(self.workspace).run(
                 request,
-                index,
-                max_steps,
-                expect_json=expect_json,
-                model_role=selected_role,
-                routing_reason=routing_reason,
-            ),
-        )
+                provider_name=provider_name,
+                budget=budget,
+                profile=profile,
+                model=selected_model,
+                base_url=base_url,
+                allow_over_budget=allow_over_budget,
+                expect_json=True,
+                remember=False,
+                task_id=task_id,
+                resume=True,
+                packet_overrides=build_agent_packet(
+                    request,
+                    index,
+                    max_steps,
+                    expect_json=expect_json,
+                    model_role=selected_role,
+                    routing_reason=routing_reason,
+                ),
+            )
+        except Exception as exc:
+            diagnostic = diagnose_agent_exception(exc)
+            self.tasks.step(
+                task_id,
+                f"Agent step {index} failed before action execution: {diagnostic['message']}",
+                kind="agent_step",
+            )
+            return {
+                "index": index,
+                "status": "failed",
+                "continue": False,
+                "stop_reason": f"Agent loop stopped: {diagnostic['category']}.",
+                "reason": str(exc),
+                "diagnostic": diagnostic,
+                "plan": summarize_plan(plan),
+                "trace_id": None,
+                "model_role": selected_role,
+                "model": selected_model,
+                "routing_reason": routing_reason,
+                "aux_review": review,
+                "tool_trace_id": None,
+                "action": None,
+                "tokens": {},
+                "verifier_ok": False,
+            }
         attach_trace_outputs(self.tasks, task_id, trace)
         tokens = trace.get("response", {})
 
@@ -233,6 +267,11 @@ class AgentLoop:
                 "continue": False,
                 "stop_reason": f"Agent loop stopped: {stop_reason}.",
                 "reason": str(exc),
+                "diagnostic": {
+                    "category": "provider_response",
+                    "message": compact(str(exc), limit=240),
+                    "suggestion": "Retry with the same task, or use a stricter/stronger model if the provider keeps returning malformed agent actions.",
+                },
                 "plan": summarize_plan(plan),
                 "trace_id": trace["id"],
                 "model_role": selected_role,
@@ -272,6 +311,11 @@ class AgentLoop:
                 "continue": False,
                 "stop_reason": "Agent loop stopped: repeated identical action would likely cause a loop.",
                 "reason": "repeated identical action detected",
+                "diagnostic": {
+                    "category": "loop_guard",
+                    "message": "The provider returned the same action twice.",
+                    "suggestion": "Inspect the saved agent run and linked traces, then retry with more specific instructions or a larger step budget.",
+                },
                 "plan": summarize_plan(plan),
                 "trace_id": trace["id"],
                 "model_role": selected_role,
@@ -350,11 +394,13 @@ class AgentLoop:
             status = "recovery_prepared" if can_continue else "needs_review"
         else:
             status = "ok" if can_continue else "stopped"
+        diagnostic = diagnose_tool_result(tool_result) if not can_continue and not tool_result["ok"] else None
         return {
             "index": index,
             "status": status,
             "continue": can_continue,
             "stop_reason": final_tool_stop_reason(tool_result, recovery_tools=recovery_tools, max_steps=max_steps) if not can_continue else "",
+            "diagnostic": diagnostic,
             "plan": summarize_plan(plan),
             "trace_id": trace["id"],
             "model_role": selected_role,
@@ -802,6 +848,80 @@ def recovery_target_path(request: str) -> str | None:
     return None
 
 
+def diagnose_agent_exception(exc: Exception) -> dict[str, str]:
+    message = compact(str(exc), limit=500) or exc.__class__.__name__
+    lower = message.casefold()
+    if "missing context_kernel_openai_base_url" in lower or "missing context_kernel_openai_api_key" in lower:
+        return {
+            "category": "provider_configuration",
+            "message": message,
+            "suggestion": "Run `akernel setup` in the project, then set API key, base URL, primary model, and auxiliary model.",
+        }
+    if "provider http 401" in lower or "provider http 403" in lower:
+        return {
+            "category": "provider_auth",
+            "message": message,
+            "suggestion": "Check `CONTEXT_KERNEL_OPENAI_API_KEY` in the project `.env` and confirm the endpoint accepts it.",
+        }
+    if "provider http 404" in lower:
+        return {
+            "category": "provider_endpoint",
+            "message": message,
+            "suggestion": "Check that the base URL includes `/v1` and that the selected model exists on this endpoint.",
+        }
+    if "provider http 429" in lower:
+        return {
+            "category": "provider_rate_limit",
+            "message": message,
+            "suggestion": "Wait and retry, or switch to a lower-cost auxiliary model for planning steps.",
+        }
+    if "provider http 5" in lower:
+        return {
+            "category": "provider_server",
+            "message": message,
+            "suggestion": "The provider returned a server error. Retry later or verify the endpoint health with `akernel models --provider openai`.",
+        }
+    if "provider network" in lower or "timed out" in lower or "connection" in lower:
+        return {
+            "category": "provider_network",
+            "message": message,
+            "suggestion": "Check VPN/proxy connectivity and verify the base URL with `akernel models --provider openai`.",
+        }
+    if "provider returned invalid json" in lower:
+        return {
+            "category": "provider_protocol",
+            "message": message,
+            "suggestion": "The endpoint did not return OpenAI-compatible JSON. Check the base URL and provider compatibility.",
+        }
+    return {
+        "category": "runtime_error",
+        "message": message,
+        "suggestion": "Inspect the saved run, then retry with `--provider mock` to separate runtime issues from provider issues.",
+    }
+
+
+def diagnose_tool_result(tool_result: dict[str, Any]) -> dict[str, str]:
+    tool = str(tool_result.get("tool") or "tool")
+    summary = summarize_tool_result(tool_result)
+    if tool_result.get("blocked"):
+        return {
+            "category": "policy_block",
+            "message": summary,
+            "suggestion": "Use an allowed workspace path or command root, or update `.akernel/config.json` if the command is intentionally safe.",
+        }
+    if tool == "run_command":
+        return {
+            "category": "command_failed",
+            "message": summary,
+            "suggestion": "Inspect stdout/stderr in the linked tool trace, fix the underlying issue, then rerun the task.",
+        }
+    return {
+        "category": "tool_failed",
+        "message": summary,
+        "suggestion": "Inspect the linked tool trace and retry with a narrower file path or patch instruction.",
+    }
+
+
 def command_failure_target_path(workspace: Workspace, tool_result: dict[str, Any]) -> str | None:
     output = tool_result.get("output", {})
     text = "\n".join(
@@ -938,26 +1058,41 @@ def run_auxiliary_review(
     if not resolved_aux:
         return {"enabled": False, "reason": "no auxiliary model configured for this provider"}
 
-    trace = AgentRunner(workspace).run(
-        request,
-        provider_name=provider_name,
-        budget=budget,
-        profile=profile,
-        model=resolved_aux,
-        base_url=base_url,
-        allow_over_budget=allow_over_budget,
-        expect_json=True,
-        remember=False,
-        task_id=task_id,
-        resume=True,
-        packet_overrides=build_aux_review_packet(
-            plan,
-            selected_role=selected_role,
-            selected_model=selected_model,
-            aux_model=resolved_aux,
-            routing_reason=routing_reason,
-        ),
-    )
+    try:
+        trace = AgentRunner(workspace).run(
+            request,
+            provider_name=provider_name,
+            budget=budget,
+            profile=profile,
+            model=resolved_aux,
+            base_url=base_url,
+            allow_over_budget=allow_over_budget,
+            expect_json=True,
+            remember=False,
+            task_id=task_id,
+            resume=True,
+            packet_overrides=build_aux_review_packet(
+                plan,
+                selected_role=selected_role,
+                selected_model=selected_model,
+                aux_model=resolved_aux,
+                routing_reason=routing_reason,
+            ),
+        )
+    except Exception as exc:
+        diagnostic = diagnose_agent_exception(exc)
+        return {
+            "enabled": True,
+            "trace_id": None,
+            "model": resolved_aux,
+            "ok": False,
+            "risk": "medium",
+            "recommendation": "use_primary",
+            "notes": [diagnostic["message"]],
+            "tokens": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            "verifier_ok": False,
+            "diagnostic": diagnostic,
+        }
     parsed = parse_aux_review(trace.get("response", {}).get("text", ""))
     tokens = trace.get("response", {})
     return {
@@ -1043,6 +1178,7 @@ def compact_saved_agent_report(report: dict[str, Any]) -> dict[str, Any]:
         "status": report.get("status"),
         "max_steps": report.get("max_steps"),
         "model_routing": report.get("model_routing"),
+        "diagnostic": compact_saved_diagnostic(report.get("diagnostic")),
         "steps": [compact_saved_step(step) for step in steps],
         "final_response": compact(str(report.get("final_response") or ""), limit=800) or None,
         "state": compact_saved_state(report.get("state", {})),
@@ -1074,6 +1210,9 @@ def compact_saved_step(step: dict[str, Any]) -> dict[str, Any]:
         "verifier_ok": step.get("verifier_ok"),
         "contract_recovered": bool(step.get("contract_recovered")),
     }
+    diagnostic = compact_saved_diagnostic(step.get("diagnostic"))
+    if diagnostic:
+        saved["diagnostic"] = diagnostic
     if step.get("stop_reason"):
         saved["stop_reason"] = compact(str(step.get("stop_reason", "")), limit=180)
     plan = step.get("plan")
@@ -1092,6 +1231,16 @@ def compact_saved_step(step: dict[str, Any]) -> dict[str, Any]:
     if step.get("final_response"):
         saved["final_response"] = compact(str(step.get("final_response", "")), limit=320)
     return saved
+
+
+def compact_saved_diagnostic(diagnostic: Any) -> dict[str, str] | None:
+    if not isinstance(diagnostic, dict) or not diagnostic:
+        return None
+    return {
+        "category": compact(str(diagnostic.get("category", "")), limit=80),
+        "message": compact(str(diagnostic.get("message", "")), limit=400),
+        "suggestion": compact(str(diagnostic.get("suggestion", "")), limit=240),
+    }
 
 
 def compact_saved_aux_review(review: dict[str, Any]) -> dict[str, Any]:
@@ -1114,6 +1263,9 @@ def compact_saved_aux_review(review: dict[str, Any]) -> dict[str, Any]:
                 "verifier_ok": bool(review.get("verifier_ok")),
             }
         )
+        diagnostic = compact_saved_diagnostic(review.get("diagnostic"))
+        if diagnostic:
+            saved["diagnostic"] = diagnostic
     return saved
 
 

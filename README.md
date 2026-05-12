@@ -141,6 +141,8 @@ akernel agent cost <agent-run-id>
 
 Inside `akernel`, type a natural-language task and press Enter. Use `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave.
 
+When an agent run cannot continue, the CLI prints a compact diagnostic with a category, reason, and suggested next step. Common categories include provider configuration, provider auth/network/protocol errors, context budget blocks, policy blocks, command failures, malformed provider actions, and loop guards.
+
 See [docs/03-cli-mvp.md](docs/03-cli-mvp.md) for the full command surface.
 
 ## Development

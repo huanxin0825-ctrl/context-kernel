@@ -745,10 +745,17 @@ class OpenAICompatibleProvider:
     def _open_json(self, request: urllib.request.Request) -> dict[str, Any]:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
+                body = response.read().decode("utf-8")
+                try:
+                    return json.loads(body)
+                except json.JSONDecodeError as exc:
+                    preview = body[:500].replace("\n", " ")
+                    raise RuntimeError(f"Provider returned invalid JSON: {preview}") from exc
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Provider HTTP {exc.code}: {body}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(f"Provider network error: {exc}") from exc
 
 
 def build_messages(packet: dict[str, Any]) -> list[dict[str, str]]:

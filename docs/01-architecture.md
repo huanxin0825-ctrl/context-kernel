@@ -213,6 +213,7 @@ Current behavior:
 - If a provider wraps an otherwise valid action JSON in extra text or a fenced code block, the strict response verifier records the contract miss while the loop can still recover the action and continue instead of wasting the turn.
 - Repeated identical actions are stopped inside the same run to reduce loop risk.
 - Policy-blocked tool actions stop the loop immediately instead of triggering further tool retries.
+- Failed stops include a compact diagnostic category, message, and next-step suggestion so real-provider failures can be separated into configuration, auth, network, endpoint, protocol, budget, policy, command, tool, malformed-action, or loop-guard causes.
 - Agent reports are saved under `.akernel/agent_runs/`.
 
 The loop is intentionally conservative. It does not yet let model output trigger arbitrary tools automatically; local tool execution remains policy-gated through `akernel tool ...`.
