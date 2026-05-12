@@ -138,6 +138,49 @@ class MemoryStore:
             )
         return cursor.rowcount > 0
 
+    def prune(
+        self,
+        *,
+        max_records: int | None = None,
+        max_tokens: int | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, object]:
+        records = self.all()
+        if max_records is None and max_tokens is None:
+            raise ValueError("memory prune requires --max-records, --max-tokens, or both.")
+        if max_records is not None and max_records < 0:
+            raise ValueError("--max-records must be >= 0")
+        if max_tokens is not None and max_tokens < 0:
+            raise ValueError("--max-tokens must be >= 0")
+
+        keep_limit = max_records if max_records is not None else len(records)
+        ranked = sorted(records, key=memory_retention_key, reverse=True)
+        kept: list[MemoryRecord] = []
+        used_tokens = 0
+        for record in ranked:
+            cost = estimate_tokens(record.to_dict())
+            if len(kept) >= keep_limit:
+                continue
+            if max_tokens is not None and used_tokens + cost > max_tokens:
+                continue
+            kept.append(record)
+            used_tokens += cost
+
+        kept_ids = {record.id for record in kept}
+        candidates = [record for record in records if record.id not in kept_ids]
+        if not dry_run:
+            for record in candidates:
+                self.forget(record.id)
+        return {
+            "dry_run": dry_run,
+            "active_before": len(records),
+            "kept": len(kept),
+            "archived": 0 if dry_run else len(candidates),
+            "candidate_count": len(candidates),
+            "kept_tokens": used_tokens,
+            "candidates": [record.to_dict() for record in candidates],
+        }
+
     def all(self, kind: str | None = None, *, include_archived: bool = False) -> list[MemoryRecord]:
         if kind:
             validate_kind(kind)
@@ -299,6 +342,19 @@ def normalize_tags(tags: list[str] | None) -> list[str]:
 def memory_hash(kind: str, text: str) -> str:
     canonical = f"{kind}\n{' '.join(text.split()).casefold()}"
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+
+def memory_retention_key(record: MemoryRecord) -> tuple[int, int, str, str]:
+    kind_priority = {
+        "preference": 50,
+        "decision": 45,
+        "fact": 40,
+        "project_state": 30,
+        "task_state": 20,
+    }.get(record.kind, 10)
+    tag_priority = 100 if any(tag.casefold() in {"keep", "pinned", "global"} for tag in record.tags) else 0
+    text_cost = estimate_tokens(record.to_dict())
+    return (tag_priority + kind_priority, -text_cost, record.updated_at, record.id)
 
 
 def record_from_row(row: sqlite3.Row) -> MemoryRecord:

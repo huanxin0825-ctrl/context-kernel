@@ -14,7 +14,9 @@ from .benchmarks import BenchmarkRunner, benchmark_ref
 from .budget import DEFAULT_PROFILE, profile_names
 from .context import ContextBuilder
 from .evals import EvalRunner
+from .global_memory import pull_global_memories, push_global_memories
 from .loop import AgentLoop, summarize_tool_result
+from .marketplace import install_marketplace_skill, list_marketplace_skills
 from .memory import ALLOWED_KINDS, MemoryStore
 from .planner import ExecutionPlanner
 from .policy import FILE_OPERATIONS, check_command_policy, check_file_policy, summarize_command_policy
@@ -167,6 +169,13 @@ def build_parser() -> argparse.ArgumentParser:
     skill_inspect.add_argument("skill_id")
     skill_inspect.add_argument("--budget", type=int, default=300)
     skill_inspect.set_defaults(func=cmd_skill_inspect)
+    skill_market_list = skill_sub.add_parser("market-list", help="List skills from a marketplace index.")
+    skill_market_list.add_argument("--index", default=None, help="Marketplace index JSON path.")
+    skill_market_list.set_defaults(func=cmd_skill_market_list)
+    skill_market_install = skill_sub.add_parser("market-install", help="Install a skill from a marketplace index.")
+    skill_market_install.add_argument("skill_id")
+    skill_market_install.add_argument("--index", default=None, help="Marketplace index JSON path.")
+    skill_market_install.set_defaults(func=cmd_skill_market_install)
 
     memory_parser = subparsers.add_parser("memory", help="Manage structured memory.")
     memory_sub = memory_parser.add_subparsers(dest="memory_command", required=True)
@@ -197,6 +206,23 @@ def build_parser() -> argparse.ArgumentParser:
     memory_forget = memory_sub.add_parser("forget", help="Archive a memory record so it no longer enters context.")
     memory_forget.add_argument("record_id")
     memory_forget.set_defaults(func=cmd_memory_forget)
+    memory_prune = memory_sub.add_parser("prune", help="Archive lower-priority memory records by count or token budget.")
+    memory_prune.add_argument("--max-records", type=int, default=None)
+    memory_prune.add_argument("--max-tokens", type=int, default=None)
+    memory_prune.add_argument("--dry-run", action="store_true")
+    memory_prune.add_argument("--json", action="store_true")
+    memory_prune.set_defaults(func=cmd_memory_prune)
+    memory_global_push = memory_sub.add_parser("global-push", help="Copy active project memories into the global memory store.")
+    memory_global_push.add_argument("--kind", choices=sorted(ALLOWED_KINDS))
+    memory_global_push.add_argument("--global-root", default=None)
+    memory_global_push.add_argument("--json", action="store_true")
+    memory_global_push.set_defaults(func=cmd_memory_global_push)
+    memory_global_pull = memory_sub.add_parser("global-pull", help="Copy memories from the global memory store into this project.")
+    memory_global_pull.add_argument("--kind", choices=sorted(ALLOWED_KINDS))
+    memory_global_pull.add_argument("--limit", type=int, default=None)
+    memory_global_pull.add_argument("--global-root", default=None)
+    memory_global_pull.add_argument("--json", action="store_true")
+    memory_global_pull.set_defaults(func=cmd_memory_global_pull)
 
     run_parser = subparsers.add_parser("run", help="Build context and run a provider.")
     run_parser.add_argument("request")
@@ -692,6 +718,23 @@ def cmd_skill_inspect(args: argparse.Namespace) -> None:
     print_json(inspect_skill(skill, args.budget))
 
 
+def cmd_skill_market_list(args: argparse.Namespace) -> None:
+    index = Path(args.index) if args.index else None
+    skills = list_marketplace_skills(index)
+    if not skills:
+        print("no marketplace skills")
+        return
+    for skill in skills:
+        print(f"{skill.get('id')}\t{skill.get('name')}\t{skill.get('summary', '')}")
+
+
+def cmd_skill_market_install(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    index = Path(args.index) if args.index else None
+    result = install_marketplace_skill(workspace, args.skill_id, index=index)
+    print(f"installed marketplace skill: {result['id']} ({result['name']})")
+
+
 def cmd_memory_add(args: argparse.Namespace) -> None:
     workspace = workspace_from_args(args)
     tags = [tag.strip() for tag in args.tags.split(",") if tag.strip()]
@@ -739,6 +782,51 @@ def cmd_memory_forget(args: argparse.Namespace) -> None:
     if not removed:
         raise KeyError(f"Memory record not found: {args.record_id}")
     print(f"forgot memory: {args.record_id}")
+
+
+def cmd_memory_prune(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    result = MemoryStore(workspace).prune(
+        max_records=args.max_records,
+        max_tokens=args.max_tokens,
+        dry_run=args.dry_run,
+    )
+    if args.json:
+        print_json(result)
+        return
+    action = "would archive" if args.dry_run else "archived"
+    print(
+        f"memory_prune: active_before={result['active_before']} "
+        f"kept={result['kept']} {action}={result['candidate_count']} "
+        f"kept_tokens={result['kept_tokens']}"
+    )
+
+
+def cmd_memory_global_push(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    result = push_global_memories(
+        workspace,
+        kind=args.kind,
+        global_root=Path(args.global_root) if args.global_root else None,
+    )
+    if args.json:
+        print_json(result)
+        return
+    print(f"global_push: copied {result['count']} memory record(s) to {result['target']}")
+
+
+def cmd_memory_global_pull(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    result = pull_global_memories(
+        workspace,
+        kind=args.kind,
+        limit=args.limit,
+        global_root=Path(args.global_root) if args.global_root else None,
+    )
+    if args.json:
+        print_json(result)
+        return
+    print(f"global_pull: copied {result['count']} memory record(s) from {result['source']}")
 
 
 def cmd_context(args: argparse.Namespace) -> None:
@@ -2185,3 +2273,7 @@ def enforce_regression_gate(diff: dict[str, Any], *, enabled: bool, label: str) 
 
 def print_json(data: dict[str, Any]) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

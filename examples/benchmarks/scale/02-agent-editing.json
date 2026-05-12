@@ -1,0 +1,21 @@
+{
+  "name": "Agent editing and verification",
+  "tasks": [
+    {
+      "id": "multi_file_bugfix_plan",
+      "request": "Investigate a failing parser test that may require edits across multiple files and plan the smallest safe patch",
+      "profile": "balanced",
+      "expected_skills": ["edit_file"],
+      "expected_response_terms": ["context"],
+      "minimum_savings_percent": 10
+    },
+    {
+      "id": "verification_command_profile",
+      "request": "Use the project profile to choose the verification command after a code edit",
+      "profile": "balanced",
+      "expected_skills": ["edit_file"],
+      "expected_response_terms": ["context"],
+      "minimum_savings_percent": 10
+    }
+  ]
+}

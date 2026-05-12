@@ -99,6 +99,15 @@ Current action set:
 - `batch_patch`
 - `run_command`
 
+Memory and skill commands now include productization primitives:
+
+- `memory prune --max-records N --dry-run` previews memory records that would be archived under a retention cap.
+- `memory prune --max-tokens N` keeps higher-priority records within an estimated memory token budget.
+- `memory global-push` copies active project memories into an explicit user-level global store.
+- `memory global-pull --limit N` copies reviewed global memories into the current project.
+- `skill market-list` lists packaged marketplace skills.
+- `skill market-install <skill-id>` installs a packaged skill contract into the current workspace.
+
 Current multi-step pattern:
 
 - `write_file -> run_command -> respond`

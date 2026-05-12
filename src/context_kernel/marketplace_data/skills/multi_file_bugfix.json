@@ -1,0 +1,28 @@
+{
+  "id": "multi_file_bugfix",
+  "name": "Multi File Bugfix",
+  "summary": "Investigate and repair bugs that may span multiple files.",
+  "intent": "Use when a failing behavior, test, or stack trace may require edits across more than one source file.",
+  "inputs": ["failure_output", "project_profile", "relevant_files", "verification_command"],
+  "outputs": ["root_cause", "patch_plan", "applied_edits", "verification_result"],
+  "constraints": [
+    "Read failure evidence before editing.",
+    "Prefer the smallest coherent multi-file patch.",
+    "Do not rewrite unrelated modules.",
+    "Run the project verification command after edits when policy allows it."
+  ],
+  "failure_modes": [
+    "Failure output does not identify a useful file or symbol.",
+    "Patch requires behavior knowledge outside the available context.",
+    "Verification command is blocked or unavailable."
+  ],
+  "procedure": [
+    "Map the failure to likely files and symbols.",
+    "Read only the minimum files needed to understand the cause.",
+    "Patch related files as a single bounded batch when edits are coupled.",
+    "Run verification and stop with a diagnostic if the failure changes unexpectedly."
+  ],
+  "examples": [
+    "Fix a failing parser test where the implementation and expected fixture both need inspection."
+  ]
+}

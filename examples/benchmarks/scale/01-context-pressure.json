@@ -1,0 +1,22 @@
+{
+  "name": "Context pressure and compaction",
+  "tasks": [
+    {
+      "id": "compact_long_task",
+      "request": "Compact a long agent task into a minimal resume brief while preserving decisions and blockers",
+      "profile": "lean",
+      "expected_skills": ["context_budget"],
+      "expected_response_terms": ["context"],
+      "minimum_savings_percent": 15
+    },
+    {
+      "id": "budget_noisy_memory",
+      "request": "Select only relevant memory for a token budget analysis and explain omitted stale task notes",
+      "profile": "balanced",
+      "expected_skills": ["context_budget"],
+      "expected_memory_terms": ["token"],
+      "expected_response_terms": ["budget"],
+      "minimum_savings_percent": 15
+    }
+  ]
+}

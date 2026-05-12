@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "name": "Context Kernel packaged skill marketplace",
+  "skills": [
+    {
+      "id": "context_budget",
+      "name": "Context Budget",
+      "summary": "Plan and inspect token-aware context budget work.",
+      "path": "context_budget.json"
+    },
+    {
+      "id": "edit_file",
+      "name": "Edit File",
+      "summary": "Make focused file edits while preserving unrelated changes.",
+      "path": "edit_file.json"
+    },
+    {
+      "id": "multi_file_bugfix",
+      "name": "Multi File Bugfix",
+      "summary": "Investigate and repair bugs that may span multiple files.",
+      "path": "multi_file_bugfix.json"
+    },
+    {
+      "id": "long_task_planning",
+      "name": "Long Task Planning",
+      "summary": "Break long-running work into resumable checkpoints.",
+      "path": "long_task_planning.json"
+    },
+    {
+      "id": "context_compaction",
+      "name": "Context Compaction",
+      "summary": "Compress task state and memory without losing required evidence.",
+      "path": "context_compaction.json"
+    }
+  ]
+}

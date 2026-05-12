@@ -1,0 +1,27 @@
+{
+  "id": "context_budget",
+  "name": "Context Budget",
+  "summary": "Assemble minimal context under a fixed token budget.",
+  "intent": "Use when a request asks for context selection, prompt reduction, token savings, or budget-aware routing.",
+  "inputs": ["request", "token_budget", "available_context"],
+  "outputs": ["context_packet", "budget_report", "omissions"],
+  "constraints": [
+    "Include task-critical evidence before convenience context.",
+    "Prefer skill contracts over full procedures.",
+    "Explain important omissions."
+  ],
+  "failure_modes": [
+    "Budget is too small for the requested task.",
+    "Relevant memory cannot be found.",
+    "Skill contracts are too vague to route safely."
+  ],
+  "procedure": [
+    "Estimate request cost.",
+    "Reserve space for model response.",
+    "Select relevant memory and skills.",
+    "Check the final packet against the budget."
+  ],
+  "examples": [
+    "Build a 1200-token packet for a CLI implementation task."
+  ]
+}

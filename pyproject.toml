@@ -30,3 +30,6 @@ akernel = "context_kernel.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+context_kernel = ["marketplace_data/skills/*.json"]

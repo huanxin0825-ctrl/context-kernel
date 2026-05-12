@@ -49,6 +49,14 @@ On Windows, also validate the wake flow:
 .\wake.cmd -InitWorkspace -Workspace .sandbox-wake
 ```
 
+For release preparation, run the bundled check:
+
+```powershell
+.\scripts\release_check.ps1
+```
+
+It runs the unit test suite, builds the Python package, checks the CLI entrypoint, and verifies that packaged marketplace skills can be listed.
+
 ## Release Shape
 
 The current release shape is intentionally simple:
@@ -57,8 +65,20 @@ The current release shape is intentionally simple:
 - console entry point: `akernel`
 - source distribution and wheel via `python -m build`
 - project-local provider secrets via `.env`
+- direct GitHub install helper via `scripts/install_remote.ps1`
+- thin npm launcher wrapper under `packages/npm/akernel`
 
 This keeps the CLI portable while the runtime boundaries are still stabilizing.
+
+Until PyPI publishing is enabled, Windows users can install from GitHub with:
+
+```powershell
+irm https://raw.githubusercontent.com/huanxin0825-ctrl/context-kernel/main/scripts/install_remote.ps1 | iex
+akernel setup
+akernel
+```
+
+Publish the npm wrapper only after the Python package is available from PyPI or another approved package source.
 
 `bench gate` also requires the current benchmark report itself to pass its checks. This prevents a bad first run from becoming the new normal just because the relative diff has no regression.
 

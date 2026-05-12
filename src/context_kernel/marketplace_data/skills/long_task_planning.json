@@ -1,0 +1,27 @@
+{
+  "id": "long_task_planning",
+  "name": "Long Task Planning",
+  "summary": "Break long-running work into resumable checkpoints.",
+  "intent": "Use when a task spans multiple agent runs, milestones, or verification phases.",
+  "inputs": ["goal", "current_task_state", "constraints", "known_blockers"],
+  "outputs": ["milestones", "next_checkpoint", "risks", "resume_brief"],
+  "constraints": [
+    "Keep checkpoints compact enough to enter future context packets.",
+    "Record decisions separately from transient notes.",
+    "Surface blockers early instead of hiding them in a long plan."
+  ],
+  "failure_modes": [
+    "Plan becomes a verbose transcript instead of durable state.",
+    "Milestones are too broad to verify.",
+    "Important assumptions are not recorded."
+  ],
+  "procedure": [
+    "State the target outcome in one sentence.",
+    "Create small milestones with verification signals.",
+    "Write only the next actionable checkpoint into task state.",
+    "Archive or prune stale task-state memories after completion."
+  ],
+  "examples": [
+    "Plan a multi-day CLI runtime refactor without replaying the full conversation."
+  ]
+}

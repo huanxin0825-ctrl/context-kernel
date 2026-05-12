@@ -13,7 +13,9 @@ from context_kernel.budget import allocate_budget
 from context_kernel.cli import load_batch_patch_specs, main, print_agent_report
 from context_kernel.context import ContextBuilder
 from context_kernel.evals import EvalRunner
+from context_kernel.global_memory import pull_global_memories, push_global_memories
 from context_kernel.loop import AgentLoop, parse_agent_action
+from context_kernel.marketplace import install_marketplace_skill, list_marketplace_skills
 from context_kernel.memory import MemoryStore, is_relevant_memory_match
 from context_kernel.planner import ExecutionPlanner
 from context_kernel.policy import assess_request_policy, check_command_policy, check_file_policy
@@ -454,6 +456,54 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(memory.forget(first.id))
             self.assertRaises(KeyError, memory.get, first.id)
             self.assertEqual(memory.get(first.id, include_archived=True).archived_at is not None, True)
+
+    def test_memory_prune_keeps_pinned_records_and_archives_lower_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            memory = MemoryStore(workspace)
+            pinned = memory.add("preference", "Always keep CLI-first project preferences.", ["keep"])
+            stale = memory.add("task_state", "Old transient task detail that can be recovered from traces.", ["stale"])
+
+            dry_run = memory.prune(max_records=1, dry_run=True)
+            result = memory.prune(max_records=1)
+
+            self.assertEqual(dry_run["candidate_count"], 1)
+            self.assertEqual(result["archived"], 1)
+            self.assertEqual(memory.get(pinned.id).id, pinned.id)
+            self.assertRaises(KeyError, memory.get, stale.id)
+
+    def test_global_memory_push_and_pull_are_deduped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_a = Workspace(root / "project-a")
+            project_b = Workspace(root / "project-b")
+            project_a.init()
+            project_b.init()
+            MemoryStore(project_a).add("preference", "Prefer compact context packets across projects.", ["cli"])
+
+            pushed = push_global_memories(project_a, global_root=root / "global")
+            pulled = pull_global_memories(project_b, global_root=root / "global")
+            pulled_again = pull_global_memories(project_b, global_root=root / "global")
+
+            self.assertEqual(pushed["count"], 1)
+            self.assertEqual(pulled["count"], 1)
+            self.assertEqual(pulled_again["count"], 1)
+            records = MemoryStore(project_b).all()
+            self.assertEqual(len(records), 1)
+            self.assertIn("global", records[0].tags)
+
+    def test_packaged_skill_marketplace_installs_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            skills = list_marketplace_skills()
+            installed = install_marketplace_skill(workspace, "multi_file_bugfix")
+
+            self.assertTrue(any(skill.get("id") == "multi_file_bugfix" for skill in skills))
+            self.assertEqual(installed["id"], "multi_file_bugfix")
+            self.assertEqual(SkillRegistry(workspace).get("multi_file_bugfix").name, "Multi File Bugfix")
 
     def test_execution_planner_reports_route_budget_and_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

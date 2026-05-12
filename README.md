@@ -129,6 +129,11 @@ akernel --workspace .sandbox chat
 akernel context "Continue this task" --task <task-id> --resume
 akernel project scan
 akernel project show
+akernel memory prune --max-records 100 --dry-run
+akernel memory global-push
+akernel memory global-pull --limit 20
+akernel skill market-list
+akernel skill market-install multi_file_bugfix
 akernel compare "Summarize the project goal"
 akernel eval run examples\evals\phase2.json
 akernel eval cost <report-id>
@@ -166,6 +171,7 @@ The repository CI runs unit tests, package build checks, CLI smoke tests, benchm
 - [Skill Compiler](docs/06-skill-compiler.md)
 - [Release And CI](docs/07-release-and-ci.md)
 - [Open Source Plan](docs/08-open-source-plan.md)
+- [Product Roadmap](docs/09-product-roadmap.md)
 
 ## Project Status
 

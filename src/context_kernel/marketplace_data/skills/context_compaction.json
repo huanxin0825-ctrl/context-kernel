@@ -1,0 +1,27 @@
+{
+  "id": "context_compaction",
+  "name": "Context Compaction",
+  "summary": "Compress task state and memory without losing required evidence.",
+  "intent": "Use when context pressure is high, memory is noisy, or a long task needs a compact resume brief.",
+  "inputs": ["task_brief", "memory_records", "token_budget", "required_evidence"],
+  "outputs": ["compact_brief", "kept_records", "omitted_records", "risk_notes"],
+  "constraints": [
+    "Do not omit facts required to verify the next action.",
+    "Prefer typed memory over chat transcript fragments.",
+    "Keep omissions explicit and auditable."
+  ],
+  "failure_modes": [
+    "Compaction removes the evidence needed for a safe edit.",
+    "Stale memories outrank recent project state.",
+    "The brief preserves too much transcript-like detail."
+  ],
+  "procedure": [
+    "Identify the next action and required evidence.",
+    "Keep decisions, preferences, and active blockers before stale task notes.",
+    "Summarize repeated state into one durable record.",
+    "Prune lower-priority memory records only when they are recoverable from traces."
+  ],
+  "examples": [
+    "Compact a long implementation task into a resume brief under 1200 tokens."
+  ]
+}

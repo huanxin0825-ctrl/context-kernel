@@ -1,0 +1,16 @@
+{
+  "name": "@context-kernel/akernel",
+  "version": "0.1.0",
+  "description": "npm launcher wrapper for the Context Kernel akernel CLI.",
+  "license": "Apache-2.0",
+  "bin": {
+    "akernel": "bin/akernel.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

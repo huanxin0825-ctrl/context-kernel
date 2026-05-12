@@ -56,6 +56,8 @@ The current public alpha is strong enough to demonstrate the core thesis:
 - Project scanning builds a compact profile instead of loading the full repository.
 - Agent runs are bounded, policy-gated, traced, and cost-reported.
 - Simple failing-test repair, wrapped-action recovery, and structured failure diagnostics show how the runtime can reduce wasted turns without hiding evidence.
+- Explicit memory pruning, global memory sync, and a packaged skill marketplace are available as local-first alpha commands.
+- Release helper scripts, an npm launcher wrapper, and scale benchmark fixtures are present for distribution and measurement work.
 
 Known alpha limits:
 
@@ -63,6 +65,7 @@ Known alpha limits:
 - Complex multi-file bug repair is intentionally conservative.
 - The CLI is the product surface; no UI should be started until CLI workflows are proven.
 - Public APIs and `.akernel` file formats may change before a stable release.
+- PyPI/npm publishing requires release credentials and should happen only after a tagged release check.
 
 ## Contribution Strategy
 

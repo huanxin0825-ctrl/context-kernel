@@ -1,0 +1,20 @@
+{
+  "name": "Global memory and skill marketplace",
+  "tasks": [
+    {
+      "id": "global_memory_reuse",
+      "request": "Reuse durable global project preferences without replaying an old conversation transcript",
+      "profile": "lean",
+      "expected_response_terms": ["memory"],
+      "minimum_savings_percent": 10
+    },
+    {
+      "id": "marketplace_skill_selection",
+      "request": "Install a compact skill contract for long task planning and use it without loading a full procedure",
+      "profile": "lean",
+      "expected_skills": ["context_budget"],
+      "expected_response_terms": ["skill"],
+      "minimum_savings_percent": 10
+    }
+  ]
+}
