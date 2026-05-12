@@ -77,7 +77,7 @@ akernel setup
 akernel
 ```
 
-Inside the interactive session, type a task and press Enter. Use `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave.
+Inside the interactive session, type a task and press Enter. Use `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave. The shell UI renders a session dashboard with current directory, workspace, provider, model, budget profile, state counts, command palette, task progress, run summaries, and assistant responses.
 
 If you want to prepare the benchmark workspace manually:
 

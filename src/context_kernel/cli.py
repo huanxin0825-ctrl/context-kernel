@@ -5,6 +5,7 @@ from getpass import getpass
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 from typing import Any
 
@@ -731,7 +732,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
     print_chat_header(workspace, task_id, args)
     while True:
         try:
-            request = input("\nakernel> ").strip()
+            request = input(chat_prompt(args)).strip()
         except EOFError:
             print("")
             break
@@ -752,15 +753,14 @@ def cmd_chat(args: argparse.Namespace) -> None:
             print_json(tasks.get(task_id))
             continue
         if lowered == "/model":
-            print(f"provider: {args.provider}")
-            print(f"model: {args.model or env_value('CONTEXT_KERNEL_OPENAI_MODEL') or 'default'}")
-            print(f"base_url: {args.base_url or env_value('CONTEXT_KERNEL_OPENAI_BASE_URL') or 'default'}")
+            print_model_panel(args)
             continue
         if lowered == "/runs":
             print_recent_agent_runs(workspace, limit=5)
             continue
         if lowered == "/clear":
-            print("\n" * 30)
+            clear_chat_screen()
+            print_chat_header(workspace, task_id, args)
             continue
         if lowered == "/cost":
             if last_report is None:
@@ -790,27 +790,42 @@ def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespa
     model = args.model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or "default"
     base_url = args.base_url or env_value("CONTEXT_KERNEL_OPENAI_BASE_URL") or ""
     api_key_set = bool(env_value("CONTEXT_KERNEL_OPENAI_API_KEY"))
-    print("")
-    print("Context Kernel Agent")
-    print("====================")
-    print(f"workspace : {workspace.root}")
-    print(f"task      : {task_id}")
-    print(f"provider  : {args.provider}")
-    print(f"model     : {model}")
-    print(f"steps     : max {args.max_steps} per message")
+    chat_banner(
+        "Context Kernel Agent",
+        "Token-frugal task runner for long-lived AI workspaces.",
+    )
+    chat_panel(
+        "Session",
+        [
+            ("cwd", compact_path(Path.cwd())),
+            ("workspace", compact_path(workspace.root)),
+            ("task", task_id),
+            ("provider", args.provider),
+            ("model", model),
+            ("profile", args.profile),
+            ("loop", f"max {args.max_steps} steps per message"),
+            ("state", workspace_state_summary(workspace)),
+        ],
+    )
     if args.provider == "openai" and (not api_key_set or not base_url):
-        print("")
-        print("setup needed: run `akernel setup` before sending OpenAI-backed tasks.")
-    print("")
-    print("Type a task and press Enter.")
-    print("Commands: /help  /model  /task  /runs  /cost  /clear  /exit")
+        chat_notice("Setup needed", "Run `akernel setup` before sending OpenAI-backed tasks.")
+    chat_panel(
+        "Start",
+        [
+            ("type", "Describe a task in natural language and press Enter."),
+            ("inspect", "/model, /task, /runs, /cost"),
+            ("control", "/help, /clear, /exit"),
+        ],
+    )
 
 
 def print_chat_turn_start(request: str, args: argparse.Namespace) -> None:
-    preview = request if len(request) <= 90 else request[:87] + "..."
+    preview = request if len(request) <= chat_width() - 14 else request[: chat_width() - 17] + "..."
     print("")
-    print(f"> {preview}")
-    print(f"running agent loop: provider={args.provider} max_steps={args.max_steps}")
+    print(chat_rule("New Task"))
+    print(chat_color(f"you      {preview}", "bold"))
+    print(chat_color("agent    building minimal context -> planning -> running bounded loop", "dim"))
+    print(chat_color(f"runtime  provider={args.provider} max_steps={args.max_steps}", "dim"))
 
 
 def print_chat_report(report: dict[str, Any]) -> None:
@@ -819,48 +834,182 @@ def print_chat_report(report: dict[str, Any]) -> None:
         for step in report.get("steps", [])
     ]
     print("")
-    print(
-        f"done: status={report['status']} "
-        f"steps={len(report['steps'])}/{report['max_steps']} "
-        f"tokens={report['totals']['total_tokens']}"
+    print(chat_rule("Result"))
+    chat_panel(
+        "Run Summary",
+        [
+            ("status", str(report["status"])),
+            ("steps", f"{len(report['steps'])}/{report['max_steps']}"),
+            ("tokens", str(report["totals"]["total_tokens"])),
+            ("agent_run:", str(report["id"])),
+        ],
     )
     if actions:
-        print("actions: " + " -> ".join(actions))
-    print(f"agent_run: {report['id']}")
+        print(chat_color("Actions", "cyan"))
+        print(wrap_chat_text(" -> ".join(actions), indent="  "))
     if report.get("state", {}).get("enabled"):
-        print(f"memory: wrote {report['state']['written_count']} record(s)")
+        print(chat_color(f"Memory  wrote {report['state']['written_count']} record(s)", "dim"))
     if report.get("final_response"):
         print("")
-        print("assistant:")
-        print(report["final_response"])
+        print(chat_color("Assistant", "green", bold=True))
+        print(wrap_chat_text(str(report["final_response"]), indent="  "))
     print("")
-    print(f"cost: /cost  | inspect: akernel agent show {report['id']}")
+    print(chat_color(f"Next    /cost for cost report | akernel agent show {report['id']} for trace", "dim"))
 
 
 def print_chat_help() -> None:
-    print("Commands:")
-    print("  /help    show this help")
-    print("  /model   show provider, model, and base URL")
-    print("  /task    print the current task session JSON")
-    print("  /runs    list recent agent runs")
-    print("  /cost    print the last agent run cost report")
-    print("  /clear   add spacing to clear the visible terminal")
-    print("  /exit    leave chat")
+    chat_panel(
+        "Command Palette",
+        [
+            ("/help", "show this command palette"),
+            ("/model", "show provider, model, and base URL"),
+            ("/task", "print the current task session JSON"),
+            ("/runs", "list recent agent runs"),
+            ("/cost", "print the last agent run cost report"),
+            ("/clear", "clear and redraw the session header"),
+            ("/exit", "leave the interactive session"),
+        ],
+    )
+    print(chat_color("Tip     Ask one concrete task at a time; Context Kernel keeps the packet lean.", "dim"))
 
 
 def print_recent_agent_runs(workspace: Workspace, *, limit: int) -> None:
     reports = list_agent_reports(workspace)[:limit]
     if not reports:
-        print("no agent runs")
+        chat_notice("Recent Runs", "No agent runs yet.")
         return
+    print(chat_rule("Recent Runs"))
     for report in reports:
+        request = str(report.get("request", ""))
+        if len(request) > 52:
+            request = request[:49] + "..."
         print(
-            f"{report['id']}\t"
-            f"{report.get('status', '')}\t"
-            f"steps={len(report.get('steps', []))}\t"
-            f"tokens={report.get('totals', {}).get('total_tokens', 0)}\t"
-            f"{report.get('request', '')}"
+            f"  {report['id']}  "
+            f"{report.get('status', ''):<10}  "
+            f"steps={len(report.get('steps', [])):<2}  "
+            f"tokens={report.get('totals', {}).get('total_tokens', 0):<5}  "
+            f"{request}"
         )
+
+
+def print_model_panel(args: argparse.Namespace) -> None:
+    chat_panel(
+        "Model",
+        [
+            ("provider", args.provider),
+            ("model", args.model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or "default"),
+            ("base_url", args.base_url or env_value("CONTEXT_KERNEL_OPENAI_BASE_URL") or "default"),
+        ],
+    )
+
+
+def chat_prompt(args: argparse.Namespace) -> str:
+    model = args.model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or args.provider
+    return "\n" + chat_color("akernel", "cyan", bold=True) + chat_color(f" [{model}]", "dim") + "> "
+
+
+def clear_chat_screen() -> None:
+    if sys.stdout.isatty():
+        print("\033[2J\033[H", end="")
+    else:
+        print("\n" * 30)
+
+
+def chat_width() -> int:
+    return max(72, min(shutil.get_terminal_size((96, 20)).columns, 110))
+
+
+def chat_color(text: str, color: str, *, bold: bool = False) -> str:
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return text
+    codes = {
+        "cyan": "36",
+        "green": "32",
+        "yellow": "33",
+        "red": "31",
+        "dim": "2",
+        "bold": "1",
+    }
+    selected: list[str] = []
+    if bold:
+        selected.append("1")
+    selected.append(codes.get(color, "0"))
+    return f"\033[{';'.join(selected)}m{text}\033[0m"
+
+
+def chat_banner(title: str, subtitle: str) -> None:
+    width = chat_width()
+    print("")
+    print(chat_color("=" * width, "cyan", bold=True))
+    print(chat_color(title, "cyan", bold=True))
+    print(chat_color(subtitle, "dim"))
+    print(chat_color("=" * width, "cyan", bold=True))
+
+
+def chat_rule(title: str) -> str:
+    width = chat_width()
+    label = f" {title} "
+    remaining = max(0, width - len(label))
+    left = remaining // 2
+    right = remaining - left
+    return chat_color("-" * left + label + "-" * right, "cyan")
+
+
+def chat_panel(title: str, rows: list[tuple[str, str]]) -> None:
+    width = chat_width()
+    print("")
+    print(chat_color(f"[ {title} ]", "cyan", bold=True))
+    key_width = max(len(key) for key, _ in rows)
+    for key, value in rows:
+        prefix = f"  {key:<{key_width}}  "
+        wrapped = wrap_chat_text(str(value), indent=" " * len(prefix), width=width)
+        lines = wrapped.splitlines() or [""]
+        print(chat_color(prefix, "dim") + lines[0].lstrip())
+        for line in lines[1:]:
+            print(line)
+
+
+def chat_notice(title: str, message: str) -> None:
+    print("")
+    print(chat_color(f"! {title}", "yellow", bold=True))
+    print(wrap_chat_text(message, indent="  "))
+
+
+def wrap_chat_text(text: str, *, indent: str = "", width: int | None = None) -> str:
+    width = width or chat_width()
+    usable = max(30, width - len(indent))
+    lines: list[str] = []
+    for paragraph in text.splitlines() or [""]:
+        words = paragraph.split()
+        if not words:
+            lines.append(indent.rstrip())
+            continue
+        current = words[0]
+        for word in words[1:]:
+            if len(current) + 1 + len(word) > usable:
+                lines.append(indent + current)
+                current = word
+            else:
+                current += " " + word
+        lines.append(indent + current)
+    return "\n".join(lines)
+
+
+def compact_path(path: Path) -> str:
+    text = str(path)
+    width = chat_width() - 18
+    if len(text) <= width:
+        return text
+    return "..." + text[-max(12, width - 3) :]
+
+
+def workspace_state_summary(workspace: Workspace) -> str:
+    skills = len(list(workspace.skills_dir.glob("*.json"))) if workspace.skills_dir.exists() else 0
+    runs = len(list(workspace.agent_runs_dir.glob("*.json"))) if workspace.agent_runs_dir.exists() else 0
+    memories = 0
+    if workspace.memory_file.exists():
+        memories = sum(1 for line in workspace.memory_file.read_text(encoding="utf-8").splitlines() if line.strip())
+    return f"{skills} skills, {memories} memories, {runs} runs"
 
 
 def print_agent_report(report: dict[str, Any]) -> None:
