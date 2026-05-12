@@ -508,32 +508,38 @@ class MockProvider:
                 "reason": "Stop because verification is blocked by policy.",
             }
 
-        failure_path = failure_path_from_summary(command_summary)
-        read_trace = find_tool_trace(linked_tools, "read_file", failure_path) if failure_path else None
-        if failure_path and not read_trace:
+        failure_paths = failure_paths_from_summary(command_summary)
+        failure_path = failure_paths[0] if failure_paths else None
+        read_traces = [trace for path in failure_paths if (trace := find_tool_trace(linked_tools, "read_file", path))]
+        unread_path = next((path for path in failure_paths if not find_tool_trace(linked_tools, "read_file", path)), None)
+        if unread_path:
             return {
                 "action": "read_file",
-                "path": failure_path,
+                "path": unread_path,
                 "max_chars": 4000,
                 "reason": "Read the file referenced by the failing test output before patching.",
             }
 
         patch_trace = find_tool_trace(linked_tools, "patch_file", failure_path) if failure_path else None
-        if patch_trace and len(command_traces) == 1:
+        batch_patch_trace = find_tool_trace(linked_tools, "batch_patch", failure_path) if failure_path else None
+        if (patch_trace or batch_patch_trace) and len(command_traces) == 1:
             return run_command_or_policy_response(
                 command,
                 allowed_roots,
                 reason="Re-run the project test command after applying the fix.",
             )
-        if patch_trace and len(command_traces) > 1:
+        if (patch_trace or batch_patch_trace) and len(command_traces) > 1:
             return {
                 "action": "respond",
                 "message": f"Applied a candidate fix, but `{command}` still failed: {command_summary}",
                 "reason": "Stop after one verified fix attempt to avoid looping.",
             }
 
-        if read_trace:
-            patch = infer_patch_from_failure(read_trace, command_summary)
+        if read_traces:
+            multi_patch = infer_batch_patch_from_failures(read_traces, command_summary)
+            if multi_patch:
+                return multi_patch
+            patch = infer_patch_from_failure(read_traces[0], command_summary)
             if patch:
                 return patch
 
@@ -1016,15 +1022,57 @@ def asks_to_fix_tests(request: str) -> bool:
 
 
 def failure_path_from_summary(summary: str) -> str | None:
+    paths = failure_paths_from_summary(summary, limit=1)
+    return paths[0] if paths else None
+
+
+def failure_paths_from_summary(summary: str, *, limit: int = 5) -> list[str]:
     text = str(summary)
     candidates = re.findall(r"File\s+\"([^\"]+\.py)\",\s+line\s+\d+", text)
     candidates.extend(re.findall(r"((?:[A-Za-z]:)?[^\s:]+\.py):\d+", text))
+    paths: list[str] = []
+    seen: set[str] = set()
     for candidate in reversed(candidates):
         normalized = candidate.strip().strip('"').strip("'").replace("\\", "/")
+        if "=" in normalized:
+            normalized = normalized.rsplit("=", 1)[-1]
         if any(part in normalized for part in ["/.venv/", "/site-packages/", "/.akernel/"]):
             continue
-        return normalized.lstrip("./")
-    return None
+        normalized = normalized.lstrip("./")
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        paths.append(normalized)
+        if len(paths) >= limit:
+            break
+    return paths
+
+
+def infer_batch_patch_from_failures(read_traces: list[dict[str, Any]], failure_summary: str) -> dict[str, Any] | None:
+    edits = []
+    seen_paths: set[str] = set()
+    for trace in read_traces:
+        patch = infer_patch_from_failure(trace, failure_summary)
+        if not patch or patch.get("action") != "patch_file":
+            continue
+        path = str(patch.get("path", ""))
+        if not path or path in seen_paths:
+            continue
+        seen_paths.add(path)
+        edits.append(
+            {
+                key: patch[key]
+                for key in ["path", "old", "new", "replace_all", "occurrence", "start_anchor", "end_anchor", "include_anchors"]
+                if key in patch and patch[key] not in {None, ""}
+            }
+        )
+    if len(edits) < 2:
+        return None
+    return {
+        "action": "batch_patch",
+        "edits": edits,
+        "reason": "Apply the inferred multi-file fix as one rollback-safe batch patch.",
+    }
 
 
 def infer_patch_from_failure(read_trace: dict[str, Any], failure_summary: str) -> dict[str, Any] | None:

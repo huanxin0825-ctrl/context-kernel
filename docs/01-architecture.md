@@ -204,7 +204,7 @@ Current behavior:
 - A saved `.akernel/project.json` profile can also enter the packet as `runtime.project`, giving the model compact project metadata such as language, package manager, key files, safe command roots, and likely test/build commands without loading the full repository.
 - Project profiles can include compact local instruction files such as `AGENTS.md`, `.akernel/AGENTS.md`, `CLAUDE.md`, `.cursorrules`, or `.github/copilot-instructions.md`; these are treated as project guidance and do not override runtime policy.
 - When a user asks to run tests, verify, build, lint, or install without naming an exact command, the agent should prefer the matching `runtime.project.commands` entry over guessing a command.
-- When a user asks to fix failing tests, the loop can run the project test command, parse Python traceback or `path.py:line` failure output, read the failing workspace file, apply a bounded patch for simple deterministic failures, and rerun the same command before responding.
+- When a user asks to fix failing tests, the loop can run the project test command, parse Python traceback or `path.py:line` failure output, read one or more failing workspace files, apply a bounded `patch_file` or rollback-safe `batch_patch` for simple deterministic failures, and rerun the same command before responding.
 - Tool output summaries are attached back to the task brief for the next step.
 - Each provider run writes a normal trace and attaches it to the task.
 - One explicit task-state summary memory is written per agent run and attached back to the task.

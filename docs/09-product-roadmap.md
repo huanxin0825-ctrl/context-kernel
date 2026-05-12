@@ -8,13 +8,13 @@ Current alpha:
 
 - Policy-gated `read_file`, `patch_file`, `batch_patch`, `write_file`, and `run_command`.
 - Project profile commands for test/build/lint selection.
-- Simple failing-test repair for deterministic Python failures.
+- Simple failing-test repair for deterministic Python failures, including multi-file candidate reads and inferred rollback-safe `batch_patch` edits for coupled trivial fixes.
 - Packaged `multi_file_bugfix` skill contract for lower-token routing.
 
 Next bar:
 
 - Multi-file repair should produce a short root-cause hypothesis before editing.
-- Coupled edits should use one `batch_patch` action when possible.
+- Coupled edits should use one `batch_patch` action when possible, with richer model-driven edit planning beyond deterministic mock inference.
 - Verification should rerun the project profile command and classify changed failures.
 - Reports should separate "fixed", "partially fixed", and "needs human review".
 

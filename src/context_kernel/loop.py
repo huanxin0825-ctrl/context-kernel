@@ -829,9 +829,13 @@ def auto_recovery_tools(
     if action["action"] == "patch_file":
         return [executor.read_file(action["path"], max_chars=min(4000, MAX_CAPTURE_CHARS))]
     if action["action"] == "run_command":
-        target = recovery_target_path(request) or command_failure_target_path(executor.workspace, tool_result)
-        if target:
-            return [executor.read_file(target, max_chars=min(4000, MAX_CAPTURE_CHARS))]
+        explicit_target = recovery_target_path(request)
+        targets = [explicit_target] if explicit_target else command_failure_target_paths(executor.workspace, tool_result, limit=3)
+        return [
+            executor.read_file(target, max_chars=min(4000, MAX_CAPTURE_CHARS))
+            for target in targets
+            if target
+        ]
     return []
 
 
@@ -923,6 +927,11 @@ def diagnose_tool_result(tool_result: dict[str, Any]) -> dict[str, str]:
 
 
 def command_failure_target_path(workspace: Workspace, tool_result: dict[str, Any]) -> str | None:
+    targets = command_failure_target_paths(workspace, tool_result, limit=1)
+    return targets[0] if targets else None
+
+
+def command_failure_target_paths(workspace: Workspace, tool_result: dict[str, Any], *, limit: int = 3) -> list[str]:
     output = tool_result.get("output", {})
     text = "\n".join(
         str(part)
@@ -930,20 +939,31 @@ def command_failure_target_path(workspace: Workspace, tool_result: dict[str, Any
         if part
     )
     if not text:
-        return None
+        return []
     candidates = python_failure_path_candidates(text)
+    targets: list[str] = []
+    seen: set[str] = set()
     for candidate in reversed(candidates):
         normalized = candidate.strip().strip('"').strip("'").replace("\\", "/")
+        if "=" in normalized:
+            normalized = normalized.rsplit("=", 1)[-1]
         if any(part in normalized for part in ["/.venv/", "/site-packages/", "/.akernel/"]):
             continue
         path = Path(normalized)
         if path.is_absolute():
             try:
-                return path.resolve().relative_to(workspace.root).as_posix()
+                normalized = path.resolve().relative_to(workspace.root).as_posix()
             except ValueError:
                 continue
-        return normalized.lstrip("./")
-    return None
+        else:
+            normalized = normalized.lstrip("./")
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        targets.append(normalized)
+        if len(targets) >= limit:
+            break
+    return targets
 
 
 def python_failure_path_candidates(text: str) -> list[str]:

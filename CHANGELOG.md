@@ -26,6 +26,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Scale benchmark fixtures cover context pressure, editing, global memory, and marketplace workflows.
 - Product roadmap documentation defines completion bars for TUI, advanced editing, memory retention, marketplace, distribution, and benchmark maturity.
 - `akernel --ui auto|classic|tui` adds a zero-dependency full-screen terminal UI with transcript, session sidebar, last-run summary, diagnostics, pending context, and input hint.
+- Failing-test recovery can now read multiple file candidates from command output and apply inferred multi-file fixes as one rollback-safe `batch_patch`.
 
 ### Changed
 

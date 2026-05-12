@@ -220,6 +220,60 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("return 2", test_file.read_text(encoding="utf-8"))
             self.assertIn("Project tests passed", report["final_response"])
 
+    def test_agent_can_fix_simple_multi_file_failure_from_project_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "tests").mkdir()
+            core_file = root / "src" / "core.py"
+            util_file = root / "src" / "util.py"
+            core_file.write_text("def core_answer():\n    return 1\n", encoding="utf-8")
+            util_file.write_text("def util_answer():\n    return 1\n", encoding="utf-8")
+            (root / "tests" / "fail_multi.py").write_text(
+                "from pathlib import Path\n"
+                "import sys\n"
+                "root = Path(__file__).resolve().parents[1]\n"
+                "core = (root / 'src' / 'core.py').read_text(encoding='utf-8')\n"
+                "util = (root / 'src' / 'util.py').read_text(encoding='utf-8')\n"
+                "if 'return 2' not in core or 'return 2' not in util:\n"
+                "    sys.stderr.write('src/core.py:1\\nsrc/util.py:1\\nAssertionError: assert 1 == 2\\n')\n"
+                "    raise SystemExit(1)\n"
+                "print('ok')\n",
+                encoding="utf-8",
+            )
+            workspace = Workspace(root)
+            workspace.init()
+            Workspace.write_json(
+                workspace.project_file,
+                {
+                    "version": 1,
+                    "summary": "multi-file failing test fixture",
+                    "languages": ["python"],
+                    "package_managers": ["python/custom"],
+                    "commands": {"test": "python tests/fail_multi.py"},
+                    "command_roots": ["python"],
+                    "key_files": ["src/core.py", "src/util.py", "tests/fail_multi.py"],
+                },
+            )
+
+            report = AgentLoop(workspace).run(
+                "Fix the failing tests.",
+                provider_name="mock",
+                budget=3200,
+                max_steps=4,
+                remember=False,
+            )
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual(
+                [step["action"]["action"] for step in report["steps"]],
+                ["run_command", "batch_patch", "run_command", "respond"],
+            )
+            self.assertIn("return 2", core_file.read_text(encoding="utf-8"))
+            self.assertIn("return 2", util_file.read_text(encoding="utf-8"))
+            self.assertGreaterEqual(len(report["steps"][0].get("recovery_tools", [])), 2)
+            self.assertIn("Project tests passed", report["final_response"])
+
     def test_agent_recovers_fenced_action_from_chatty_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
