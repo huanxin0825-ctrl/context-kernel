@@ -1,6 +1,6 @@
 {
   "name": "@context-akernel/akernel",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "npm launcher wrapper for the Context Kernel akernel CLI.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/huanxin0825-ctrl/context-akernel#readme",

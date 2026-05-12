@@ -1214,6 +1214,7 @@ def run_chat_loop_tui(
     args: argparse.Namespace,
 ) -> None:
     last_report: dict[str, Any] | None = None
+    state: dict[str, Any] = {"last_report": None}
     pending_context: list[str] = []
     transcript: list[dict[str, str]] = [
         {

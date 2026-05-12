@@ -1328,6 +1328,36 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("Last Run", screen)
             self.assertIn("actions: respond", screen)
 
+    def test_tui_chat_runs_agent_loop_after_user_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            with patch("builtins.input", side_effect=["Continue the runtime work", "/exit"]):
+                with patch("sys.stdout", new=io.StringIO()) as stdout:
+                    main(
+                        [
+                            "--workspace",
+                            str(workspace.root),
+                            "chat",
+                            "--provider",
+                            "mock",
+                            "--max-steps",
+                            "1",
+                            "--ui",
+                            "tui",
+                        ]
+                    )
+
+            output = stdout.getvalue()
+            reports = list(workspace.agent_runs_dir.glob("*.json"))
+
+            self.assertEqual(len(reports), 1)
+            self.assertIn("Context Kernel TUI", output)
+            self.assertIn("Assistant", output)
+            self.assertIn("Mock agent response", output)
+            self.assertIn("bye", output)
+
     def test_tui_screen_surfaces_task_plan_and_command_strip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))

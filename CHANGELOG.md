@@ -8,6 +8,13 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.5 - 2026-05-12
+
+### Fixed
+
+- Fixed TUI chat sessions exiting on the first user message because the interactive state holder was not initialized.
+- Made project-root `.env` fallback stable when a user-level parent directory also contains a `.env` file.
+
 ## 0.1.4 - 2026-05-12
 
 ### Changed

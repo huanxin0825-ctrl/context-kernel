@@ -848,13 +848,16 @@ def env_value(name: str) -> str | None:
 
 
 def project_env_values() -> dict[str, str]:
-    for directory in [Path.cwd(), *Path.cwd().parents]:
-        path = directory / ".env"
-        if path.exists():
-            return parse_env_file(path)
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.exists():
+        return parse_env_file(cwd_env)
     project_root = os.environ.get("AKERNEL_PROJECT_ROOT") or os.environ.get("CONTEXT_KERNEL_PROJECT_ROOT")
     if project_root:
         path = Path(project_root) / ".env"
+        if path.exists():
+            return parse_env_file(path)
+    for directory in Path.cwd().parents:
+        path = directory / ".env"
         if path.exists():
             return parse_env_file(path)
     return {}
