@@ -8,6 +8,12 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.4 - 2026-05-12
+
+### Changed
+
+- Reissued the repository rename release after refreshing package publisher bindings for `context-akernel`.
+
 ## 0.1.3 - 2026-05-12
 
 ### Changed
