@@ -65,6 +65,7 @@ akernel agent run "Patch notes/plan.txt replace 'soon' with 'now' and run comman
 akernel agent run "Patch notes/plan.txt replace 'soon' with 'now' and run command python -m unittest discover -s tests" --provider openai --max-steps 3
 akernel agent run "Continue the current task" --provider openai --task <task-id> --max-steps 5
 akernel
+akernel --provider mock --max-steps 1
 akernel chat
 akernel chat --task <task-id>
 akernel agent list
@@ -82,7 +83,7 @@ For OpenAI-compatible providers, put credentials in project `.env` using `.env.e
 
 `agent run` is the first bounded loop entrypoint. It creates or resumes a task, generates a plan, calls the provider with task resume context, requires a one-action JSON reply, executes one policy-gated tool when needed, feeds the resulting tool summary back into the task brief, and saves an agent report under `.akernel/agent_runs/`.
 
-`akernel` without a subcommand starts an interactive Claude Code-style session. Each normal line is sent through the same bounded `agent run` loop while reusing one task session, so the runtime can keep compact progress state instead of replaying the full conversation. The shell UI renders a session dashboard, command palette, task progress section, run summary, action trace, memory write count, and assistant response block. The model panel separates the primary execution model from the auxiliary planning/review/compression model. In `--model-routing auto` mode, low/medium first-step planning can run on the auxiliary model while high-risk, deep, warning-heavy, or synthesis steps stay on the primary model. In `--aux-review auto` mode, auxiliary review runs before primary-model steps and is included in saved traces and token reports. Built-in commands are `/help`, `/status`, `/model`, `/config`, `/task`, `/runs`, `/cost`, `/clear`, and `/exit`.
+`akernel` without a subcommand starts an interactive Claude Code-style session in the current directory. Each normal line is sent through the same bounded `agent run` loop while reusing one task session, so the runtime can keep compact progress state instead of replaying the full conversation. The shell UI renders a session dashboard, command palette, task progress section, run summary, action trace, memory write count, and assistant response block. The model panel separates the primary execution model from the auxiliary planning/review/compression model. In `--model-routing auto` mode, low/medium first-step planning can run on the auxiliary model while high-risk, deep, warning-heavy, or synthesis steps stay on the primary model. In `--aux-review auto` mode, auxiliary review runs before primary-model steps and is included in saved traces and token reports. Built-in commands are `/help`, `/status`, `/model`, `/config`, `/compact`, `/paste`, `/task`, `/runs`, `/cost`, `/clear`, and `/exit`; `@path` attaches a workspace file and `!command` runs a policy-checked command for the next task.
 
 Current action set:
 

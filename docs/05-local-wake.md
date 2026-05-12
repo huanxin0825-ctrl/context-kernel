@@ -25,7 +25,7 @@ akernel
 akernel --help
 ```
 
-The launchers live in `%USERPROFILE%\.context-kernel\bin`, and that directory is added to the user PATH. Open a new terminal if the commands are not visible immediately. `akernel` starts the default `.sandbox` workspace in the current directory and initializes it if needed. Environment lookup prefers the current directory `.env`, then falls back to the installed Context Kernel project `.env`. `akernel-chat` is kept as a compatibility shortcut.
+The launchers live in `%USERPROFILE%\.context-kernel\bin`, and that directory is added to the user PATH. Open a new terminal if the commands are not visible immediately. `akernel` uses the current directory as the workspace, stores state in `.akernel`, and initializes it if needed. Environment lookup prefers the current directory `.env`, then falls back to the installed Context Kernel project `.env`. `akernel-chat` is kept as a compatibility shortcut.
 
 ## Wake The Project
 
@@ -49,7 +49,7 @@ After waking the project and initializing a workspace, start the Claude Code-sty
 
 ```powershell
 akernel
-akernel --workspace .sandbox chat
+akernel chat
 ```
 
 Type a task and press Enter. Use `/cost` to inspect the last run's token pressure, `/task` to print the current task session, and `/exit` to leave.

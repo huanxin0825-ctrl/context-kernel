@@ -37,14 +37,33 @@ from .verifier import verify_trace
 
 DEFAULT_PRIMARY_MODEL = "gpt-5.5"
 DEFAULT_AUXILIARY_MODEL = "gpt-5.3-codex"
+COMMAND_NAMES = {
+    "agent",
+    "bench",
+    "chat",
+    "compare",
+    "context",
+    "doctor",
+    "eval",
+    "init",
+    "memory",
+    "models",
+    "plan",
+    "policy",
+    "run",
+    "setup",
+    "skill",
+    "task",
+    "tool",
+    "trace",
+}
 
 
 def main(argv: list[str] | None = None) -> None:
     configure_console_output()
     parser = build_parser()
     raw_argv = sys.argv[1:] if argv is None else list(argv)
-    if not raw_argv:
-        raw_argv = ["chat"]
+    raw_argv = normalize_default_chat_args(raw_argv)
     args = parser.parse_args(raw_argv)
     try:
         args.func(args)
@@ -52,9 +71,38 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"error: {exc}") from exc
 
 
+def normalize_default_chat_args(raw_argv: list[str]) -> list[str]:
+    """Let bare `akernel` accept chat flags without spelling out `chat`."""
+    if not raw_argv:
+        return ["chat"]
+    if "-h" in raw_argv or "--help" in raw_argv:
+        return raw_argv
+
+    index = 0
+    while index < len(raw_argv):
+        token = raw_argv[index]
+        if token == "--workspace":
+            if index + 1 >= len(raw_argv):
+                return raw_argv
+            index += 2
+            continue
+        if token.startswith("--workspace="):
+            index += 1
+            continue
+        break
+
+    if index >= len(raw_argv):
+        return raw_argv[:index] + ["chat"]
+    if raw_argv[index] in COMMAND_NAMES:
+        return raw_argv
+    if raw_argv[index].startswith("-"):
+        return raw_argv[:index] + ["chat"] + raw_argv[index:]
+    return raw_argv
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="akernel", description="Context Kernel CLI")
-    parser.add_argument("--workspace", default=".sandbox", help="Workspace root containing .akernel state.")
+    parser.add_argument("--workspace", default=".", help="Workspace root containing .akernel state.")
     parser.set_defaults(
         func=cmd_chat,
         provider="openai",

@@ -732,10 +732,26 @@ class RuntimeTests(unittest.TestCase):
                 os.chdir(previous)
 
             output = stdout.getvalue()
-            self.assertTrue((Path(tmp) / ".sandbox" / ".akernel").exists())
+            self.assertTrue((Path(tmp) / ".akernel").exists())
             self.assertIn("initialized workspace:", output)
             self.assertIn("Context Kernel Agent", output)
             self.assertIn("bye", output)
+
+    def test_bare_akernel_accepts_chat_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = Path.cwd()
+            os.chdir(tmp)
+            try:
+                with patch("builtins.input", side_effect=["/exit"]):
+                    with patch("sys.stdout", new=io.StringIO()) as stdout:
+                        main(["--provider", "mock", "--max-steps", "1"])
+            finally:
+                os.chdir(previous)
+
+            output = stdout.getvalue()
+            self.assertTrue((Path(tmp) / ".akernel").exists())
+            self.assertIn("provider   mock", output)
+            self.assertIn("loop       max 1 steps per message", output)
 
     def test_setup_command_writes_project_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

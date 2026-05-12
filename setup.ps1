@@ -37,8 +37,7 @@ $chat = @"
 @echo off
 setlocal
 set "CONTEXT_KERNEL_PROJECT_ROOT=$ProjectRoot"
-if not exist ".sandbox\.akernel" "$PythonPath" -m context_kernel init .sandbox >nul
-"$PythonPath" -m context_kernel --workspace .sandbox chat %*
+"$PythonPath" -m context_kernel chat %*
 exit /b %ERRORLEVEL%
 "@
     Set-Content -LiteralPath (Join-Path $LauncherDir "akernel-chat.cmd") -Value $chat -Encoding ASCII

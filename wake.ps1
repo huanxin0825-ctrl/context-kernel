@@ -1,5 +1,5 @@
 param(
-    [string]$Workspace = ".sandbox",
+    [string]$Workspace = ".",
     [switch]$InitWorkspace,
     [switch]$ListModels,
     [switch]$RunSmoke
@@ -61,7 +61,7 @@ Write-Host "  akernel"
 Write-Host "  akernel setup"
 Write-Host "  akernel models --provider openai"
 Write-Host "  akernel init $Workspace"
-Write-Host "  akernel --workspace $Workspace chat"
+Write-Host "  akernel chat"
 Write-Host "  akernel-chat"
 Write-Host "  akernel --workspace $Workspace bench run examples\benchmarks\phase2"
 Write-Host "  akernel --workspace $Workspace bench gate examples\benchmarks\phase2"
