@@ -1339,38 +1339,87 @@ def build_chat_tui_screen(
 ) -> str:
     width = chat_width()
     height = max(24, shutil.get_terminal_size((width, 32)).lines)
-    right_width = 30
-    left_width = max(40, width - right_width - 3)
-    body_height = max(10, height - 8)
-    title = f" Context Kernel TUI | {status.upper()} | {compact_path(workspace.root)} "
-    lines = [tui_rule(title, width)]
-    body = tui_body_lines(transcript, left_width)
+    right_width = min(40, max(32, width // 3))
+    left_width = max(46, width - right_width - 3)
+    header = tui_header_lines(workspace, args, last_report, status=status, width=width)
+    footer = tui_footer_lines(width)
+    body_height = max(10, height - len(header) - len(footer) - 1)
+    lines = header
+    body = tui_body_lines(transcript, left_width, status=status)
     side = tui_sidebar_lines(workspace, task_id, args, last_report, pending_context, right_width)
     body = body[-body_height:]
     side = side[:body_height]
     for index in range(body_height):
         left = body[index] if index < len(body) else ""
         right = side[index] if index < len(side) else ""
-        lines.append(f"{left:<{left_width}} | {right:<{right_width}}")
-    lines.append(tui_rule(" Input ", width))
-    lines.append("Enter task text, /help for commands, @path to attach, !command to run, /exit to quit.")
-    lines.append("")
+        lines.append(f"{left:<{left_width}} {chat_color('|', 'dim')} {right:<{right_width}}")
+    lines.extend(footer)
     return "\n".join(lines)
 
 
-def tui_body_lines(transcript: list[dict[str, str]], width: int) -> list[str]:
+def tui_header_lines(
+    workspace: Workspace,
+    args: argparse.Namespace,
+    last_report: dict[str, Any] | None,
+    *,
+    status: str,
+    width: int,
+) -> list[str]:
+    status_label = status.upper()
+    status_color = "green" if status == "ready" else "yellow" if status == "running" else "cyan"
+    tokens = 0 if not last_report else last_report.get("totals", {}).get("total_tokens", 0)
+    title = f" Context Kernel TUI // AKERNEL // {status_label} "
+    subtitle = (
+        f"{compact_path(workspace.root)} | provider={args.provider} | "
+        f"primary={primary_model(args)} | aux={auxiliary_model(args)} | last_tokens={tokens}"
+    )
+    return [
+        chat_color(tui_rule(title, width), status_color, bold=True),
+        truncate_line(subtitle, width),
+        tui_command_strip(width),
+    ]
+
+
+def tui_footer_lines(width: int) -> list[str]:
+    return [
+        tui_rule(" Input ", width),
+        truncate_line("Type a task. Use /help for palette, /compact for resume brief, @path for files, !command for checked shell, /exit to quit.", width),
+        "",
+    ]
+
+
+def tui_command_strip(width: int) -> str:
+    commands = " /help  /status  /model  /compact  /runs  /cost  @file  !cmd "
+    return chat_color(truncate_line(commands.center(width, "-"), width), "dim")
+
+
+def tui_body_lines(transcript: list[dict[str, str]], width: int, *, status: str = "ready") -> list[str]:
     if not transcript:
-        return ["No messages yet."]
+        return ["No messages yet. Start with one concrete task."]
     lines: list[str] = []
+    lines.append(f"Transcript [{status}]")
+    lines.append("-" * min(width, 22))
     for item in transcript:
         title = item.get("title", item.get("role", "message"))
         role = item.get("role", "system")
-        lines.append(f"[{title}]")
-        prefix = "  " if role != "user" else "> "
+        label = tui_role_label(role, title)
+        lines.append("")
+        lines.append(truncate_line(f"+-- {label} " + "-" * max(0, width - len(label) - 5), width))
+        prefix = "| " if role != "user" else "> "
         for line in wrap_plain(item.get("text", ""), width=max(20, width - len(prefix))).splitlines():
-            lines.append(prefix + line)
+            lines.append(truncate_line(prefix + line, width))
         lines.append("")
     return lines
+
+
+def tui_role_label(role: str, title: str) -> str:
+    labels = {
+        "user": "YOU",
+        "assistant": "AGENT",
+        "system": "SYSTEM",
+    }
+    base = labels.get(role, role.upper())
+    return f"{base}: {title}" if title and title.casefold() != base.casefold() else base
 
 
 def tui_sidebar_lines(
@@ -1381,33 +1430,92 @@ def tui_sidebar_lines(
     pending_context: list[str],
     width: int,
 ) -> list[str]:
-    rows = [
-        "Session",
-        f"provider: {args.provider}",
-        f"primary: {primary_model(args)}",
-        f"aux: {auxiliary_model(args)}",
-        f"profile: {args.profile}",
-        f"steps: {args.max_steps}",
-        f"task: {task_id}",
-        f"state: {workspace_state_summary(workspace)}",
-        f"pending: {len(pending_context)}",
-    ]
+    rows = tui_section("Cockpit", width)
+    rows.extend(
+        [
+            f"provider: {args.provider}",
+            f"profile:  {getattr(args, 'profile', DEFAULT_PROFILE)}",
+            f"routing:  {getattr(args, 'model_routing', 'auto')}",
+            f"steps:    {getattr(args, 'max_steps', '?')}",
+            f"pending:  {len(pending_context)}",
+            "",
+        ]
+    )
+    rows.extend(tui_section("Model Stack", width))
+    rows.extend(
+        [
+            f"primary:   {primary_model(args)}",
+            f"auxiliary: {auxiliary_model(args)}",
+            f"review:    {getattr(args, 'aux_review', 'auto')}",
+            "",
+        ]
+    )
+    rows.extend(tui_task_panel(workspace, task_id, width))
     if last_report:
-        actions = " -> ".join(str((step.get("action") or {}).get("action") or "none") for step in last_report.get("steps", []))
-        rows.extend(
-            [
-                "",
-                "Last Run",
-                f"id: {last_report.get('id')}",
-                f"status: {last_report.get('status')}",
-                f"tokens: {last_report.get('totals', {}).get('total_tokens', 0)}",
-                f"actions: {actions or 'none'}",
-            ]
-        )
+        rows.extend(tui_last_run_panel(last_report, width))
         diagnostic = last_report.get("diagnostic")
         if isinstance(diagnostic, dict) and diagnostic:
-            rows.extend(["", "Diagnostic", str(diagnostic.get("category", "")), str(diagnostic.get("suggestion", ""))])
+            rows.extend([""])
+            rows.extend(tui_section("Diagnostic", width))
+            rows.append(str(diagnostic.get("category", "")))
+            rows.extend(wrap_plain(str(diagnostic.get("suggestion", "")), width=max(20, width)).splitlines())
+        rows.append("")
+    rows.extend(tui_section("Workspace", width))
+    rows.extend(wrap_plain(workspace_state_summary(workspace), width=max(20, width)).splitlines())
     return [truncate_line(line, width) for line in rows]
+
+
+def tui_section(title: str, width: int) -> list[str]:
+    label = f"[ {title} ]"
+    return [label, "-" * min(width, len(label) + 6)]
+
+
+def tui_task_panel(workspace: Workspace, task_id: str, width: int) -> list[str]:
+    rows = tui_section("Mission", width)
+    try:
+        task = TaskStore(workspace).get(task_id)
+    except (KeyError, FileNotFoundError):
+        rows.extend([f"task      {task_id}", "status    unknown", ""])
+        return rows
+    rows.extend(
+        [
+            f"task:   {task.get('id', task_id)}",
+            f"status: {task.get('status', 'unknown')}",
+            f"title:  {truncate_line(str(task.get('title', '')), max(10, width - 10))}",
+        ]
+    )
+    plan = task.get("plan")
+    if isinstance(plan, dict):
+        progress = plan.get("milestones", [])
+        completed = sum(1 for item in progress if item.get("status") == "completed")
+        active = next((item for item in progress if item.get("status") == "active"), None)
+        rows.append(f"plan:   {completed}/{len(progress)} done")
+        if active:
+            rows.append(f"active: {active.get('id')} {truncate_line(str(active.get('title', '')), max(8, width - 13))}")
+    rows.append("")
+    return rows
+
+
+def tui_last_run_panel(report: dict[str, Any], width: int) -> list[str]:
+    rows = tui_section("Last Run Timeline", width)
+    rows.extend(
+        [
+            f"id:     {report.get('id')}",
+            f"status: {report.get('status')}",
+            f"tokens: {report.get('totals', {}).get('total_tokens', 0)}",
+        ]
+    )
+    steps = report.get("steps", [])
+    if steps:
+        compact_actions = " -> ".join(str((step.get("action") or {}).get("action") or "none") for step in steps)
+        rows.append(f"actions: {truncate_line(compact_actions, max(10, width - 9))}")
+        for step in steps[:4]:
+            action = str((step.get("action") or {}).get("action") or "none")
+            ok = "ok" if step.get("verifier_ok", True) else "check"
+            rows.append(f"  {step.get('index', '?')}. {action} [{ok}]")
+        if len(steps) > 4:
+            rows.append(f"  ... +{len(steps) - 4} more")
+    return rows
 
 
 def format_tui_report(report: dict[str, Any]) -> str:
@@ -1736,7 +1844,7 @@ def clear_chat_screen() -> None:
 
 
 def chat_width() -> int:
-    return max(72, min(shutil.get_terminal_size((96, 20)).columns, 110))
+    return max(88, min(shutil.get_terminal_size((112, 20)).columns, 132))
 
 
 def chat_color(text: str, color: str, *, bold: bool = False) -> str:
@@ -1827,9 +1935,10 @@ def workspace_state_summary(workspace: Workspace) -> str:
     skills = len(list(workspace.skills_dir.glob("*.json"))) if workspace.skills_dir.exists() else 0
     runs = len(list(workspace.agent_runs_dir.glob("*.json"))) if workspace.agent_runs_dir.exists() else 0
     project = 1 if workspace.project_file.exists() else 0
-    memories = 0
-    if workspace.memory_file.exists():
-        memories = sum(1 for line in workspace.memory_file.read_text(encoding="utf-8").splitlines() if line.strip())
+    try:
+        memories = len(MemoryStore(workspace).all())
+    except Exception:
+        memories = 0
     return f"{skills} skills, {memories} memories, {runs} runs, {project} project profiles"
 
 

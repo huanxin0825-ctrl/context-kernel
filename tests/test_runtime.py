@@ -1162,6 +1162,45 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("Last Run", screen)
             self.assertIn("actions: respond", screen)
 
+    def test_tui_screen_surfaces_task_plan_and_command_strip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            task = TaskStore(workspace).start(
+                "Ship polished TUI",
+                goal="Make the interactive agent cockpit easier to scan.",
+                with_plan=True,
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "provider": "mock",
+                    "model": None,
+                    "aux_model": "gpt-5.3-codex",
+                    "profile": "balanced",
+                    "max_steps": 3,
+                    "model_routing": "auto",
+                    "aux_review": "auto",
+                },
+            )()
+
+            screen = build_chat_tui_screen(
+                workspace,
+                task["id"],
+                args,
+                [{"role": "system", "title": "Welcome", "text": "Ready for focused tasks."}],
+                None,
+                [],
+                status="ready",
+            )
+
+            self.assertIn("AKERNEL // READY", screen)
+            self.assertIn("/compact", screen)
+            self.assertIn("[ Mission ]", screen)
+            self.assertIn("plan:", screen)
+            self.assertIn("active:", screen)
+
     def test_bare_akernel_starts_chat_and_initializes_default_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             previous = Path.cwd()
