@@ -25,6 +25,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Skill marketplace indexes now support v2 metadata with skill versions, licenses, publisher, Context Kernel compatibility checks, file/HTTP(S) indexes, and explicit remote trust gates.
 - Packaged marketplace skills now include multi-file bugfix, long task planning, and context compaction contracts.
 - Release helper scripts and a thin npm launcher wrapper prepare the project for PyPI/npm distribution.
+- Release workflow, PyPI metadata checks, npm package dry-run validation, and npm launcher bootstrap support prepare one-command remote installation.
 - Scale benchmark fixtures cover context pressure, editing, global memory, and marketplace workflows.
 - Product roadmap documentation defines completion bars for TUI, advanced editing, memory retention, marketplace, distribution, and benchmark maturity.
 - `akernel --ui auto|classic|tui` adds a zero-dependency full-screen terminal UI with transcript, session sidebar, last-run summary, diagnostics, pending context, and input hint.

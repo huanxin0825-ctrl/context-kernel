@@ -71,6 +71,34 @@ akernel --help
 
 Python 3.10 or newer is required.
 
+### Remote Install
+
+After the package is published, users can install from PyPI:
+
+```powershell
+python -m pip install --user context-kernel
+akernel setup
+akernel
+```
+
+Windows users can also install directly from GitHub:
+
+```powershell
+irm https://raw.githubusercontent.com/huanxin0825-ctrl/context-kernel/main/scripts/install_remote.ps1 | iex
+akernel setup
+akernel
+```
+
+The npm launcher provides a Node-style entrypoint and can bootstrap the Python package if it is missing:
+
+```powershell
+npm install -g @context-kernel/akernel
+akernel setup
+akernel
+```
+
+Set `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0825-ctrl/context-kernel.git` to make the npm launcher bootstrap from GitHub before the PyPI package is available.
+
 ## Quick Start
 
 ```powershell

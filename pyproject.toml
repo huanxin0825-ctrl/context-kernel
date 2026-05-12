@@ -12,6 +12,9 @@ license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 dependencies = []
 keywords = ["agent", "cli", "context", "llm", "token-budget"]
+authors = [
+  { name = "Context Kernel contributors" },
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -22,8 +25,14 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+[project.urls]
+Homepage = "https://github.com/huanxin0825-ctrl/context-kernel"
+Repository = "https://github.com/huanxin0825-ctrl/context-kernel"
+Issues = "https://github.com/huanxin0825-ctrl/context-kernel/issues"
+Changelog = "https://github.com/huanxin0825-ctrl/context-kernel/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
-dev = ["build>=1.2"]
+dev = ["build>=1.2", "twine>=5.0"]
 
 [project.scripts]
 akernel = "context_kernel.cli:main"

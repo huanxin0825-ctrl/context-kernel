@@ -3,6 +3,22 @@
   "version": "0.1.0",
   "description": "npm launcher wrapper for the Context Kernel akernel CLI.",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/huanxin0825-ctrl/context-kernel#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huanxin0825-ctrl/context-kernel.git",
+    "directory": "packages/npm/akernel"
+  },
+  "bugs": {
+    "url": "https://github.com/huanxin0825-ctrl/context-kernel/issues"
+  },
+  "keywords": [
+    "agent",
+    "cli",
+    "context",
+    "llm",
+    "token-budget"
+  ],
   "bin": {
     "akernel": "bin/akernel.js"
   },
@@ -12,5 +28,9 @@
   ],
   "engines": {
     "node": ">=18"
+  },
+  "scripts": {
+    "pack:dry": "npm pack --dry-run",
+    "smoke": "node bin/akernel.js --help"
   }
 }

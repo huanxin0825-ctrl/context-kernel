@@ -25,6 +25,17 @@ It runs:
 - `python -m build` on the Ubuntu 3.12 lane
 - a dedicated Windows job for `.\setup.cmd -Verify` and `.\wake.cmd -InitWorkspace`
 
+The release workflow lives at `.github/workflows/release.yml`.
+
+It runs:
+
+- Python source distribution and wheel builds
+- `twine check` metadata validation
+- wheel smoke installation in a fresh virtual environment
+- npm launcher `npm pack --dry-run`
+- PyPI publishing through trusted publishing on `v*` tags or explicit manual approval
+- npm publishing only when `NPM_TOKEN` and the `PUBLISH_NPM` repository variable are configured
+
 ## Local Mirror Of CI
 
 You can mirror the important CI checks locally with:
@@ -55,7 +66,7 @@ For release preparation, run the bundled check:
 .\scripts\release_check.ps1
 ```
 
-It runs the unit test suite, builds the Python package, checks the CLI entrypoint, and verifies that packaged marketplace skills can be listed.
+It runs the unit test suite, builds the Python package, checks package metadata, checks the CLI entrypoint, verifies that packaged marketplace skills can be listed, and performs an npm dry-run pack when npm is available.
 
 ## Release Shape
 
@@ -64,11 +75,20 @@ The current release shape is intentionally simple:
 - editable local install: `pip install -e .`
 - console entry point: `akernel`
 - source distribution and wheel via `python -m build`
+- PyPI-ready metadata and trusted publishing workflow
 - project-local provider secrets via `.env`
 - direct GitHub install helper via `scripts/install_remote.ps1`
-- thin npm launcher wrapper under `packages/npm/akernel`
+- npm launcher wrapper under `packages/npm/akernel` with optional Python-package bootstrap
 
 This keeps the CLI portable while the runtime boundaries are still stabilizing.
+
+Install from PyPI after publishing:
+
+```powershell
+python -m pip install --user context-kernel
+akernel setup
+akernel
+```
 
 Until PyPI publishing is enabled, Windows users can install from GitHub with:
 
@@ -78,7 +98,15 @@ akernel setup
 akernel
 ```
 
-Publish the npm wrapper only after the Python package is available from PyPI or another approved package source.
+The npm wrapper can be installed globally after publication:
+
+```powershell
+npm install -g @context-kernel/akernel
+akernel setup
+akernel
+```
+
+Before PyPI publication, set `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0825-ctrl/context-kernel.git` so the npm wrapper bootstraps from GitHub.
 
 `bench gate` also requires the current benchmark report itself to pass its checks. This prevents a bad first run from becoming the new normal just because the relative diff has no regression.
 
