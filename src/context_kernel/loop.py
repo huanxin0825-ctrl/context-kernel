@@ -522,7 +522,7 @@ def build_agent_packet(
 
 
 def parse_agent_action(text: str, *, expect_json: bool = False) -> dict[str, Any]:
-    action = extract_json_object(text)
+    action = normalize_agent_action_payload(extract_json_object(text))
     action_name = str(action.get("action", "")).strip().lower()
     if action_name not in ALLOWED_ACTIONS:
         raise ValueError(f"Unsupported action: {action_name or '[missing]'}")
@@ -611,6 +611,105 @@ def parse_agent_action(text: str, *, expect_json: bool = False) -> dict[str, Any
         "timeout_seconds": timeout_seconds,
     "reason": compact(str(action.get("reason", "")), limit=240),
     }
+
+
+def normalize_agent_action_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Accept common one-tool JSON shapes while preserving the canonical contract."""
+    action = unwrap_single_action_payload(payload)
+    action = unwrap_tool_call_payload(action)
+
+    if not isinstance(action, dict):
+        raise ValueError("Agent action payload must be a JSON object")
+
+    nested_args = first_dict(action, "arguments", "args", "input", "parameters")
+    action_name = (
+        action.get("action")
+        or action.get("tool")
+        or action.get("name")
+        or action.get("tool_name")
+    )
+    if isinstance(action_name, dict):
+        nested_args = nested_args or first_dict(action_name, "arguments", "args", "input", "parameters")
+        action_name = action_name.get("name") or action_name.get("action") or action_name.get("tool")
+
+    normalized: dict[str, Any] = {}
+    if nested_args:
+        normalized.update(nested_args)
+    normalized.update({key: value for key, value in action.items() if key not in {"arguments", "args", "input", "parameters"}})
+    if action_name is not None:
+        normalized["action"] = normalize_action_name(str(action_name))
+    return normalized
+
+
+def unwrap_single_action_payload(payload: dict[str, Any]) -> Any:
+    for key in ["action", "tool", "tool_call"]:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return value
+    for key in ["actions", "steps"]:
+        value = payload.get(key)
+        if isinstance(value, list) and len(value) == 1:
+            return value[0]
+    return payload
+
+
+def unwrap_tool_call_payload(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    tool_calls = payload.get("tool_calls")
+    if isinstance(tool_calls, list) and len(tool_calls) == 1:
+        return unwrap_tool_call_payload(tool_calls[0])
+    function = payload.get("function")
+    if isinstance(function, dict):
+        arguments = parse_arguments_object(function.get("arguments"))
+        result = dict(arguments)
+        result["action"] = function.get("name")
+        return result
+    return payload
+
+
+def first_dict(data: dict[str, Any], *keys: str) -> dict[str, Any] | None:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, dict):
+            return value
+        parsed = parse_arguments_object(value)
+        if parsed:
+            return parsed
+    return None
+
+
+def parse_arguments_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def normalize_action_name(name: str) -> str:
+    normalized = name.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "read": "read_file",
+        "file_read": "read_file",
+        "write": "write_file",
+        "file_write": "write_file",
+        "patch": "patch_file",
+        "edit_file": "patch_file",
+        "batch_edit": "batch_patch",
+        "shell": "run_command",
+        "exec": "run_command",
+        "execute": "run_command",
+        "command": "run_command",
+        "final": "respond",
+        "final_answer": "respond",
+        "answer": "respond",
+    }
+    return aliases.get(normalized, normalized)
 
 
 def parse_patch_edit(edit: Any) -> dict[str, Any]:

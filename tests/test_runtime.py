@@ -13,7 +13,7 @@ from context_kernel.budget import allocate_budget
 from context_kernel.cli import load_batch_patch_specs, main
 from context_kernel.context import ContextBuilder
 from context_kernel.evals import EvalRunner
-from context_kernel.loop import AgentLoop
+from context_kernel.loop import AgentLoop, parse_agent_action
 from context_kernel.memory import MemoryStore, is_relevant_memory_match
 from context_kernel.planner import ExecutionPlanner
 from context_kernel.policy import assess_request_policy, check_command_policy, check_file_policy
@@ -752,6 +752,23 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / ".akernel").exists())
             self.assertIn("provider   mock", output)
             self.assertIn("loop       max 1 steps per message", output)
+
+    def test_agent_action_parser_accepts_common_tool_call_shapes(self) -> None:
+        read_action = parse_agent_action('{"tool":"read","args":{"path":"README.md"}}')
+        command_action = parse_agent_action(
+            '{"tool_calls":[{"function":{"name":"run-command","arguments":"{\\"command\\":\\"python -V\\",\\"timeout_seconds\\":5}"}}]}'
+        )
+        response_action = parse_agent_action(
+            '{"actions":[{"name":"final_answer","arguments":{"message":"ready","reason":"done"}}]}'
+        )
+
+        self.assertEqual(read_action["action"], "read_file")
+        self.assertEqual(read_action["path"], "README.md")
+        self.assertEqual(command_action["action"], "run_command")
+        self.assertEqual(command_action["command"], "python -V")
+        self.assertEqual(command_action["timeout_seconds"], 5)
+        self.assertEqual(response_action["action"], "respond")
+        self.assertEqual(response_action["message"], "ready")
 
     def test_setup_command_writes_project_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

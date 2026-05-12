@@ -205,6 +205,7 @@ Current behavior:
 - Each provider run writes a normal trace and attaches it to the task.
 - One explicit task-state summary memory is written per agent run and attached back to the task.
 - Agent reports saved under `.akernel/agent_runs/` are compact by default and point back to the authoritative run/tool traces for full audit detail.
+- The agent action parser accepts the canonical `{ "action": ... }` contract plus common one-tool variants such as `{ "tool": ..., "args": ... }`, `{ "name": ..., "arguments": ... }`, and OpenAI-style single `tool_calls`. These shapes are normalized before policy execution, reducing wasted turns from harmless formatting drift.
 - Repeated identical actions are stopped inside the same run to reduce loop risk.
 - Policy-blocked tool actions stop the loop immediately instead of triggering further tool retries.
 - Agent reports are saved under `.akernel/agent_runs/`.
