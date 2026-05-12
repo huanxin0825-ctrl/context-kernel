@@ -20,6 +20,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Agent runs now include compact failure diagnostics with category, reason, and next-step guidance for configuration, auth, network, endpoint, protocol, budget, policy, command, tool, malformed-action, and loop-guard failures.
 - `memory prune` archives lower-priority active memories by record count or token budget, with dry-run support.
 - `memory global-push` and `memory global-pull` provide explicit cross-project memory sync through a user-level global store.
+- Global memory sync supports dry-run previews, namespaces, source-project filters, tag filters, and provenance tags for controlled cross-project sharing.
 - `skill market-list` and `skill market-install` install packaged skill contracts from the built-in marketplace.
 - Skill marketplace indexes now support v2 metadata with skill versions, licenses, publisher, Context Kernel compatibility checks, file/HTTP(S) indexes, and explicit remote trust gates.
 - Packaged marketplace skills now include multi-file bugfix, long task planning, and context compaction contracts.

@@ -73,6 +73,12 @@ Memory v2 uses local SQLite as the primary state layer, with one-time migration 
 
 Memory retrieval uses a relevance gate before records enter the context packet. A record must match at least two effective terms, or match one strong domain term such as `context`, `budget`, `skill`, `runtime`, `memory`, `eval`, or `token`. This keeps weak one-word overlaps from pulling unrelated memory into small packets.
 
+### Global Memory Sync
+
+Cross-project memory is an explicit sync layer, not an implicit context source. `memory global-push` copies selected project records into a user-level global store, while `memory global-pull` copies reviewed global records into the current project.
+
+The sync path supports dry-run previews, namespace filters, source-project filters, and tag filters. Pushed records carry provenance tags such as `global`, `namespace:<name>`, `source_project:<project>`, and `source_root:<path>`. Pulled records add `imported_global` so imported knowledge remains auditable and can be pruned or archived separately from native project memory.
+
 ### Context Packet
 
 A context packet is the exact payload given to the model provider. It is explicit, inspectable, and token-estimated before execution.

@@ -225,12 +225,19 @@ def build_parser() -> argparse.ArgumentParser:
     memory_prune.set_defaults(func=cmd_memory_prune)
     memory_global_push = memory_sub.add_parser("global-push", help="Copy active project memories into the global memory store.")
     memory_global_push.add_argument("--kind", choices=sorted(ALLOWED_KINDS))
+    memory_global_push.add_argument("--namespace", default=None, help="Global memory namespace. Defaults to the project directory name.")
+    memory_global_push.add_argument("--tag", default=None, help="Only push memories containing this tag.")
+    memory_global_push.add_argument("--dry-run", action="store_true", help="Preview records without copying them.")
     memory_global_push.add_argument("--global-root", default=None)
     memory_global_push.add_argument("--json", action="store_true")
     memory_global_push.set_defaults(func=cmd_memory_global_push)
     memory_global_pull = memory_sub.add_parser("global-pull", help="Copy memories from the global memory store into this project.")
     memory_global_pull.add_argument("--kind", choices=sorted(ALLOWED_KINDS))
+    memory_global_pull.add_argument("--namespace", default=None, help="Only pull memories from this namespace.")
+    memory_global_pull.add_argument("--source-project", default=None, help="Only pull memories pushed by this source project name.")
+    memory_global_pull.add_argument("--tag", default=None, help="Only pull memories containing this tag.")
     memory_global_pull.add_argument("--limit", type=int, default=None)
+    memory_global_pull.add_argument("--dry-run", action="store_true", help="Preview records without copying them.")
     memory_global_pull.add_argument("--global-root", default=None)
     memory_global_pull.add_argument("--json", action="store_true")
     memory_global_pull.set_defaults(func=cmd_memory_global_pull)
@@ -893,12 +900,20 @@ def cmd_memory_global_push(args: argparse.Namespace) -> None:
     result = push_global_memories(
         workspace,
         kind=args.kind,
+        namespace=args.namespace,
+        tag=args.tag,
+        dry_run=args.dry_run,
         global_root=Path(args.global_root) if args.global_root else None,
     )
     if args.json:
         print_json(result)
         return
-    print(f"global_push: copied {result['count']} memory record(s) to {result['target']}")
+    action = "would copy" if result.get("dry_run") else "copied"
+    print(
+        f"global_push: {action} {result['candidate_count']} memory record(s) "
+        f"to {result['target']} namespace={result['namespace']}"
+    )
+    print_global_memory_preview(result)
 
 
 def cmd_memory_global_pull(args: argparse.Namespace) -> None:
@@ -906,13 +921,32 @@ def cmd_memory_global_pull(args: argparse.Namespace) -> None:
     result = pull_global_memories(
         workspace,
         kind=args.kind,
+        namespace=args.namespace,
+        source_project=args.source_project,
+        tag=args.tag,
         limit=args.limit,
+        dry_run=args.dry_run,
         global_root=Path(args.global_root) if args.global_root else None,
     )
     if args.json:
         print_json(result)
         return
-    print(f"global_pull: copied {result['count']} memory record(s) from {result['source']}")
+    action = "would copy" if result.get("dry_run") else "copied"
+    print(f"global_pull: {action} {result['candidate_count']} memory record(s) from {result['source']}")
+    print_global_memory_preview(result)
+
+
+def print_global_memory_preview(result: dict[str, Any], *, limit: int = 5) -> None:
+    records = result.get("records", [])
+    if not isinstance(records, list) or not records:
+        return
+    for record in records[:limit]:
+        if not isinstance(record, dict):
+            continue
+        tags = ", ".join(record.get("tags", [])[:6])
+        print(f"- {record.get('id')} {record.get('kind')} tags=[{tags}] {record.get('text')}")
+    if len(records) > limit:
+        print(f"... {len(records) - limit} more")
 
 
 def cmd_context(args: argparse.Namespace) -> None:

@@ -588,6 +588,84 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertIn("global", records[0].tags)
 
+    def test_global_memory_sync_supports_preview_namespace_and_source_filters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_a = Workspace(root / "alpha")
+            project_b = Workspace(root / "beta")
+            project_a.init()
+            project_b.init()
+            MemoryStore(project_a).add("preference", "Prefer compact global context.", ["team"])
+            MemoryStore(project_a).add("fact", "Private alpha-only implementation note.", ["private"])
+
+            preview_push = push_global_memories(
+                project_a,
+                namespace="Team Runtime",
+                tag="team",
+                dry_run=True,
+                global_root=root / "global",
+            )
+            pushed = push_global_memories(
+                project_a,
+                namespace="Team Runtime",
+                tag="team",
+                global_root=root / "global",
+            )
+            preview_pull = pull_global_memories(
+                project_b,
+                namespace="team-runtime",
+                source_project="alpha",
+                dry_run=True,
+                global_root=root / "global",
+            )
+            pulled = pull_global_memories(
+                project_b,
+                namespace="team-runtime",
+                source_project="alpha",
+                global_root=root / "global",
+            )
+
+            self.assertEqual(preview_push["count"], 0)
+            self.assertEqual(preview_push["candidate_count"], 1)
+            self.assertEqual(pushed["count"], 1)
+            self.assertIn("namespace:team-runtime", pushed["records"][0]["tags"])
+            self.assertIn("source_project:alpha", pushed["records"][0]["tags"])
+            self.assertEqual(preview_pull["count"], 0)
+            self.assertEqual(preview_pull["candidate_count"], 1)
+            self.assertEqual(pulled["count"], 1)
+            pulled_records = MemoryStore(project_b).all()
+            self.assertEqual(len(pulled_records), 1)
+            self.assertIn("imported_global", pulled_records[0].tags)
+            self.assertNotIn("Private alpha-only", pulled_records[0].text)
+
+    def test_global_memory_cli_dry_run_previews_without_copying(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_a = Workspace(root / "alpha")
+            project_a.init()
+            MemoryStore(project_a).add("decision", "Share release checklist globally.", ["release"])
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(
+                    [
+                        "--workspace",
+                        str(project_a.root),
+                        "memory",
+                        "global-push",
+                        "--namespace",
+                        "release",
+                        "--tag",
+                        "release",
+                        "--dry-run",
+                        "--global-root",
+                        str(root / "global"),
+                    ]
+                )
+
+            output = stdout.getvalue()
+            self.assertIn("would copy 1 memory", output)
+            self.assertEqual(MemoryStore(Workspace(root / "global")).all(), [])
+
     def test_packaged_skill_marketplace_installs_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))

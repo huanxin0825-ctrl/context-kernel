@@ -105,6 +105,8 @@ Memory and skill commands now include productization primitives:
 - `memory prune --max-tokens N` keeps higher-priority records within an estimated memory token budget.
 - `memory global-push` copies active project memories into an explicit user-level global store.
 - `memory global-pull --limit N` copies reviewed global memories into the current project.
+- `memory global-push --namespace NAME --tag TAG --dry-run` previews a filtered cross-project export without writing.
+- `memory global-pull --namespace NAME --source-project PROJECT --dry-run` previews a filtered import before copying.
 - `skill market-list` lists packaged marketplace skills.
 - `skill market-install <skill-id>` installs a packaged skill contract into the current workspace.
 

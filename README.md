@@ -138,6 +138,8 @@ akernel memory audit
 akernel memory prune --max-records 100 --dry-run
 akernel memory global-push
 akernel memory global-pull --limit 20
+akernel memory global-push --namespace team-runtime --tag shared --dry-run
+akernel memory global-pull --namespace team-runtime --source-project my-project --dry-run
 akernel skill market-list
 akernel skill market-list --index examples\marketplace\skills\index.json
 akernel skill market-install multi_file_bugfix

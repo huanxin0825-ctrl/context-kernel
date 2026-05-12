@@ -82,13 +82,15 @@ Current alpha:
 
 - `memory global-push` copies active project memories into a user-level global store.
 - `memory global-pull` copies selected global memories into a project.
+- Dry-run previews, namespace filters, source-project filters, and tag filters make sync reviewable before copying.
+- Provenance tags record namespace, source project, source root, and imported-global status for later audits.
 - Sync is explicit and deduped; global memory does not silently enter project context.
 
 Next bar:
 
 - Add review prompts before pulling global memories.
-- Add namespace filters, source project filters, and retention policies.
-- Add import/export bundles for team handoff.
+- Add retention policies for imported global records.
+- Add signed import/export bundles for team handoff.
 
 ## Packaging And Distribution
 
