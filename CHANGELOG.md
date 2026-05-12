@@ -28,6 +28,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - `akernel --ui auto|classic|tui` adds a zero-dependency full-screen terminal UI with transcript, session sidebar, last-run summary, diagnostics, pending context, and input hint.
 - Failing-test recovery can now read multiple file candidates from command output and apply inferred multi-file fixes as one rollback-safe `batch_patch`.
 - Long task sessions can now carry structured milestone plans, active checkpoints, acceptance criteria, and compact resume prompts through `task plan`, `task next`, and `task checkpoint`.
+- `memory audit` and enhanced `memory prune` explain retention scores, token cost, pinned records, and trace-backed recoverability before archiving lower-value memories.
 
 ### Changed
 

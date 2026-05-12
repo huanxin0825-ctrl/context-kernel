@@ -39,11 +39,11 @@ Current alpha:
 
 - Memory records are typed, deduped, searchable, and archivable.
 - `memory prune` archives lower-priority active records by count or token budget.
+- `memory audit` and prune reports expose retention scores, token cost, pinned tags, and trace-backed recoverability.
 - Packaged `context_compaction` skill contract defines safe compaction rules.
 
 Next bar:
 
-- Add trace-backed "recoverability" scoring before pruning.
 - Add per-project memory retention policies in `.akernel/config.json`.
 - Add benchmark fixtures that measure memory precision, not just token savings.
 

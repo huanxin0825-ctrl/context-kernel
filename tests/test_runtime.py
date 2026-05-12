@@ -527,6 +527,47 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(memory.get(pinned.id).id, pinned.id)
             self.assertRaises(KeyError, memory.get, stale.id)
 
+    def test_memory_prune_explains_recoverability_and_prefers_irrecoverable_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            memory = MemoryStore(workspace)
+            pinned = memory.add("preference", "Always preserve user launch preferences.", ["keep"])
+            recoverable = memory.add("task_state", "Auto summary that is also stored in trace state.", ["auto"])
+            project_state = memory.add("project_state", "Current local architecture decision is not in traces.", ["design"])
+            Workspace.write_json(
+                workspace.traces_dir / "trace123.json",
+                {
+                    "id": "trace123",
+                    "state": {"records": [recoverable.to_dict()]},
+                },
+            )
+
+            dry_run = memory.prune(max_records=2, dry_run=True)
+            result = memory.prune(max_records=2)
+
+            self.assertEqual(dry_run["recoverable_candidates"], 1)
+            self.assertEqual(dry_run["candidate_decisions"][0]["record"]["id"], recoverable.id)
+            self.assertIn("trace_recoverable-18", dry_run["candidate_decisions"][0]["reasons"])
+            self.assertEqual(memory.get(pinned.id).id, pinned.id)
+            self.assertEqual(memory.get(project_state.id).id, project_state.id)
+            self.assertRaises(KeyError, memory.get, recoverable.id)
+            self.assertEqual(result["archived"], 1)
+
+    def test_memory_audit_cli_reports_scores_and_reasons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            MemoryStore(workspace).add("preference", "Prefer compact checkpoints.", ["keep"])
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "memory", "audit"])
+
+            output = stdout.getvalue()
+            self.assertIn("score=", output)
+            self.assertIn("reasons:", output)
+            self.assertIn("pinned:keep+100", output)
+
     def test_global_memory_push_and_pull_are_deduped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

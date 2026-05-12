@@ -155,6 +155,8 @@ Current behavior:
 - `run --remember` writes a `task_state` memory for the completed run.
 - `trace remember <trace-id>` can write memory from a saved trace after review.
 - `trace remember <trace-id> --dry-run` shows candidates without writing.
+- `memory audit` scores active records by kind, pinned tags, recency, token cost, and whether the record is recoverable from traces or task refs.
+- `memory prune` keeps higher-scored records and archives lower-scored records by count or token budget, while reporting candidate reasons and recoverability.
 - Response lines beginning with `Decision:`, `Fact:`, `Preference:`, `Project state:`, or `Task state:` are mapped to typed memory.
 - Secret-looking values are redacted before memory write.
 

@@ -14,6 +14,8 @@ from .tokenizer import estimate_tokens
 
 
 ALLOWED_KINDS = {"fact", "preference", "project_state", "task_state", "decision"}
+PINNED_TAGS = {"keep", "pinned", "global"}
+RECOVERABLE_KINDS = {"task_state", "project_state"}
 STRONG_MEMORY_TERMS = {
     "agent",
     "architecture",
@@ -154,23 +156,24 @@ class MemoryStore:
             raise ValueError("--max-tokens must be >= 0")
 
         keep_limit = max_records if max_records is not None else len(records)
-        ranked = sorted(records, key=memory_retention_key, reverse=True)
-        kept: list[MemoryRecord] = []
+        decisions = self.retention_analysis(records)
+        ranked = sorted(decisions, key=lambda item: item["retention_key"], reverse=True)
+        kept: list[dict[str, object]] = []
         used_tokens = 0
-        for record in ranked:
-            cost = estimate_tokens(record.to_dict())
+        for decision in ranked:
+            cost = int(decision["token_cost"])
             if len(kept) >= keep_limit:
                 continue
             if max_tokens is not None and used_tokens + cost > max_tokens:
                 continue
-            kept.append(record)
+            kept.append(decision)
             used_tokens += cost
 
-        kept_ids = {record.id for record in kept}
-        candidates = [record for record in records if record.id not in kept_ids]
+        kept_ids = {str(decision["record"]["id"]) for decision in kept}
+        candidates = [decision for decision in decisions if str(decision["record"]["id"]) not in kept_ids]
         if not dry_run:
-            for record in candidates:
-                self.forget(record.id)
+            for decision in candidates:
+                self.forget(str(decision["record"]["id"]))
         return {
             "dry_run": dry_run,
             "active_before": len(records),
@@ -178,8 +181,33 @@ class MemoryStore:
             "archived": 0 if dry_run else len(candidates),
             "candidate_count": len(candidates),
             "kept_tokens": used_tokens,
-            "candidates": [record.to_dict() for record in candidates],
+            "active_tokens": sum(int(decision["token_cost"]) for decision in decisions),
+            "recoverable_candidates": sum(1 for decision in candidates if decision["recoverability"]["level"] != "none"),
+            "candidates": [decision["record"] for decision in candidates],
+            "candidate_decisions": [strip_retention_key(decision) for decision in candidates],
+            "kept_decisions": [strip_retention_key(decision) for decision in kept],
         }
+
+    def retention_analysis(self, records: list[MemoryRecord] | None = None) -> list[dict[str, object]]:
+        active_records = records if records is not None else self.all()
+        recovery_index = memory_recovery_index(self.workspace)
+        total = max(1, len(active_records))
+        decisions: list[dict[str, object]] = []
+        for index, record in enumerate(active_records):
+            token_cost = estimate_tokens(record.to_dict())
+            recoverability = recoverability_summary(record, recovery_index)
+            score, reasons = retention_score(record, token_cost, recoverability, index=index, total=total)
+            decisions.append(
+                {
+                    "record": record.to_dict(),
+                    "score": score,
+                    "token_cost": token_cost,
+                    "recoverability": recoverability,
+                    "reasons": reasons,
+                    "retention_key": (score, -token_cost, record.updated_at, record.id),
+                }
+            )
+        return decisions
 
     def all(self, kind: str | None = None, *, include_archived: bool = False) -> list[MemoryRecord]:
         if kind:
@@ -355,6 +383,118 @@ def memory_retention_key(record: MemoryRecord) -> tuple[int, int, str, str]:
     tag_priority = 100 if any(tag.casefold() in {"keep", "pinned", "global"} for tag in record.tags) else 0
     text_cost = estimate_tokens(record.to_dict())
     return (tag_priority + kind_priority, -text_cost, record.updated_at, record.id)
+
+
+def retention_score(
+    record: MemoryRecord,
+    token_cost: int,
+    recoverability: dict[str, object],
+    *,
+    index: int,
+    total: int,
+) -> tuple[int, list[str]]:
+    kind_score = {
+        "preference": 60,
+        "decision": 55,
+        "fact": 42,
+        "project_state": 32,
+        "task_state": 18,
+    }.get(record.kind, 10)
+    reasons = [f"kind:{record.kind}+{kind_score}"]
+    score = kind_score
+
+    pinned_tags = sorted(set(tag.casefold() for tag in record.tags).intersection(PINNED_TAGS))
+    if pinned_tags:
+        score += 100
+        reasons.append(f"pinned:{','.join(pinned_tags)}+100")
+
+    recency_score = min(10, max(0, int(((index + 1) / max(1, total)) * 10)))
+    if recency_score:
+        score += recency_score
+        reasons.append(f"recency+{recency_score}")
+
+    if recoverability["level"] != "none":
+        if record.kind in RECOVERABLE_KINDS:
+            score -= 18
+            reasons.append("trace_recoverable-18")
+        else:
+            score += 4
+            reasons.append("trace_linked+4")
+    elif record.kind in RECOVERABLE_KINDS:
+        score += 8
+        reasons.append("not_recoverable+8")
+
+    size_penalty = min(25, max(0, token_cost // 40))
+    if size_penalty:
+        score -= size_penalty
+        reasons.append(f"token_cost-{size_penalty}")
+    return score, reasons
+
+
+def recoverability_summary(record: MemoryRecord, recovery_index: dict[str, list[str]]) -> dict[str, object]:
+    sources = recovery_index.get(record.id, [])
+    if not sources:
+        return {"level": "none", "sources": [], "reason": "No linked trace or task ref was found."}
+    level = "high" if record.kind in RECOVERABLE_KINDS else "linked"
+    return {
+        "level": level,
+        "sources": sources[:5],
+        "reason": "Record id appears in trace, agent-run, or task references.",
+    }
+
+
+def memory_recovery_index(workspace: Workspace) -> dict[str, list[str]]:
+    index: dict[str, list[str]] = {}
+    for folder, label in [
+        (workspace.traces_dir, "trace"),
+        (workspace.agent_runs_dir, "agent_run"),
+        (workspace.tasks_dir, "task"),
+    ]:
+        if not folder.exists():
+            continue
+        for path in sorted(folder.glob("*.json")):
+            data = safe_read_json(path)
+            if not data:
+                continue
+            source = f"{label}:{data.get('id') or path.stem}"
+            for record_id in memory_ids_from_document(data):
+                add_recovery_source(index, record_id, source)
+    return index
+
+
+def memory_ids_from_document(data: dict[str, object]) -> list[str]:
+    ids: list[str] = []
+    state = data.get("state")
+    if isinstance(state, dict):
+        records = state.get("records", [])
+        if isinstance(records, list):
+            for record in records:
+                if isinstance(record, dict) and record.get("id"):
+                    ids.append(str(record["id"]))
+    refs = data.get("refs")
+    if isinstance(refs, dict):
+        memories = refs.get("memories", [])
+        if isinstance(memories, list):
+            ids.extend(str(item) for item in memories if item)
+    return ids
+
+
+def add_recovery_source(index: dict[str, list[str]], record_id: str, source: str) -> None:
+    sources = index.setdefault(record_id, [])
+    if source not in sources:
+        sources.append(source)
+
+
+def safe_read_json(path) -> dict[str, object] | None:
+    try:
+        data = Workspace.read_json(path)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def strip_retention_key(decision: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in decision.items() if key != "retention_key"}
 
 
 def record_from_row(row: sqlite3.Row) -> MemoryRecord:

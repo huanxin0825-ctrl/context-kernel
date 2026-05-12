@@ -134,6 +134,7 @@ akernel task next <task-id>
 akernel task checkpoint <task-id> --milestone M1 --status completed --note "Investigation complete"
 akernel project scan
 akernel project show
+akernel memory audit
 akernel memory prune --max-records 100 --dry-run
 akernel memory global-push
 akernel memory global-pull --limit 20

@@ -200,6 +200,10 @@ def build_parser() -> argparse.ArgumentParser:
     memory_search.add_argument("--kind", choices=sorted(ALLOWED_KINDS))
     memory_search.add_argument("--limit", type=int, default=5)
     memory_search.set_defaults(func=cmd_memory_search)
+    memory_audit = memory_sub.add_parser("audit", help="Explain memory retention scores without archiving.")
+    memory_audit.add_argument("--json", action="store_true")
+    memory_audit.add_argument("--limit", type=int, default=20)
+    memory_audit.set_defaults(func=cmd_memory_audit)
     memory_update = memory_sub.add_parser("update", help="Update an active memory record.")
     memory_update.add_argument("record_id")
     memory_update.add_argument("--kind", choices=sorted(ALLOWED_KINDS))
@@ -790,6 +794,25 @@ def cmd_memory_search(args: argparse.Namespace) -> None:
         print(f"{item.record.id}\t{item.record.kind}\tscore={item.score}\t{item.record.text}")
 
 
+def cmd_memory_audit(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    decisions = sorted(MemoryStore(workspace).retention_analysis(), key=lambda item: item["retention_key"], reverse=True)
+    if args.json:
+        print_json({"count": len(decisions), "decisions": [strip_cli_retention_key(item) for item in decisions]})
+        return
+    if not decisions:
+        print("no memory records")
+        return
+    for decision in decisions[: args.limit]:
+        record = decision["record"]
+        recoverability = decision["recoverability"]
+        print(
+            f"{record['id']}\t{record['kind']}\tscore={decision['score']}\t"
+            f"tokens={decision['token_cost']}\trecoverable={recoverability['level']}\t{record['text']}"
+        )
+        print(f"  reasons: {', '.join(decision['reasons'])}")
+
+
 def cmd_memory_update(args: argparse.Namespace) -> None:
     workspace = workspace_from_args(args)
     tags = None if args.tags is None else [tag.strip() for tag in args.tags.split(",") if tag.strip()]
@@ -821,6 +844,18 @@ def cmd_memory_prune(args: argparse.Namespace) -> None:
         f"kept={result['kept']} {action}={result['candidate_count']} "
         f"kept_tokens={result['kept_tokens']}"
     )
+    for decision in result.get("candidate_decisions", [])[:5]:
+        record = decision["record"]
+        recoverability = decision["recoverability"]
+        print(
+            f"- {record['id']} {record['kind']} score={decision['score']} "
+            f"tokens={decision['token_cost']} recoverable={recoverability['level']}: {record['text']}"
+        )
+        print(f"  reasons: {', '.join(decision['reasons'])}")
+
+
+def strip_cli_retention_key(decision: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in decision.items() if key != "retention_key"}
 
 
 def cmd_memory_global_push(args: argparse.Namespace) -> None:
