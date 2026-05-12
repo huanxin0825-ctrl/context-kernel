@@ -6,6 +6,10 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 ## Unreleased
 
+No changes yet.
+
+## 0.1.0 - 2026-05-12
+
 ### Added
 
 - `akernel` now starts the interactive agent session by default, with `akernel-chat` kept as a compatibility shortcut.
@@ -44,11 +48,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Agent reports are kept compact by default and point back to authoritative run and tool traces for full audit detail.
 - Common one-tool model output shapes such as `{ "tool": ... }`, `{ "name": ..., "arguments": ... }`, and single OpenAI-style `tool_calls` are normalized into the canonical action contract.
 
-## 0.1.0 - 2026-05-12
-
-Initial alpha CLI release.
-
-### Added
+### Initial Alpha Baseline
 
 - CLI workspace initialization with `.akernel` local state.
 - Structured memory storage with typed records.
