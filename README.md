@@ -23,6 +23,7 @@ Context Kernel is an experiment in moving those responsibilities into a runtime 
 - Structured memory: typed records backed by local SQLite and JSONL state.
 - Progressive skill contracts: load only the level of a skill that the task needs.
 - Token budgets: estimate and report context pressure before provider calls.
+- Resumable task planning: keep long work in structured milestones and compact checkpoints instead of replaying chat history.
 - Bounded agent loop: support `read_file`, `write_file`, `patch_file`, `batch_patch`, `run_command`, and `respond` actions.
 - Policy-gated tools: keep file and command execution behind explicit runtime checks.
 - Traceability: write run traces, tool traces, compact agent reports, and token cost reports.
@@ -128,6 +129,9 @@ The base URL should include `/v1`.
 akernel
 akernel --workspace .sandbox chat
 akernel context "Continue this task" --task <task-id> --resume
+akernel task start "Ship a complex feature" --goal "Plan, implement, verify, and document the feature" --plan
+akernel task next <task-id>
+akernel task checkpoint <task-id> --milestone M1 --status completed --note "Investigation complete"
 akernel project scan
 akernel project show
 akernel memory prune --max-records 100 --dry-run

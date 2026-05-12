@@ -35,7 +35,7 @@ from .skills import (
 )
 from .state_writer import StateWriter
 from .storage import Workspace
-from .tasks import TASK_STATUSES, TaskStore
+from .tasks import MILESTONE_STATUSES, TASK_STATUSES, TaskStore
 from .tools import ToolExecutor
 from .verifier import verify_trace
 
@@ -373,6 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_start = task_sub.add_parser("start", help="Start a task session.")
     task_start.add_argument("title")
     task_start.add_argument("--goal", default=None)
+    task_start.add_argument("--plan", action="store_true", help="Create a structured long-task plan immediately.")
     task_start.set_defaults(func=cmd_task_start)
     task_list = task_sub.add_parser("list", help="List task sessions.")
     task_list.add_argument("--status", choices=sorted(TASK_STATUSES))
@@ -385,6 +386,22 @@ def build_parser() -> argparse.ArgumentParser:
     task_brief.add_argument("task_id")
     task_brief.add_argument("--json", action="store_true")
     task_brief.set_defaults(func=cmd_task_brief)
+    task_plan = task_sub.add_parser("plan", help="Create or refresh a structured long-task plan.")
+    task_plan.add_argument("task_id")
+    task_plan.add_argument("--goal", default=None)
+    task_plan.add_argument("--force", action="store_true", help="Replace an existing structured plan.")
+    task_plan.add_argument("--json", action="store_true")
+    task_plan.set_defaults(func=cmd_task_plan)
+    task_next = task_sub.add_parser("next", help="Show the next resumable checkpoint for a task.")
+    task_next.add_argument("task_id")
+    task_next.add_argument("--json", action="store_true")
+    task_next.set_defaults(func=cmd_task_next)
+    task_checkpoint = task_sub.add_parser("checkpoint", help="Record long-task checkpoint progress.")
+    task_checkpoint.add_argument("task_id")
+    task_checkpoint.add_argument("--note", required=True)
+    task_checkpoint.add_argument("--milestone", default=None)
+    task_checkpoint.add_argument("--status", choices=sorted(MILESTONE_STATUSES), default=None)
+    task_checkpoint.set_defaults(func=cmd_task_checkpoint)
     task_step = task_sub.add_parser("step", help="Append a checkpoint note.")
     task_step.add_argument("task_id")
     task_step.add_argument("--note", required=True)
@@ -2089,8 +2106,11 @@ def cmd_tool_show(args: argparse.Namespace) -> None:
 
 def cmd_task_start(args: argparse.Namespace) -> None:
     workspace = workspace_from_args(args)
-    task = TaskStore(workspace).start(args.title, args.goal)
+    task = TaskStore(workspace).start(args.title, args.goal, with_plan=args.plan)
     print(f"task: {task['id']} active {task['title']}")
+    if task.get("plan"):
+        active = task["plan"]["milestones"][0]
+        print(f"plan: {len(task['plan']['milestones'])} milestones active={active['id']} {active['title']}")
 
 
 def cmd_task_list(args: argparse.Namespace) -> None:
@@ -2119,6 +2139,12 @@ def cmd_task_status(args: argparse.Namespace) -> None:
         f"tools={len(task['refs']['tool_traces'])} "
         f"memories={len(task['refs']['memories'])}"
     )
+    if task.get("plan"):
+        progress = task_plan_progress_text(task["plan"])
+        active = next((item for item in task["plan"]["milestones"] if item.get("status") == "active"), None)
+        print(f"plan: {progress}")
+        if active:
+            print(f"active: {active['id']} {active['title']}")
     if task["steps"]:
         latest = task["steps"][-1]
         print(f"latest: [{latest['kind']}] {latest['note']}")
@@ -2138,12 +2164,81 @@ def cmd_task_brief(args: argparse.Namespace) -> None:
     print(f"recent_steps: {len(brief['recent_steps'])}")
     for step in brief["recent_steps"][-3:]:
         print(f"- [{step['kind']}] {step['note']}")
+    if brief.get("plan"):
+        plan = brief["plan"]
+        progress = plan["progress"]
+        active = plan.get("active_milestone")
+        print(
+            "plan: "
+            f"{progress['completed']}/{progress['total']} completed "
+            f"blocked={progress['blocked']} skipped={progress['skipped']}"
+        )
+        if active:
+            print(f"active: {active['id']} {active['title']}")
     print(
         "linked: "
         f"memory={len(brief['linked_memory'])} "
         f"runs={len(brief['linked_run_traces'])} "
         f"tools={len(brief['linked_tool_traces'])}"
     )
+
+
+def cmd_task_plan(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    task = TaskStore(workspace).plan(args.task_id, goal=args.goal, force=args.force)
+    if args.json:
+        print_json(task["plan"])
+        return
+    print_task_plan(task)
+
+
+def cmd_task_next(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    checkpoint = TaskStore(workspace).next_checkpoint(args.task_id)
+    if args.json:
+        print_json(checkpoint)
+        return
+    milestone = checkpoint.get("milestone")
+    print(f"task: {checkpoint['task_id']} {checkpoint['task_status']}")
+    print(f"progress: {checkpoint['plan_progress']['completed']}/{checkpoint['plan_progress']['total']} completed")
+    if milestone:
+        print(f"next: {milestone['id']} {milestone['title']} [{milestone['status']}]")
+        print(f"objective: {milestone['objective']}")
+        for item in milestone.get("acceptance", []):
+            print(f"- {item}")
+    print(f"resume: {checkpoint['resume_prompt']}")
+
+
+def cmd_task_checkpoint(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    task = TaskStore(workspace).checkpoint(
+        args.task_id,
+        args.note,
+        milestone_id=args.milestone,
+        status=args.status,
+    )
+    print(f"task: {task['id']} checkpoint added steps={len(task['steps'])}")
+    if task.get("plan"):
+        print(f"plan: {task_plan_progress_text(task['plan'])}")
+
+
+def print_task_plan(task: dict[str, Any]) -> None:
+    plan = task["plan"]
+    print(f"task: {task['id']}")
+    print(f"objective: {plan['objective']}")
+    print(f"progress: {task_plan_progress_text(plan)}")
+    for milestone in plan.get("milestones", []):
+        print(f"- {milestone['id']} [{milestone['status']}] {milestone['title']}")
+        print(f"  objective: {milestone['objective']}")
+
+
+def task_plan_progress_text(plan: dict[str, Any]) -> str:
+    milestones = plan.get("milestones", [])
+    total = len(milestones)
+    completed = sum(1 for item in milestones if item.get("status") == "completed")
+    blocked = sum(1 for item in milestones if item.get("status") == "blocked")
+    skipped = sum(1 for item in milestones if item.get("status") == "skipped")
+    return f"{completed}/{total} completed blocked={blocked} skipped={skipped}"
 
 
 def attach_run_to_task(workspace: Workspace, task_id: str, trace: dict[str, Any]) -> None:

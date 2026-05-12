@@ -133,6 +133,7 @@ def summarize_task(packet: dict[str, Any]) -> dict[str, Any]:
         "title": brief["task"]["title"],
         "status": brief["task"]["status"],
         "estimated_tokens": brief.get("estimated_tokens", 0),
+        "plan": brief.get("plan"),
     }
 
 

@@ -24,11 +24,12 @@ Current alpha:
 
 - Task sessions store compact checkpoints and linked traces.
 - `task brief` builds resume context without replaying full chat.
+- `task start --plan`, `task plan`, `task next`, and `task checkpoint` manage structured milestone plans with active checkpoints, acceptance criteria, and resume prompts.
 - Packaged `long_task_planning` skill contract captures milestone discipline.
 
 Next bar:
 
-- Add milestone objects with verification signals.
+- Add richer verification signals and failure classification to milestone objects.
 - Add stale checkpoint pruning after task completion.
 - Add task-level progress summaries that can be pulled into future projects only by explicit user action.
 

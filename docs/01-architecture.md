@@ -167,10 +167,12 @@ Task sessions are resumable checkpoints for multi-step work.
 Current behavior:
 
 - `task start` creates an active task with a title and goal.
+- `task start --plan` creates a structured long-task plan with milestones, active checkpoint, and completion policy.
+- `task plan`, `task next`, and `task checkpoint` create or update milestone state without requiring a provider call.
 - `task step` appends checkpoint notes.
 - `task attach` links run traces, tool traces, or memory records to the task.
 - `run --task <task-id>` and `tool ... --task <task-id>` attach traces automatically before work drifts away from the active checkpoint.
-- `task brief` builds a compact resume context from recent steps and linked trace/memory summaries.
+- `task brief` builds a compact resume context from recent steps, linked trace/memory summaries, and the active milestone plan.
 - `plan --task <task-id> --resume`, `context --task <task-id> --resume`, and `run --task <task-id> --resume` inject that brief into the context packet.
 - `task block` marks a task as blocked with a reason.
 - `task complete` closes the task and prevents further mutation.

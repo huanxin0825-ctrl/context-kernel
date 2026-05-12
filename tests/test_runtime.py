@@ -800,6 +800,87 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.step(task["id"], "Should not append after completion.")
 
+    def test_task_store_structured_plan_checkpoint_and_resume_brief(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            store = TaskStore(workspace)
+
+            task = store.start(
+                "Build durable long task planning",
+                goal="Make long-running agent work resumable through milestones and checkpoints.",
+                with_plan=True,
+            )
+            first_next = store.next_checkpoint(task["id"])
+            checkpointed = store.checkpoint(
+                task["id"],
+                "Finished investigation and identified task-store extension points.",
+                milestone_id="M1",
+                status="completed",
+            )
+            brief = store.brief(task["id"])
+            plan = ExecutionPlanner(workspace).plan(
+                "Continue the long task implementation",
+                1200,
+                task_id=task["id"],
+                resume=True,
+            )
+
+            self.assertEqual(first_next["milestone"]["id"], "M1")
+            self.assertIn("Acceptance:", first_next["resume_prompt"])
+            self.assertEqual(checkpointed["plan"]["milestones"][0]["status"], "completed")
+            self.assertEqual(checkpointed["plan"]["milestones"][1]["status"], "active")
+            self.assertEqual(brief["plan"]["active_milestone"]["id"], "M2")
+            self.assertEqual(brief["plan"]["progress"]["completed"], 1)
+            self.assertEqual(plan["task"]["plan"]["active_milestone"]["id"], "M2")
+
+    def test_task_plan_cli_commands_manage_long_task_checkpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(
+                    [
+                        "--workspace",
+                        str(workspace.root),
+                        "task",
+                        "start",
+                        "Ship agent planner",
+                        "--goal",
+                        "Add resumable task planning.",
+                        "--plan",
+                    ]
+                )
+            start_output = stdout.getvalue()
+            task_id = start_output.split()[1]
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "task", "next", task_id])
+            self.assertIn("next: M1", stdout.getvalue())
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(
+                    [
+                        "--workspace",
+                        str(workspace.root),
+                        "task",
+                        "checkpoint",
+                        task_id,
+                        "--note",
+                        "Investigation done.",
+                        "--milestone",
+                        "M1",
+                        "--status",
+                        "completed",
+                    ]
+                )
+            self.assertIn("1/5 completed", stdout.getvalue())
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "task", "brief", task_id])
+            self.assertIn("active: M2", stdout.getvalue())
+
     def test_task_resume_context_flows_into_context_plan_and_run_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))
