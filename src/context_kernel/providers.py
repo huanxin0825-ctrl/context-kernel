@@ -657,6 +657,22 @@ class MockProvider:
         }
 
 
+class ChattyMockProvider(MockProvider):
+    name = "mock-chatty"
+
+    def run(self, packet: dict[str, Any]) -> ProviderResponse:
+        response = super().run(packet)
+        mode = str(packet.get("agent", {}).get("mode", ""))
+        if not mode.startswith("tool_planning_v"):
+            return response
+        text = f"Here is the next action:\n```json\n{response.text}\n```"
+        return ProviderResponse(
+            text=text,
+            input_tokens=response.input_tokens,
+            output_tokens=estimate_tokens(text),
+        )
+
+
 class OpenAICompatibleProvider:
     name = "openai"
 
@@ -779,6 +795,8 @@ def extract_text(response: dict[str, Any]) -> str:
 def get_provider(name: str, model: str | None = None, base_url: str | None = None) -> ModelProvider:
     if name == "mock":
         return MockProvider()
+    if name == "mock-chatty":
+        return ChattyMockProvider()
     if name == "openai":
         return OpenAICompatibleProvider(model=model, base_url=base_url)
     raise ValueError(f"Unsupported provider for MVP: {name}")
@@ -789,6 +807,8 @@ def list_provider_models(name: str, base_url: str | None = None) -> list[str]:
         return OpenAICompatibleProvider(base_url=base_url).list_models()
     if name == "mock":
         return ["mock"]
+    if name == "mock-chatty":
+        return ["mock-chatty"]
     raise ValueError(f"Unsupported provider for model listing: {name}")
 
 

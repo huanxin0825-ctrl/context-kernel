@@ -213,37 +213,14 @@ class AgentLoop:
         attach_trace_outputs(self.tasks, task_id, trace)
         tokens = trace.get("response", {})
 
-        if not trace.get("verifier", {}).get("ok"):
-            self.tasks.step(
-                task_id,
-                f"Agent step {index} needs review: provider did not satisfy the JSON action contract.",
-                kind="agent_step",
-                refs={"run_traces": [trace["id"]]},
-            )
-            return {
-                "index": index,
-                "status": "needs_review",
-                "continue": False,
-                "stop_reason": "Agent loop stopped: provider response failed JSON action verification.",
-                "plan": summarize_plan(plan),
-                "trace_id": trace["id"],
-                "model_role": selected_role,
-                "model": selected_model,
-                "routing_reason": routing_reason,
-                "aux_review": review,
-                "tool_trace_id": None,
-                "action": None,
-                "tokens": {
-                    "input_tokens": tokens.get("input_tokens", 0),
-                    "output_tokens": tokens.get("output_tokens", 0),
-                    "total_tokens": tokens.get("total_tokens", 0),
-                },
-                "verifier_ok": False,
-            }
-
+        verifier_ok = bool(trace.get("verifier", {}).get("ok"))
+        contract_recovered = False
         try:
             action = parse_agent_action(trace["response"]["text"], expect_json=expect_json)
         except (ValueError, KeyError, TypeError) as exc:
+            stop_reason = "provider returned an invalid action payload"
+            if not verifier_ok:
+                stop_reason = "provider response failed JSON action verification"
             self.tasks.step(
                 task_id,
                 f"Agent step {index} needs review: invalid action payload ({compact(str(exc), limit=240)}).",
@@ -254,7 +231,7 @@ class AgentLoop:
                 "index": index,
                 "status": "needs_review",
                 "continue": False,
-                "stop_reason": "Agent loop stopped: provider returned an invalid action payload.",
+                "stop_reason": f"Agent loop stopped: {stop_reason}.",
                 "reason": str(exc),
                 "plan": summarize_plan(plan),
                 "trace_id": trace["id"],
@@ -269,8 +246,17 @@ class AgentLoop:
                     "output_tokens": tokens.get("output_tokens", 0),
                     "total_tokens": tokens.get("total_tokens", 0),
                 },
-                "verifier_ok": True,
+                "verifier_ok": verifier_ok,
+                "contract_recovered": False,
             }
+        if not verifier_ok:
+            contract_recovered = True
+            self.tasks.step(
+                task_id,
+                f"Agent step {index} recovered a valid action from non-strict provider JSON.",
+                kind="agent_step",
+                refs={"run_traces": [trace["id"]]},
+            )
 
         repeated_action = repeated_agent_action(report_steps=prior_steps, action=action)
         if repeated_action:
@@ -299,7 +285,8 @@ class AgentLoop:
                     "output_tokens": tokens.get("output_tokens", 0),
                     "total_tokens": tokens.get("total_tokens", 0),
                 },
-                "verifier_ok": True,
+                "verifier_ok": verifier_ok,
+                "contract_recovered": contract_recovered,
             }
 
         if action["action"] == "respond":
@@ -328,7 +315,8 @@ class AgentLoop:
                     "output_tokens": tokens.get("output_tokens", 0),
                     "total_tokens": tokens.get("total_tokens", 0),
                 },
-                "verifier_ok": True,
+                "verifier_ok": verifier_ok,
+                "contract_recovered": contract_recovered,
                 "final_response": response_text,
             }
 
@@ -398,7 +386,8 @@ class AgentLoop:
                 "output_tokens": tokens.get("output_tokens", 0),
                 "total_tokens": tokens.get("total_tokens", 0),
             },
-            "verifier_ok": True,
+            "verifier_ok": verifier_ok,
+            "contract_recovered": contract_recovered,
         }
 
 
@@ -1083,6 +1072,7 @@ def compact_saved_step(step: dict[str, Any]) -> dict[str, Any]:
         "action": step.get("action"),
         "tokens": compact_saved_tokens(step.get("tokens", {})),
         "verifier_ok": step.get("verifier_ok"),
+        "contract_recovered": bool(step.get("contract_recovered")),
     }
     if step.get("stop_reason"):
         saved["stop_reason"] = compact(str(step.get("stop_reason", "")), limit=180)

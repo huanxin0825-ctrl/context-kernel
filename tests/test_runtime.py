@@ -218,6 +218,29 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("return 2", test_file.read_text(encoding="utf-8"))
             self.assertIn("Project tests passed", report["final_response"])
 
+    def test_agent_recovers_fenced_action_from_chatty_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "notes").mkdir()
+            (root / "notes" / "plan.txt").write_text("ship small reliable loops", encoding="utf-8")
+            workspace = Workspace(root)
+            workspace.init()
+
+            report = AgentLoop(workspace).run(
+                "Read notes/plan.txt",
+                provider_name="mock-chatty",
+                budget=1600,
+                max_steps=2,
+                remember=False,
+                aux_review="off",
+            )
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual([step["action"]["action"] for step in report["steps"]], ["read_file", "respond"])
+            self.assertTrue(all(step["contract_recovered"] for step in report["steps"]))
+            self.assertFalse(any(step["verifier_ok"] for step in report["steps"]))
+            self.assertIn("ship small reliable loops", report["final_response"])
+
     def test_eval_runner_reports_checks_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))
