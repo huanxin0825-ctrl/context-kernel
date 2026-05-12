@@ -125,9 +125,12 @@ Run the benchmark suite and gate it against the latest matching baseline:
 ```powershell
 akernel --workspace .sandbox bench run examples\benchmarks\phase2
 akernel --workspace .sandbox bench gate examples\benchmarks\phase2 --require-baseline
+akernel --workspace .sandbox bench run examples\benchmarks\scale
+akernel --workspace .sandbox bench evidence --limit 3 --fail-under 30 --output .sandbox\benchmark-evidence.md
 ```
 
 `bench gate` requires the current benchmark checks to pass, then compares behavior and token cost against a saved baseline.
+`bench evidence` turns saved benchmark reports into a Markdown proof page with total kernel tokens, baseline tokens, token savings, pass rate, strongest savings, and weakest savings.
 
 ## OpenAI-Compatible Provider
 
@@ -178,6 +181,7 @@ akernel eval cost <report-id>
 akernel eval diff <before-id> <after-id> --fail-on-regression
 akernel bench cost <report-id>
 akernel bench diff <before-id> <after-id> --fail-on-regression
+akernel bench evidence --limit 3 --fail-under 30 --output benchmark-evidence.md
 akernel agent run "Patch notes/plan.txt and run tests" --provider openai --max-steps 4
 akernel agent cost <agent-run-id>
 ```

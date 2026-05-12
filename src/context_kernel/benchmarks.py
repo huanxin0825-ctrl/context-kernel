@@ -138,6 +138,36 @@ class BenchmarkRunner:
         output.write_text(render_benchmark_markdown(report), encoding="utf-8")
         return output
 
+    def evidence(
+        self,
+        report_ids: list[str] | None = None,
+        *,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        reports = [self.get_report(report_id) for report_id in report_ids] if report_ids else self._recent_reports(limit=limit)
+        return build_benchmark_evidence(reports)
+
+    def export_evidence_markdown(
+        self,
+        report_ids: list[str] | None = None,
+        *,
+        limit: int | None = None,
+        output: Path | None = None,
+    ) -> Path:
+        evidence = self.evidence(report_ids, limit=limit)
+        output = output or self.workspace.benchmarks_dir / "evidence.md"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(render_benchmark_evidence_markdown(evidence), encoding="utf-8")
+        return output
+
+    def _recent_reports(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        self.workspace.benchmarks_dir.mkdir(parents=True, exist_ok=True)
+        reports = [Workspace.read_json(path) for path in sorted(self.workspace.benchmarks_dir.glob("*.json"))]
+        reports.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        if limit is not None:
+            reports = reports[: max(0, limit)]
+        return reports
+
 
 def summarize_benchmark(reports: list[dict[str, Any]]) -> dict[str, Any]:
     summaries = [report["summary"] for report in reports]
@@ -170,6 +200,70 @@ def summarize_benchmark(reports: list[dict[str, Any]]) -> dict[str, Any]:
         "total_execution_tokens": total_execution_tokens,
         "ok": passed_checks == total_checks,
     }
+
+
+def build_benchmark_evidence(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    reports = sorted(reports, key=lambda item: item.get("created_at", ""), reverse=True)
+    summaries = [report.get("summary", {}) for report in reports]
+    total_kernel = sum(int(summary.get("total_kernel_tokens", 0) or 0) for summary in summaries)
+    total_baseline = sum(int(summary.get("total_baseline_tokens", 0) or 0) for summary in summaries)
+    total_savings = max(0, total_baseline - total_kernel)
+    total_checks = sum(int(summary.get("total_checks", 0) or 0) for summary in summaries)
+    passed_checks = sum(int(summary.get("passed_checks", 0) or 0) for summary in summaries)
+    tasks = benchmark_task_snapshots(reports)
+    weakest = sorted(tasks, key=lambda item: item["savings_percent"])[:5]
+    strongest = sorted(tasks, key=lambda item: item["savings_tokens"], reverse=True)[:5]
+    return {
+        "id": uuid4().hex[:12],
+        "created_at": utc_now(),
+        "report_count": len(reports),
+        "benchmark_count": len({report.get("name", "") for report in reports if report.get("name")}),
+        "fixture_count": sum(int(summary.get("fixture_count", 0) or 0) for summary in summaries),
+        "task_count": sum(int(summary.get("task_count", 0) or 0) for summary in summaries),
+        "total_kernel_tokens": total_kernel,
+        "total_baseline_tokens": total_baseline,
+        "total_savings_tokens": total_savings,
+        "total_savings_percent": round((total_savings / total_baseline) * 100, 2) if total_baseline else 0.0,
+        "average_report_savings_percent": round(
+            sum(float(summary.get("total_savings_percent", 0) or 0) for summary in summaries) / len(summaries),
+            2,
+        )
+        if summaries
+        else 0.0,
+        "passed_checks": passed_checks,
+        "total_checks": total_checks,
+        "pass_rate_percent": round((passed_checks / total_checks) * 100, 2) if total_checks else 0.0,
+        "reports": [benchmark_ref(report) | {"summary": report.get("summary", {})} for report in reports],
+        "strongest_savings": strongest,
+        "weakest_savings": weakest,
+        "ok": bool(reports) and passed_checks == total_checks,
+    }
+
+
+def benchmark_task_snapshots(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for report in reports:
+        for fixture in report.get("fixtures", []):
+            fixture_name = Path(str(fixture.get("fixture", ""))).name
+            for task in fixture.get("tasks", []):
+                kernel_tokens = int(task.get("kernel", {}).get("estimated_tokens", 0) or 0)
+                baseline_tokens = int(task.get("baseline", {}).get("estimated_tokens", 0) or 0)
+                checks = task.get("checks", {})
+                snapshots.append(
+                    {
+                        "report_id": report.get("id"),
+                        "benchmark": report.get("name"),
+                        "fixture": fixture_name,
+                        "task": task.get("id"),
+                        "profile": task.get("profile"),
+                        "kernel_tokens": kernel_tokens,
+                        "baseline_tokens": baseline_tokens,
+                        "savings_tokens": max(0, baseline_tokens - kernel_tokens),
+                        "savings_percent": float(task.get("savings", {}).get("percent", 0) or 0),
+                        "checks": f"{int(checks.get('passed', 0) or 0)}/{int(checks.get('total', 0) or 0)}",
+                    }
+                )
+    return snapshots
 
 
 def diff_benchmarks(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
@@ -301,6 +395,67 @@ def render_benchmark_markdown(report: dict[str, Any]) -> str:
             )
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def render_benchmark_evidence_markdown(evidence: dict[str, Any]) -> str:
+    lines = [
+        "# Benchmark Evidence",
+        "",
+        f"- Evidence id: `{evidence['id']}`",
+        f"- Created at: `{evidence['created_at']}`",
+        f"- Reports: `{evidence['report_count']}`",
+        f"- Benchmarks: `{evidence['benchmark_count']}`",
+        f"- Fixtures: `{evidence['fixture_count']}`",
+        f"- Tasks: `{evidence['task_count']}`",
+        f"- Kernel tokens: `{evidence['total_kernel_tokens']}`",
+        f"- Baseline tokens: `{evidence['total_baseline_tokens']}`",
+        f"- Token savings: `{evidence['total_savings_tokens']}` (`{evidence['total_savings_percent']}%`)",
+        f"- Checks: `{evidence['passed_checks']}/{evidence['total_checks']}` (`{evidence['pass_rate_percent']}%`)",
+        "",
+        "## Reports",
+        "",
+        "| Report | Benchmark | Tasks | Savings | Checks |",
+        "| --- | --- | ---: | ---: | ---: |",
+    ]
+    for report in evidence.get("reports", []):
+        summary = report.get("summary", {})
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(report.get("id", "")),
+                    str(report.get("name", "")),
+                    str(summary.get("task_count", 0)),
+                    f"{summary.get('total_savings_tokens', 0)} ({summary.get('total_savings_percent', 0)}%)",
+                    f"{summary.get('passed_checks', 0)}/{summary.get('total_checks', 0)}",
+                ]
+            )
+            + " |"
+        )
+    lines.extend(["", "## Strongest Savings", "", "| Scope | Kernel | Baseline | Savings | Checks |", "| --- | ---: | ---: | ---: | ---: |"])
+    for item in evidence.get("strongest_savings", []):
+        lines.append(benchmark_evidence_task_line(item))
+    lines.extend(["", "## Weakest Savings", "", "| Scope | Kernel | Baseline | Savings | Checks |", "| --- | ---: | ---: | ---: | ---: |"])
+    for item in evidence.get("weakest_savings", []):
+        lines.append(benchmark_evidence_task_line(item))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def benchmark_evidence_task_line(item: dict[str, Any]) -> str:
+    scope = f"{item.get('benchmark', '')}/{item.get('fixture', '')}/{item.get('task', '')}"
+    return (
+        "| "
+        + " | ".join(
+            [
+                scope,
+                str(item.get("kernel_tokens", 0)),
+                str(item.get("baseline_tokens", 0)),
+                f"{item.get('savings_tokens', 0)} ({item.get('savings_percent', 0)}%)",
+                str(item.get("checks", "")),
+            ]
+        )
+        + " |"
+    )
 
 
 def benchmark_ref(report: dict[str, Any]) -> dict[str, Any]:

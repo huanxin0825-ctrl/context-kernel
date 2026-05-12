@@ -27,6 +27,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Release helper scripts and a thin npm launcher wrapper prepare the project for PyPI/npm distribution.
 - Release workflow, PyPI metadata checks, npm package dry-run validation, and npm launcher bootstrap support prepare one-command remote installation.
 - Scale benchmark fixtures cover context pressure, editing, global memory, and marketplace workflows.
+- `bench evidence` summarizes saved benchmark reports into JSON or Markdown proof pages with aggregate token savings, pass rate, strongest savings, weakest savings, and optional minimum-savings gates.
 - Product roadmap documentation defines completion bars for TUI, advanced editing, memory retention, marketplace, distribution, and benchmark maturity.
 - `akernel --ui auto|classic|tui` adds a zero-dependency full-screen terminal UI with transcript, session sidebar, last-run summary, diagnostics, pending context, and input hint.
 - The TUI now uses a cockpit layout with a status header, command strip, task mission panel, model stack, workspace summary, and last-run action timeline.

@@ -14,7 +14,7 @@
       "request": "Select only relevant memory for a token budget analysis and explain omitted stale task notes",
       "profile": "balanced",
       "expected_skills": ["context_budget"],
-      "expected_memory_terms": ["token"],
+      "expected_memory_terms": ["budget"],
       "expected_response_terms": ["budget"],
       "minimum_savings_percent": 15
     }

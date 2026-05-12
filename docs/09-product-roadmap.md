@@ -111,11 +111,12 @@ Next bar:
 
 Current alpha:
 
-- `bench run`, `bench gate`, `bench diff`, `bench cost`, and `bench export` exist.
+- `bench run`, `bench gate`, `bench diff`, `bench cost`, `bench export`, and `bench evidence` exist.
 - `examples/benchmarks/scale` adds broader fixtures for context pressure, editing, global memory, and marketplace flows.
+- `bench evidence` generates a Markdown proof page with aggregate token savings, pass rate, strongest savings, and weakest savings across saved benchmark reports.
 
 Next bar:
 
 - Add at least 50 representative tasks before claiming measured savings publicly.
 - Include real-provider smoke reports separately from deterministic mock reports.
-- Publish markdown benchmark artifacts with each GitHub release.
+- Publish benchmark evidence artifacts with each GitHub release.

@@ -12,7 +12,7 @@ import sys
 from typing import Any
 
 from .agent_reports import build_agent_cost_report, load_agent_report, render_agent_cost_report
-from .benchmarks import BenchmarkRunner, benchmark_ref
+from .benchmarks import BenchmarkRunner, benchmark_ref, render_benchmark_evidence_markdown
 from .budget import DEFAULT_PROFILE, profile_names
 from .context import ContextBuilder
 from .evals import EvalRunner
@@ -509,6 +509,13 @@ def build_parser() -> argparse.ArgumentParser:
     bench_export.add_argument("report_id")
     bench_export.add_argument("--output", default=None, help="Output markdown path.")
     bench_export.set_defaults(func=cmd_bench_export)
+    bench_evidence = bench_sub.add_parser("evidence", help="Summarize saved benchmark reports as token-savings evidence.")
+    bench_evidence.add_argument("report_ids", nargs="*", help="Specific report ids. Defaults to recent saved reports.")
+    bench_evidence.add_argument("--limit", type=int, default=None, help="Limit recent reports when no ids are provided.")
+    bench_evidence.add_argument("--output", default=None, help="Write Markdown evidence to this path.")
+    bench_evidence.add_argument("--json", action="store_true", help="Print the full evidence JSON.")
+    bench_evidence.add_argument("--fail-under", type=float, default=None, help="Exit non-zero if total savings percent is below this threshold.")
+    bench_evidence.set_defaults(func=cmd_bench_evidence)
 
     trace_parser = subparsers.add_parser("trace", help="Inspect run traces.")
     trace_sub = trace_parser.add_subparsers(dest="trace_command", required=True)
@@ -2752,6 +2759,24 @@ def cmd_bench_export(args: argparse.Namespace) -> None:
     output = Path(args.output) if args.output else None
     path = BenchmarkRunner(workspace).export_markdown(args.report_id, output=output)
     print(f"exported: {path}")
+
+
+def cmd_bench_evidence(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    runner = BenchmarkRunner(workspace)
+    report_ids = args.report_ids or None
+    evidence = runner.evidence(report_ids, limit=args.limit)
+    if args.output:
+        path = runner.export_evidence_markdown(report_ids, limit=args.limit, output=Path(args.output))
+        print(f"exported: {path}")
+    if args.json:
+        print_json(evidence)
+    elif not args.output:
+        print(render_benchmark_evidence_markdown(evidence).rstrip())
+    if args.fail_under is not None and evidence["total_savings_percent"] < args.fail_under:
+        raise SystemExit(
+            f"benchmark evidence below threshold: {evidence['total_savings_percent']}% < {args.fail_under}%"
+        )
 
 
 def cmd_trace_list(args: argparse.Namespace) -> None:

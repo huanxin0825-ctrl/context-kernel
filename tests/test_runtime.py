@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from context_kernel.agent_reports import build_agent_cost_report, render_agent_cost_report
-from context_kernel.benchmarks import BenchmarkRunner, render_benchmark_markdown
+from context_kernel.benchmarks import BenchmarkRunner, render_benchmark_evidence_markdown, render_benchmark_markdown
 from context_kernel.budget import allocate_budget
 from context_kernel.cli import build_chat_tui_screen, load_batch_patch_specs, main, print_agent_report
 from context_kernel.context import ContextBuilder
@@ -2002,6 +2002,59 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("# Benchmark Report", markdown)
             self.assertIn("## Cost View", markdown)
             self.assertIn("### Hotspots", markdown)
+
+    def test_benchmark_evidence_summarizes_saved_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "edit_file.json")
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            runner = BenchmarkRunner(workspace)
+            first = runner.run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+            MemoryStore(workspace).add("fact", "Extra unrelated memory increases baseline context.", ["noise"])
+            second = runner.run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+
+            evidence = runner.evidence([first["id"], second["id"]])
+            markdown = render_benchmark_evidence_markdown(evidence)
+            output = runner.export_evidence_markdown([first["id"], second["id"]])
+
+            self.assertEqual(evidence["report_count"], 2)
+            self.assertGreater(evidence["task_count"], first["summary"]["task_count"])
+            self.assertGreater(evidence["total_savings_tokens"], 0)
+            self.assertEqual(evidence["passed_checks"], evidence["total_checks"])
+            self.assertTrue(evidence["strongest_savings"])
+            self.assertTrue(evidence["weakest_savings"])
+            self.assertIn("# Benchmark Evidence", markdown)
+            self.assertTrue(output.exists())
+
+    def test_benchmark_evidence_cli_can_fail_under_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "edit_file.json")
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+            MemoryStore(workspace).add("preference", "Prefer CLI-first context budget prototypes.", ["cli"])
+            report = BenchmarkRunner(workspace).run_directory(ROOT / "examples" / "benchmarks" / "phase2")
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "bench", "evidence", report["id"]])
+
+            self.assertIn("Benchmark Evidence", stdout.getvalue())
+            with patch("sys.stdout", new=io.StringIO()):
+                with self.assertRaises(SystemExit) as exc:
+                    main(
+                        [
+                            "--workspace",
+                            str(workspace.root),
+                            "bench",
+                            "evidence",
+                            report["id"],
+                            "--fail-under",
+                            "99",
+                        ]
+                    )
+            self.assertIn("benchmark evidence below threshold", str(exc.exception))
 
     def test_benchmark_runner_finds_latest_baseline_by_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
