@@ -106,6 +106,7 @@ Benchmark reports aggregate fixture count, task count, savings, checks, and prov
 Use `bench cost` to surface the highest-cost and lowest-savings tasks across the full benchmark.
 Use `bench export` to produce a Markdown report for sharing or archiving outside the raw JSON store; it now includes the benchmark cost view alongside the normal summary tables.
 Use `bench evidence` to summarize one or more saved benchmark reports into a release-ready proof page with report count, fixture count, task count, total kernel tokens, full-load baseline tokens, savings tokens, savings percent, pass rate, strongest savings, and weakest savings. Add `--fail-under N` when CI should reject evidence below a minimum total savings percentage.
+The current deterministic scale snapshot is recorded in [Benchmark Evidence](10-benchmark-evidence.md).
 `bench diff` includes the same cost regression checks so aggregate token backsliding is easier to catch before it becomes normal.
 Use `bench gate` when you want that comparison as a single regression command: it runs the directory, requires the current report checks to pass, finds the latest matching saved baseline by path, and fails immediately if behavior or token cost regresses. Add `--require-baseline` when CI should fail instead of silently seeding a first run.
 

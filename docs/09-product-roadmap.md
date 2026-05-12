@@ -98,14 +98,15 @@ Current alpha:
 
 - Python package metadata exposes the `akernel` console script.
 - `scripts/install_remote.ps1` installs from GitHub and creates a user-level launcher.
-- `scripts/release_check.ps1` runs local release validation.
-- A thin npm launcher wrapper lives under `packages/npm/akernel`.
+- `scripts/release_check.ps1` runs local release validation, package metadata checks, and npm dry-run packing.
+- An npm launcher wrapper lives under `packages/npm/akernel` and can bootstrap the Python package.
+- `.github/workflows/release.yml` builds artifacts and supports trusted PyPI publishing plus guarded npm publishing.
 
 Next bar:
 
 - Publish Python package to PyPI after release credentials are configured.
 - Publish npm wrapper after the Python package is available.
-- Add CI release workflow with trusted publishing instead of local tokens.
+- Attach benchmark evidence artifacts to each GitHub release.
 
 ## Large-Scale Benchmarks
 

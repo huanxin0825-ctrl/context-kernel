@@ -131,6 +131,7 @@ akernel --workspace .sandbox bench evidence --limit 3 --fail-under 30 --output .
 
 `bench gate` requires the current benchmark checks to pass, then compares behavior and token cost against a saved baseline.
 `bench evidence` turns saved benchmark reports into a Markdown proof page with total kernel tokens, baseline tokens, token savings, pass rate, strongest savings, and weakest savings.
+The current deterministic scale snapshot is documented in [Benchmark Evidence](docs/10-benchmark-evidence.md).
 
 ## OpenAI-Compatible Provider
 
@@ -214,6 +215,7 @@ The repository CI runs unit tests, package build checks, CLI smoke tests, benchm
 - [Release And CI](docs/07-release-and-ci.md)
 - [Open Source Plan](docs/08-open-source-plan.md)
 - [Product Roadmap](docs/09-product-roadmap.md)
+- [Benchmark Evidence](docs/10-benchmark-evidence.md)
 
 ## Project Status
 
