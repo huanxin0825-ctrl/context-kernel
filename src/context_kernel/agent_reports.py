@@ -39,6 +39,8 @@ def build_agent_cost_report(report: dict[str, Any]) -> dict[str, Any]:
             "trace_id": step.get("trace_id"),
             "tool_trace_id": step.get("tool_trace_id"),
             "tool": tool.get("name"),
+            "model_role": step.get("model_role"),
+            "model": step.get("model"),
         }
         step_summaries.append(step_summary)
 
@@ -58,6 +60,7 @@ def build_agent_cost_report(report: dict[str, Any]) -> dict[str, Any]:
         "task_id": report.get("task_id"),
         "status": report.get("status"),
         "request": str(report.get("request") or ""),
+        "model_routing": report.get("model_routing", {}),
         "summary": {
             "step_count": len(step_summaries),
             "input_tokens": totals["input_tokens"],
@@ -104,6 +107,14 @@ def render_agent_cost_report(cost: dict[str, Any]) -> str:
         ),
         f"hotspot: step={summary['max_step_index']} tokens={summary['max_step_tokens']}",
     ]
+    routing = cost.get("model_routing") or {}
+    if routing:
+        lines.append(
+            "model_routing: "
+            f"mode={routing.get('mode')} "
+            f"primary={routing.get('primary_model')} "
+            f"auxiliary={routing.get('auxiliary_model')}"
+        )
     if summary["action_breakdown"]:
         parts = []
         for action, bucket in summary["action_breakdown"].items():
@@ -116,7 +127,8 @@ def render_agent_cost_report(cost: dict[str, Any]) -> str:
             (
                 f"- step {step['index']}: action={step['action']} status={step['status']} "
                 f"tokens={step['total_tokens']} input={step['input_tokens']} output={step['output_tokens']} "
-                f"brief={step['task_brief_tokens']} context={step['planned_context_tokens']}"
+                f"brief={step['task_brief_tokens']} context={step['planned_context_tokens']} "
+                f"model={step.get('model_role') or 'unknown'}:{step.get('model') or 'default'}"
             )
         )
     return "\n".join(lines)

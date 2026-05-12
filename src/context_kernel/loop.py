@@ -7,7 +7,7 @@ from uuid import uuid4
 from .memory import MemoryStore
 from .models import utc_now
 from .planner import ExecutionPlanner
-from .providers import extract_anchor_patch_instruction, extract_patch_instruction, extract_write_instruction
+from .providers import env_value, extract_anchor_patch_instruction, extract_patch_instruction, extract_write_instruction
 from .runner import AgentRunner
 from .skills import extract_json_object
 from .storage import Workspace
@@ -17,6 +17,9 @@ from .tools import MAX_CAPTURE_CHARS, ToolExecutor
 
 TOOL_ACTIONS = {"read_file", "write_file", "patch_file", "batch_patch", "run_command"}
 ALLOWED_ACTIONS = TOOL_ACTIONS | {"respond"}
+DEFAULT_PRIMARY_MODEL = "gpt-5.5"
+DEFAULT_AUXILIARY_MODEL = "gpt-5.3-codex"
+MODEL_ROUTING_MODES = {"auto", "primary", "auxiliary"}
 
 
 class AgentLoop:
@@ -33,6 +36,8 @@ class AgentLoop:
         budget: int | None,
         profile: str = "balanced",
         model: str | None = None,
+        aux_model: str | None = None,
+        model_routing: str = "auto",
         base_url: str | None = None,
         task_id: str | None = None,
         max_steps: int = 5,
@@ -42,6 +47,8 @@ class AgentLoop:
     ) -> dict[str, Any]:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
+        if model_routing not in MODEL_ROUTING_MODES:
+            raise ValueError(f"model_routing must be one of: {', '.join(sorted(MODEL_ROUTING_MODES))}")
 
         task = self._task_for_request(request, task_id)
         report = {
@@ -53,6 +60,11 @@ class AgentLoop:
             "max_steps": max_steps,
             "steps": [],
             "final_response": None,
+            "model_routing": {
+                "mode": model_routing,
+                "primary_model": resolve_role_model(provider_name, model, aux_model, "primary"),
+                "auxiliary_model": resolve_role_model(provider_name, model, aux_model, "auxiliary"),
+            },
             "state": {"enabled": False, "candidate_count": 0, "written_count": 0, "records": []},
             "totals": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
         }
@@ -68,6 +80,8 @@ class AgentLoop:
                 budget=budget,
                 profile=profile,
                 model=model,
+                aux_model=aux_model,
+                model_routing=model_routing,
                 base_url=base_url,
                 allow_over_budget=allow_over_budget,
                 expect_json=expect_json,
@@ -112,6 +126,8 @@ class AgentLoop:
         budget: int | None,
         profile: str,
         model: str | None,
+        aux_model: str | None,
+        model_routing: str,
         base_url: str | None,
         allow_over_budget: bool,
         expect_json: bool,
@@ -138,19 +154,35 @@ class AgentLoop:
                 "verifier_ok": False,
             }
 
+        selected_role, routing_reason = select_model_role(
+            model_routing=model_routing,
+            plan=plan,
+            step_index=index,
+            prior_steps=prior_steps,
+            profile=profile,
+        )
+        selected_model = resolve_role_model(provider_name, model, aux_model, selected_role)
+
         trace = AgentRunner(self.workspace).run(
             request,
             provider_name=provider_name,
             budget=budget,
             profile=profile,
-            model=model,
+            model=selected_model,
             base_url=base_url,
             allow_over_budget=allow_over_budget,
             expect_json=True,
             remember=False,
             task_id=task_id,
             resume=True,
-            packet_overrides=build_agent_packet(request, index, max_steps, expect_json=expect_json),
+            packet_overrides=build_agent_packet(
+                request,
+                index,
+                max_steps,
+                expect_json=expect_json,
+                model_role=selected_role,
+                routing_reason=routing_reason,
+            ),
         )
         attach_trace_outputs(self.tasks, task_id, trace)
         tokens = trace.get("response", {})
@@ -169,6 +201,9 @@ class AgentLoop:
                 "stop_reason": "Agent loop stopped: provider response failed JSON action verification.",
                 "plan": summarize_plan(plan),
                 "trace_id": trace["id"],
+                "model_role": selected_role,
+                "model": selected_model,
+                "routing_reason": routing_reason,
                 "tool_trace_id": None,
                 "action": None,
                 "tokens": {
@@ -196,6 +231,9 @@ class AgentLoop:
                 "reason": str(exc),
                 "plan": summarize_plan(plan),
                 "trace_id": trace["id"],
+                "model_role": selected_role,
+                "model": selected_model,
+                "routing_reason": routing_reason,
                 "tool_trace_id": None,
                 "action": None,
                 "tokens": {
@@ -222,6 +260,9 @@ class AgentLoop:
                 "reason": "repeated identical action detected",
                 "plan": summarize_plan(plan),
                 "trace_id": trace["id"],
+                "model_role": selected_role,
+                "model": selected_model,
+                "routing_reason": routing_reason,
                 "tool_trace_id": None,
                 "action": summarize_action(action),
                 "tokens": {
@@ -247,6 +288,9 @@ class AgentLoop:
                 "stop_reason": "Agent loop stopped: a final response was produced.",
                 "plan": summarize_plan(plan),
                 "trace_id": trace["id"],
+                "model_role": selected_role,
+                "model": selected_model,
+                "routing_reason": routing_reason,
                 "tool_trace_id": None,
                 "action": summarize_action(action),
                 "tokens": {
@@ -295,6 +339,9 @@ class AgentLoop:
             "stop_reason": final_tool_stop_reason(tool_result, recovery_tools=recovery_tools, max_steps=max_steps) if not can_continue else "",
             "plan": summarize_plan(plan),
             "trace_id": trace["id"],
+            "model_role": selected_role,
+            "model": selected_model,
+            "routing_reason": routing_reason,
             "tool_trace_id": tool_result["id"],
             "action": summarize_action(action),
             "tool": {
@@ -324,7 +371,15 @@ class AgentLoop:
         }
 
 
-def build_agent_packet(request: str, step_index: int, max_steps: int, *, expect_json: bool = False) -> dict[str, Any]:
+def build_agent_packet(
+    request: str,
+    step_index: int,
+    max_steps: int,
+    *,
+    expect_json: bool = False,
+    model_role: str = "primary",
+    routing_reason: str = "",
+) -> dict[str, Any]:
     respond_schema: dict[str, Any] = {
         "action": "respond",
         "message": "string",
@@ -354,6 +409,8 @@ def build_agent_packet(request: str, step_index: int, max_steps: int, *, expect_
             "mode": "tool_planning_v8",
             "step_index": step_index,
             "max_steps": max_steps,
+            "model_role": model_role,
+            "routing_reason": routing_reason,
             "available_tools": [
                 {
                     "name": "respond",
@@ -665,6 +722,47 @@ def summarize_plan(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def select_model_role(
+    *,
+    model_routing: str,
+    plan: dict[str, Any],
+    step_index: int,
+    prior_steps: list[dict[str, Any]],
+    profile: str,
+) -> tuple[str, str]:
+    if model_routing in {"primary", "auxiliary"}:
+        return model_routing, f"forced by --model-routing {model_routing}"
+
+    route = plan.get("route", {})
+    complexity = route.get("complexity", "low")
+    warnings = plan.get("warnings", [])
+    serious_warnings = [warning for warning in warnings if is_primary_required_warning(str(warning))]
+    if profile == "deep":
+        return "primary", "deep profile keeps reasoning on the primary model"
+    if complexity == "high":
+        return "primary", "high-complexity route requires the primary model"
+    if serious_warnings:
+        return "primary", "policy or budget warnings require the primary model"
+    if prior_steps:
+        return "primary", "synthesis after tool/context steps stays on the primary model"
+    if step_index == 1 and complexity in {"low", "medium"}:
+        return "auxiliary", f"{complexity}-complexity first-step planning is delegated to the auxiliary model"
+    return "primary", "default fallback to the primary model"
+
+
+def is_primary_required_warning(warning: str) -> bool:
+    text = warning.casefold()
+    return any(term in text for term in ["over budget", "policy", "blocked", "destructive", "unsafe", "do not execute"])
+
+
+def resolve_role_model(provider_name: str, model: str | None, aux_model: str | None, role: str) -> str | None:
+    if provider_name != "openai":
+        return aux_model if role == "auxiliary" else model
+    if role == "auxiliary":
+        return aux_model or env_value("CONTEXT_KERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
+    return model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
+
+
 def compact_saved_agent_report(report: dict[str, Any]) -> dict[str, Any]:
     steps = report.get("steps", [])
     return {
@@ -675,6 +773,7 @@ def compact_saved_agent_report(report: dict[str, Any]) -> dict[str, Any]:
         "task_id": report.get("task_id"),
         "status": report.get("status"),
         "max_steps": report.get("max_steps"),
+        "model_routing": report.get("model_routing"),
         "steps": [compact_saved_step(step) for step in steps],
         "final_response": compact(str(report.get("final_response") or ""), limit=800) or None,
         "state": compact_saved_state(report.get("state", {})),
@@ -697,6 +796,9 @@ def compact_saved_step(step: dict[str, Any]) -> dict[str, Any]:
         "continue": bool(step.get("continue")),
         "trace_id": step.get("trace_id"),
         "tool_trace_id": step.get("tool_trace_id"),
+        "model_role": step.get("model_role"),
+        "model": step.get("model"),
+        "routing_reason": compact(str(step.get("routing_reason", "")), limit=180) or None,
         "action": step.get("action"),
         "tokens": compact_saved_tokens(step.get("tokens", {})),
         "verifier_ok": step.get("verifier_ok"),

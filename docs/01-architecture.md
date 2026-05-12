@@ -86,7 +86,7 @@ Provider secrets are loaded from current process environment first, then project
 
 OpenAI-compatible base URLs are normalized to a `/v1` API root, so both `https://host` and `https://host/v1` are accepted.
 
-`CONTEXT_KERNEL_OPENAI_MODEL` is the primary execution model used for provider calls. `CONTEXT_KERNEL_OPENAI_AUX_MODEL` is the auxiliary model role reserved for planning, review, and compression flows as the runtime expands the multi-model loop.
+`CONTEXT_KERNEL_OPENAI_MODEL` is the primary execution model used for high-risk, deep, warning-heavy, or synthesis steps. `CONTEXT_KERNEL_OPENAI_AUX_MODEL` is the auxiliary model role used for low/medium first-step planning in automatic routing and reserved for more planning, review, and compression flows as the runtime expands the multi-model loop.
 
 ### Verifier
 

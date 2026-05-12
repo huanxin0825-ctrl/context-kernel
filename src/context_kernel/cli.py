@@ -60,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         provider="openai",
         model=None,
         aux_model=None,
+        model_routing="auto",
         base_url=None,
         budget=None,
         profile=DEFAULT_PROFILE,
@@ -164,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_budget_args(agent_run)
     agent_run.add_argument("--task", default=None, help="Continue an existing task; otherwise create a new one.")
     agent_run.add_argument("--max-steps", type=int, default=5, help="Maximum loop steps to run.")
+    agent_run.add_argument("--model-routing", choices=["auto", "primary", "auxiliary"], default="auto", help="Choose how agent steps select primary vs auxiliary model.")
     agent_run.add_argument("--no-remember", action="store_true", help="Do not write explicit task-state memory.")
     agent_run.add_argument("--allow-over-budget", action="store_true", help="Execute even when preflight budget verification fails.")
     agent_run.add_argument("--expect-json", action="store_true", help="Require provider responses to be valid JSON.")
@@ -185,6 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--task", default=None, help="Continue an existing task session.")
     chat_parser.add_argument("--title", default="Interactive chat", help="Title for a new task session.")
     chat_parser.add_argument("--max-steps", type=int, default=5, help="Maximum agent loop steps per user message.")
+    chat_parser.add_argument("--model-routing", choices=["auto", "primary", "auxiliary"], default="auto", help="Choose how agent steps select primary vs auxiliary model.")
     chat_parser.add_argument("--no-remember", action="store_true", help="Do not write explicit task-state memory.")
     chat_parser.add_argument("--allow-over-budget", action="store_true", help="Execute even when preflight budget verification fails.")
     chat_parser.add_argument("--expect-json", action="store_true", help="Require provider responses to be valid JSON.")
@@ -720,6 +723,8 @@ def cmd_agent_run(args: argparse.Namespace) -> None:
         budget=args.budget,
         profile=args.profile,
         model=args.model,
+        aux_model=args.aux_model,
+        model_routing=args.model_routing,
         base_url=args.base_url,
         task_id=args.task,
         max_steps=args.max_steps,
@@ -798,6 +803,8 @@ def cmd_chat(args: argparse.Namespace) -> None:
             budget=args.budget,
             profile=args.profile,
             model=args.model,
+            aux_model=args.aux_model,
+            model_routing=args.model_routing,
             base_url=args.base_url,
             task_id=task_id,
             max_steps=args.max_steps,
@@ -825,6 +832,7 @@ def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespa
             ("provider", args.provider),
             ("primary", model),
             ("auxiliary", auxiliary_model(args)),
+            ("routing", args.model_routing),
             ("profile", args.profile),
             ("loop", f"max {args.max_steps} steps per message"),
             ("state", workspace_state_summary(workspace)),
@@ -870,6 +878,8 @@ def print_chat_report(report: dict[str, Any]) -> None:
     if actions:
         print(chat_color("Actions", "cyan"))
         print(wrap_chat_text(" -> ".join(actions), indent="  "))
+    print(chat_color("Models", "cyan"))
+    print(wrap_chat_text(model_routing_summary(report), indent="  "))
     if report.get("state", {}).get("enabled"):
         print(chat_color(f"Memory  wrote {report['state']['written_count']} record(s)", "dim"))
     if report.get("final_response"):
@@ -925,6 +935,7 @@ def print_model_panel(args: argparse.Namespace) -> None:
             ("primary", primary_model(args)),
             ("auxiliary", auxiliary_model(args)),
             ("routing", "primary handles agent execution; auxiliary is reserved for planning/review/compression"),
+            ("mode", args.model_routing),
             ("base_url", args.base_url or env_value("CONTEXT_KERNEL_OPENAI_BASE_URL") or "default"),
         ],
     )
@@ -940,6 +951,7 @@ def print_status_panel(workspace: Workspace, task_id: str, args: argparse.Namesp
             ("provider", args.provider),
             ("primary", primary_model(args)),
             ("auxiliary", auxiliary_model(args)),
+            ("routing", args.model_routing),
             ("profile", args.profile),
             ("state", workspace_state_summary(workspace)),
         ],
@@ -969,6 +981,20 @@ def primary_model(args: argparse.Namespace) -> str:
 
 def auxiliary_model(args: argparse.Namespace) -> str:
     return getattr(args, "aux_model", None) or env_value("CONTEXT_KERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
+
+
+def model_routing_summary(report: dict[str, Any]) -> str:
+    parts = []
+    for step in report.get("steps", []):
+        role = step.get("model_role") or "primary"
+        model = step.get("model") or "default"
+        reason = step.get("routing_reason") or ""
+        label = f"step {step.get('index')}: {role} ({model})"
+        parts.append(f"{label} - {reason}" if reason else label)
+    if not parts:
+        routing = report.get("model_routing", {})
+        return f"{routing.get('mode', 'auto')}: no provider step was executed"
+    return "; ".join(parts)
 
 
 def clear_chat_screen() -> None:
@@ -1081,15 +1107,24 @@ def print_agent_report(report: dict[str, Any]) -> None:
     print(f"status: {report['status']}")
     print(f"steps: {len(report['steps'])}/{report['max_steps']}")
     print(f"tokens: total={report['totals']['total_tokens']} input={report['totals']['input_tokens']} output={report['totals']['output_tokens']}")
+    routing = report.get("model_routing", {})
+    if routing:
+        print(
+            "model_routing: "
+            f"mode={routing.get('mode')} "
+            f"primary={routing.get('primary_model')} "
+            f"auxiliary={routing.get('auxiliary_model')}"
+        )
     if report.get("state", {}).get("enabled"):
         print(f"state: wrote {report['state']['written_count']} memory record(s)")
     for step in report["steps"]:
         trace = step["trace_id"] or "none"
         tokens = step.get("tokens", {}).get("total_tokens", 0)
         action = (step.get("action") or {}).get("action", "none")
+        model_part = f" model={step.get('model_role')}:{step.get('model') or 'default'}" if step.get("model_role") else ""
         tool = step.get("tool", {})
         tool_part = f" tool={tool.get('name')}:{tool.get('id')}" if tool else ""
-        print(f"- step {step['index']}: {step['status']} action={action} trace={trace} tokens={tokens}{tool_part}")
+        print(f"- step {step['index']}: {step['status']} action={action} trace={trace} tokens={tokens}{model_part}{tool_part}")
     if report.get("final_response"):
         print("")
         print(report["final_response"])
