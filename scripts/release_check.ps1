@@ -1,6 +1,7 @@
 param(
   [switch]$SkipBuild,
-  [switch]$SkipNpm
+  [switch]$SkipNpm,
+  [switch]$SkipBenchmarkEvidence
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,6 +55,23 @@ if (-not $SkipNpm) {
   }
   else {
     Write-Host "npm not found; skipping npm package dry run"
+  }
+}
+
+if (-not $SkipBenchmarkEvidence) {
+  $benchRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("context-kernel-release-" + [System.IO.Path]::GetRandomFileName())
+  try {
+    Invoke-Checked $PythonCommand @("-m", "context_kernel.cli", "--workspace", $benchRoot, "init", $benchRoot)
+    Invoke-Checked $PythonCommand @("-m", "context_kernel.cli", "--workspace", $benchRoot, "skill", "register", "examples/skills/edit_file.json")
+    Invoke-Checked $PythonCommand @("-m", "context_kernel.cli", "--workspace", $benchRoot, "skill", "register", "examples/skills/context_budget.json")
+    Invoke-Checked $PythonCommand @("-m", "context_kernel.cli", "--workspace", $benchRoot, "memory", "add", "--kind", "preference", "--text", "Prefer CLI-first context budget prototypes.", "--tags", "cli")
+    Invoke-Checked $PythonCommand @("-m", "context_kernel.cli", "--workspace", $benchRoot, "bench", "run", "examples/benchmarks/scale")
+    Invoke-Checked $PythonCommand @("-m", "context_kernel.cli", "--workspace", $benchRoot, "bench", "evidence", "--limit", "1", "--fail-under", "30", "--output", (Join-Path $benchRoot "benchmark-evidence.md"))
+  }
+  finally {
+    if (Test-Path -LiteralPath $benchRoot) {
+      Remove-Item -LiteralPath $benchRoot -Recurse -Force
+    }
   }
 }
 

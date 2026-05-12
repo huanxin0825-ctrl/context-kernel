@@ -57,7 +57,7 @@ The current public alpha is strong enough to demonstrate the core thesis:
 - Agent runs are bounded, policy-gated, traced, and cost-reported.
 - Simple failing-test repair, wrapped-action recovery, and structured failure diagnostics show how the runtime can reduce wasted turns without hiding evidence.
 - Explicit memory pruning, global memory sync, and a packaged skill marketplace are available as local-first alpha commands.
-- Release helper scripts, an npm launcher wrapper, and scale benchmark fixtures are present for distribution and measurement work.
+- Release helper scripts, an npm launcher wrapper, scale benchmark fixtures, and benchmark evidence artifacts are present for distribution and measurement work.
 
 Known alpha limits:
 

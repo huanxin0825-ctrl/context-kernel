@@ -33,6 +33,7 @@ It runs:
 - `twine check` metadata validation
 - wheel smoke installation in a fresh virtual environment
 - npm launcher `npm pack --dry-run`
+- benchmark evidence generation for the deterministic scale suite
 - PyPI publishing through trusted publishing on `v*` tags or explicit manual approval
 - npm publishing only when `NPM_TOKEN` and the `PUBLISH_NPM` repository variable are configured
 
@@ -66,7 +67,7 @@ For release preparation, run the bundled check:
 .\scripts\release_check.ps1
 ```
 
-It runs the unit test suite, builds the Python package, checks package metadata, checks the CLI entrypoint, verifies that packaged marketplace skills can be listed, and performs an npm dry-run pack when npm is available.
+It runs the unit test suite, builds the Python package, checks package metadata, checks the CLI entrypoint, verifies that packaged marketplace skills can be listed, performs an npm dry-run pack when npm is available, and generates benchmark evidence for the deterministic scale suite.
 
 ## Release Shape
 
@@ -109,6 +110,7 @@ akernel
 Before PyPI publication, set `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0825-ctrl/context-kernel.git` so the npm wrapper bootstraps from GitHub.
 
 `bench gate` also requires the current benchmark report itself to pass its checks. This prevents a bad first run from becoming the new normal just because the relative diff has no regression.
+The release workflow also uploads benchmark evidence as a workflow artifact so release preparation carries a reproducible token-savings snapshot.
 
 ## Why This Matters
 

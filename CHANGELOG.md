@@ -26,6 +26,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Packaged marketplace skills now include multi-file bugfix, long task planning, and context compaction contracts.
 - Release helper scripts and a thin npm launcher wrapper prepare the project for PyPI/npm distribution.
 - Release workflow, PyPI metadata checks, npm package dry-run validation, and npm launcher bootstrap support prepare one-command remote installation.
+- Release workflow now generates and uploads benchmark evidence artifacts alongside publish-ready build checks.
 - Scale benchmark fixtures cover context pressure, editing, global memory, and marketplace workflows.
 - `bench evidence` summarizes saved benchmark reports into JSON or Markdown proof pages with aggregate token savings, pass rate, strongest savings, weakest savings, and optional minimum-savings gates.
 - Benchmark evidence documentation records the current deterministic scale snapshot and reproduction commands.
