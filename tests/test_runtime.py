@@ -305,7 +305,7 @@ class RuntimeTests(unittest.TestCase):
             with patch.object(
                 AgentRunner,
                 "run",
-                side_effect=ValueError("Missing CONTEXT_KERNEL_OPENAI_API_KEY for OpenAI-compatible provider."),
+                side_effect=ValueError("Missing AKERNEL_OPENAI_API_KEY for OpenAI-compatible provider."),
             ):
                 report = AgentLoop(workspace).run(
                     "Reply with OK.",
@@ -1249,7 +1249,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("Model Roles", output)
             self.assertIn("auxiliary", output)
             self.assertIn("Models", output)
-            self.assertIn("CONTEXT_KERNEL_OPENAI_AUX_MODEL", output)
+            self.assertIn("AKERNEL_OPENAI_AUX_MODEL", output)
             self.assertIn("agent_run:", output)
             self.assertIn("Mock agent response", output)
             self.assertIn("Step Breakdown", output)
@@ -1440,10 +1440,10 @@ class RuntimeTests(unittest.TestCase):
                 os.chdir(previous)
 
             values = parse_env_file(Path(tmp) / ".env")
-            self.assertEqual(values["CONTEXT_KERNEL_OPENAI_API_KEY"], "sk-test123456789012345")
-            self.assertEqual(values["CONTEXT_KERNEL_OPENAI_BASE_URL"], "https://example.test/v1")
-            self.assertEqual(values["CONTEXT_KERNEL_OPENAI_MODEL"], "gpt-5.5")
-            self.assertEqual(values["CONTEXT_KERNEL_OPENAI_AUX_MODEL"], "gpt-5.3-codex")
+            self.assertEqual(values["AKERNEL_OPENAI_API_KEY"], "sk-test123456789012345")
+            self.assertEqual(values["AKERNEL_OPENAI_BASE_URL"], "https://example.test/v1")
+            self.assertEqual(values["AKERNEL_OPENAI_MODEL"], "gpt-5.5")
+            self.assertEqual(values["AKERNEL_OPENAI_AUX_MODEL"], "gpt-5.3-codex")
             self.assertIn("api_key: set", stdout.getvalue())
             self.assertIn("auxiliary_model: gpt-5.3-codex", stdout.getvalue())
 
@@ -1859,12 +1859,12 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
             path.write_text(
-                "CONTEXT_KERNEL_OPENAI_BASE_URL=https://clarmy.cloud/v1\n"
-                "CONTEXT_KERNEL_OPENAI_MODEL='gpt-5.5'\n",
+                "AKERNEL_OPENAI_BASE_URL=https://clarmy.cloud/v1\n"
+                "AKERNEL_OPENAI_MODEL='gpt-5.5'\n",
                 encoding="utf-8",
             )
 
-            self.assertEqual(parse_env_file(path)["CONTEXT_KERNEL_OPENAI_MODEL"], "gpt-5.5")
+            self.assertEqual(parse_env_file(path)["AKERNEL_OPENAI_MODEL"], "gpt-5.5")
             self.assertEqual(normalize_openai_base_url("https://clarmy.cloud"), "https://clarmy.cloud/v1")
             self.assertEqual(normalize_openai_base_url("https://clarmy.cloud/v1"), "https://clarmy.cloud/v1")
 
@@ -1873,17 +1873,17 @@ class RuntimeTests(unittest.TestCase):
             root = Path(root_tmp)
             (root / ".env").write_text("CONTEXT_KERNEL_TEST_VALUE=from-project-root\n", encoding="utf-8")
             previous = Path.cwd()
-            previous_root = os.environ.get("CONTEXT_KERNEL_PROJECT_ROOT")
+            previous_root = os.environ.get("AKERNEL_PROJECT_ROOT")
             os.chdir(work_tmp)
-            os.environ["CONTEXT_KERNEL_PROJECT_ROOT"] = str(root)
+            os.environ["AKERNEL_PROJECT_ROOT"] = str(root)
             try:
                 self.assertEqual(env_value("CONTEXT_KERNEL_TEST_VALUE"), "from-project-root")
             finally:
                 os.chdir(previous)
                 if previous_root is None:
-                    os.environ.pop("CONTEXT_KERNEL_PROJECT_ROOT", None)
+                    os.environ.pop("AKERNEL_PROJECT_ROOT", None)
                 else:
-                    os.environ["CONTEXT_KERNEL_PROJECT_ROOT"] = previous_root
+                    os.environ["AKERNEL_PROJECT_ROOT"] = previous_root
 
     def test_eval_runner_can_execute_with_mock_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

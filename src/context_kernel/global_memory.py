@@ -8,7 +8,7 @@ from .storage import Workspace
 
 
 def global_workspace(root: Path | None = None) -> Workspace:
-    workspace = Workspace(root or Path.home() / ".context-kernel" / "global")
+    workspace = Workspace(root or Path.home() / ".akernel" / "global")
     workspace.init()
     return workspace
 

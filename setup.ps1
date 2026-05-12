@@ -13,7 +13,7 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvPath = Join-Path $ProjectRoot ".venv"
 $PythonPath = Join-Path $VenvPath "Scripts\python.exe"
 $EnvPath = Join-Path $ProjectRoot ".env"
-$LauncherDir = Join-Path $env:USERPROFILE ".context-kernel\bin"
+$LauncherDir = Join-Path $env:USERPROFILE ".akernel\bin"
 
 function Install-GlobalLaunchers {
     param(
@@ -27,7 +27,7 @@ function Install-GlobalLaunchers {
 $akernel = @"
 @echo off
 setlocal
-set "CONTEXT_KERNEL_PROJECT_ROOT=$ProjectRoot"
+set "AKERNEL_PROJECT_ROOT=$ProjectRoot"
 "$PythonPath" -m context_kernel %*
 exit /b %ERRORLEVEL%
 "@
@@ -36,7 +36,7 @@ exit /b %ERRORLEVEL%
 $chat = @"
 @echo off
 setlocal
-set "CONTEXT_KERNEL_PROJECT_ROOT=$ProjectRoot"
+set "AKERNEL_PROJECT_ROOT=$ProjectRoot"
 "$PythonPath" -m context_kernel chat %*
 exit /b %ERRORLEVEL%
 "@
@@ -76,15 +76,15 @@ if ($ForceEnv -or -not (Test-Path -LiteralPath $EnvPath)) {
         if (Test-Path -LiteralPath $EnvPath) {
             Write-Host "Keeping existing .env because no ApiKey was provided."
         } else {
-            Write-Host "Creating .env from .env.example. Fill in CONTEXT_KERNEL_OPENAI_API_KEY before using openai provider."
+            Write-Host "Creating .env from .env.example. Fill in AKERNEL_OPENAI_API_KEY before using openai provider."
             Copy-Item -LiteralPath (Join-Path $ProjectRoot ".env.example") -Destination $EnvPath
         }
     } else {
         $lines = @(
-            "CONTEXT_KERNEL_OPENAI_API_KEY=$ApiKey",
-            "CONTEXT_KERNEL_OPENAI_BASE_URL=$BaseUrl",
-            "CONTEXT_KERNEL_OPENAI_MODEL=$Model",
-            "CONTEXT_KERNEL_OPENAI_AUX_MODEL=$AuxModel"
+            "AKERNEL_OPENAI_API_KEY=$ApiKey",
+            "AKERNEL_OPENAI_BASE_URL=$BaseUrl",
+            "AKERNEL_OPENAI_MODEL=$Model",
+            "AKERNEL_OPENAI_AUX_MODEL=$AuxModel"
         )
         Set-Content -LiteralPath $EnvPath -Value $lines -Encoding UTF8
         Write-Host "Wrote project-local .env."

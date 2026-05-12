@@ -41,7 +41,7 @@ Import-ProjectEnv $EnvPath
 Write-Host "Context Kernel is awake."
 Write-Host "Project: $ProjectRoot"
 Write-Host "Workspace: $Workspace"
-Write-Host "Model: $env:CONTEXT_KERNEL_OPENAI_MODEL"
+Write-Host "Model: $env:AKERNEL_OPENAI_MODEL"
 Write-Host ""
 
 if ($InitWorkspace) {
@@ -53,7 +53,7 @@ if ($ListModels) {
 }
 
 if ($RunSmoke) {
-    akernel --workspace $Workspace run "In one short sentence, say what Context Kernel is testing." --provider openai --model $env:CONTEXT_KERNEL_OPENAI_MODEL --profile lean
+    akernel --workspace $Workspace run "In one short sentence, say what Context Kernel is testing." --provider openai --model $env:AKERNEL_OPENAI_MODEL --profile lean
 }
 
 Write-Host "Useful commands:"
@@ -65,4 +65,4 @@ Write-Host "  akernel chat"
 Write-Host "  akernel-chat"
 Write-Host "  akernel --workspace $Workspace bench run examples\benchmarks\phase2"
 Write-Host "  akernel --workspace $Workspace bench gate examples\benchmarks\phase2"
-Write-Host "  akernel --workspace $Workspace bench run examples\benchmarks\phase2 --execute --provider openai --model $env:CONTEXT_KERNEL_OPENAI_MODEL"
+Write-Host "  akernel --workspace $Workspace bench run examples\benchmarks\phase2 --execute --provider openai --model $env:AKERNEL_OPENAI_MODEL"

@@ -1,6 +1,6 @@
 param(
   [string]$Source = "git+https://github.com/huanxin0825-ctrl/context-kernel.git",
-  [string]$LauncherDir = "$env:USERPROFILE\.context-kernel\bin"
+  [string]$LauncherDir = "$env:USERPROFILE\.akernel\bin"
 )
 
 $ErrorActionPreference = "Stop"

@@ -42,6 +42,18 @@ from .verifier import verify_trace
 
 DEFAULT_PRIMARY_MODEL = "gpt-5.5"
 DEFAULT_AUXILIARY_MODEL = "gpt-5.3-codex"
+OPENAI_ENV_KEYS = {
+    "api_key": "AKERNEL_OPENAI_API_KEY",
+    "base_url": "AKERNEL_OPENAI_BASE_URL",
+    "model": "AKERNEL_OPENAI_MODEL",
+    "aux_model": "AKERNEL_OPENAI_AUX_MODEL",
+}
+LEGACY_OPENAI_ENV_KEYS = {
+    "api_key": "CONTEXT_KERNEL_OPENAI_API_KEY",
+    "base_url": "CONTEXT_KERNEL_OPENAI_BASE_URL",
+    "model": "CONTEXT_KERNEL_OPENAI_MODEL",
+    "aux_model": "CONTEXT_KERNEL_OPENAI_AUX_MODEL",
+}
 COMMAND_NAMES = {
     "agent",
     "bench",
@@ -613,7 +625,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     api_key = args.api_key
     if api_key is None:
-        current_key = existing.get("CONTEXT_KERNEL_OPENAI_API_KEY", "")
+        current_key = existing_env_value(existing, "api_key")
         if current_key and interactive:
             typed = getpass("API key [keep existing]: ").strip()
             api_key = typed or current_key
@@ -626,18 +638,18 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     base_url = args.base_url
     if base_url is None:
-        default_base_url = existing.get("CONTEXT_KERNEL_OPENAI_BASE_URL") or "https://clarmy.cloud/v1"
+        default_base_url = existing_env_value(existing, "base_url") or "https://clarmy.cloud/v1"
         base_url = prompt_text("Base URL", default_base_url, interactive=interactive)
     base_url = normalize_openai_base_url(base_url)
 
     model = args.model
     if model is None:
-        default_model = existing.get("CONTEXT_KERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
+        default_model = existing_env_value(existing, "model") or DEFAULT_PRIMARY_MODEL
         model = prompt_text("Primary model", default_model, interactive=interactive)
 
     aux_model = args.aux_model
     if aux_model is None:
-        default_aux_model = existing.get("CONTEXT_KERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
+        default_aux_model = existing_env_value(existing, "aux_model") or DEFAULT_AUXILIARY_MODEL
         aux_model = prompt_text("Auxiliary model", default_aux_model, interactive=interactive)
 
     write_project_env(env_path, api_key=api_key, base_url=base_url, model=model, aux_model=aux_model)
@@ -647,17 +659,12 @@ def cmd_setup(args: argparse.Namespace) -> None:
     print(f"primary_model: {model}")
     print(f"auxiliary_model: {aux_model}")
     if args.verify:
-        previous = {
-            "CONTEXT_KERNEL_OPENAI_API_KEY": os.environ.get("CONTEXT_KERNEL_OPENAI_API_KEY"),
-            "CONTEXT_KERNEL_OPENAI_BASE_URL": os.environ.get("CONTEXT_KERNEL_OPENAI_BASE_URL"),
-            "CONTEXT_KERNEL_OPENAI_MODEL": os.environ.get("CONTEXT_KERNEL_OPENAI_MODEL"),
-            "CONTEXT_KERNEL_OPENAI_AUX_MODEL": os.environ.get("CONTEXT_KERNEL_OPENAI_AUX_MODEL"),
-        }
+        previous = {key: os.environ.get(key) for key in OPENAI_ENV_KEYS.values()}
         try:
-            os.environ["CONTEXT_KERNEL_OPENAI_API_KEY"] = api_key
-            os.environ["CONTEXT_KERNEL_OPENAI_BASE_URL"] = base_url
-            os.environ["CONTEXT_KERNEL_OPENAI_MODEL"] = model
-            os.environ["CONTEXT_KERNEL_OPENAI_AUX_MODEL"] = aux_model
+            os.environ[OPENAI_ENV_KEYS["api_key"]] = api_key
+            os.environ[OPENAI_ENV_KEYS["base_url"]] = base_url
+            os.environ[OPENAI_ENV_KEYS["model"]] = model
+            os.environ[OPENAI_ENV_KEYS["aux_model"]] = aux_model
             models = list_provider_models("openai", base_url=base_url)
         finally:
             restore_env(previous)
@@ -686,13 +693,17 @@ def prompt_text(label: str, default: str, *, interactive: bool) -> str:
     return value or default
 
 
+def existing_env_value(existing: dict[str, str], key: str) -> str:
+    return existing.get(OPENAI_ENV_KEYS[key]) or existing.get(LEGACY_OPENAI_ENV_KEYS[key]) or ""
+
+
 def write_project_env(path: Path, *, api_key: str, base_url: str, model: str, aux_model: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        f"CONTEXT_KERNEL_OPENAI_API_KEY={api_key}",
-        f"CONTEXT_KERNEL_OPENAI_BASE_URL={base_url}",
-        f"CONTEXT_KERNEL_OPENAI_MODEL={model}",
-        f"CONTEXT_KERNEL_OPENAI_AUX_MODEL={aux_model}",
+        f"{OPENAI_ENV_KEYS['api_key']}={api_key}",
+        f"{OPENAI_ENV_KEYS['base_url']}={base_url}",
+        f"{OPENAI_ENV_KEYS['model']}={model}",
+        f"{OPENAI_ENV_KEYS['aux_model']}={aux_model}",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -1145,8 +1156,8 @@ def cmd_chat(args: argparse.Namespace) -> None:
 
 def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespace) -> None:
     model = primary_model(args)
-    base_url = args.base_url or env_value("CONTEXT_KERNEL_OPENAI_BASE_URL") or ""
-    api_key_set = bool(env_value("CONTEXT_KERNEL_OPENAI_API_KEY"))
+    base_url = args.base_url or env_value("AKERNEL_OPENAI_BASE_URL") or ""
+    api_key_set = bool(env_value("AKERNEL_OPENAI_API_KEY"))
     chat_banner(
         "Context Kernel Agent",
         "Token-frugal task runner for long-lived AI workspaces.",
@@ -1831,7 +1842,7 @@ def print_model_panel(args: argparse.Namespace) -> None:
             ("review_role", "auxiliary reviews primary-model steps when enabled"),
             ("mode", args.model_routing),
             ("review", args.aux_review),
-            ("base_url", args.base_url or env_value("CONTEXT_KERNEL_OPENAI_BASE_URL") or "default"),
+            ("base_url", args.base_url or env_value("AKERNEL_OPENAI_BASE_URL") or "default"),
         ],
     )
 
@@ -1859,8 +1870,8 @@ def print_config_panel() -> None:
         "Config",
         [
             ("setup", "akernel setup"),
-            ("env", "CONTEXT_KERNEL_OPENAI_API_KEY, CONTEXT_KERNEL_OPENAI_BASE_URL"),
-            ("models", "CONTEXT_KERNEL_OPENAI_MODEL, CONTEXT_KERNEL_OPENAI_AUX_MODEL"),
+            ("env", "AKERNEL_OPENAI_API_KEY, AKERNEL_OPENAI_BASE_URL"),
+            ("models", "AKERNEL_OPENAI_MODEL, AKERNEL_OPENAI_AUX_MODEL"),
             ("scope", "current project .env first, installed Context Kernel .env fallback"),
         ],
     )
@@ -1872,11 +1883,11 @@ def chat_prompt(args: argparse.Namespace) -> str:
 
 
 def primary_model(args: argparse.Namespace) -> str:
-    return args.model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
+    return args.model or env_value("AKERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
 
 
 def auxiliary_model(args: argparse.Namespace) -> str:
-    return getattr(args, "aux_model", None) or env_value("CONTEXT_KERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
+    return getattr(args, "aux_model", None) or env_value("AKERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
 
 
 def model_routing_summary(report: dict[str, Any]) -> str:
@@ -2120,10 +2131,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     workspace = Workspace(Path(args.workspace))
     config = workspace.load_config()
     command_policy = summarize_command_policy(workspace)
-    base_url = env_value("CONTEXT_KERNEL_OPENAI_BASE_URL")
-    api_key = env_value("CONTEXT_KERNEL_OPENAI_API_KEY")
-    model = env_value("CONTEXT_KERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
-    aux_model = env_value("CONTEXT_KERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
+    base_url = env_value("AKERNEL_OPENAI_BASE_URL")
+    api_key = env_value("AKERNEL_OPENAI_API_KEY")
+    model = env_value("AKERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
+    aux_model = env_value("AKERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
     print(f"project_root: {Path.cwd().resolve()}")
     print(f"workspace: {workspace.root}")
     print(f"workspace_initialized: {workspace.state.exists()}")

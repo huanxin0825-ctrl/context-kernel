@@ -74,7 +74,7 @@ akernel
 
 `setup.cmd` creates `.venv`, installs the local CLI in editable mode, and prepares project-local `.env` if needed. `wake.cmd` activates the environment, loads `.env`, and prints common commands. The `.cmd` wrappers avoid local PowerShell execution-policy friction.
 
-`setup.cmd` also installs user-level launchers in `%USERPROFILE%\.context-kernel\bin` and adds that directory to the user PATH. After opening a new terminal, `akernel` works from any directory, starts the interactive agent session by default, and uses that current directory as the workspace location. Environment lookup prefers the current project `.env`, then falls back to the installed Context Kernel project `.env`. `akernel-chat` remains as a compatibility shortcut.
+`setup.cmd` also installs user-level launchers in `%USERPROFILE%\.akernel\bin` and adds that directory to the user PATH. After opening a new terminal, `akernel` works from any directory, starts the interactive agent session by default, and uses that current directory as the workspace location. Environment lookup prefers the current project `.env`, then falls back to the installed Context Kernel project `.env`. `akernel-chat` remains as a compatibility shortcut.
 
 ### Manual Python Install
 
@@ -156,11 +156,13 @@ The current deterministic scale snapshot is documented in [Benchmark Evidence](d
 Provider configuration is project-local. Copy `.env.example` to `.env` or use `setup.cmd -ForceEnv`.
 
 ```env
-CONTEXT_KERNEL_OPENAI_API_KEY=replace-with-your-key
-CONTEXT_KERNEL_OPENAI_BASE_URL=https://clarmy.cloud/v1
-CONTEXT_KERNEL_OPENAI_MODEL=gpt-5.5
-CONTEXT_KERNEL_OPENAI_AUX_MODEL=gpt-5.3-codex
+AKERNEL_OPENAI_API_KEY=replace-with-your-key
+AKERNEL_OPENAI_BASE_URL=https://clarmy.cloud/v1
+AKERNEL_OPENAI_MODEL=gpt-5.5
+AKERNEL_OPENAI_AUX_MODEL=gpt-5.3-codex
 ```
+
+Legacy `CONTEXT_KERNEL_OPENAI_*` names are still read as a compatibility fallback, but new projects should use `AKERNEL_OPENAI_*`.
 
 Useful checks:
 

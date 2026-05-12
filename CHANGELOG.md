@@ -13,6 +13,8 @@ No changes yet.
 ### Changed
 
 - Renamed the prepared npm launcher scope from `@context-kernel/akernel` to `@context-akernel/akernel`.
+- Renamed project-local provider environment variables from `CONTEXT_KERNEL_OPENAI_*` to `AKERNEL_OPENAI_*` while keeping legacy names as a compatibility fallback.
+- Moved the default user launcher directory from `%USERPROFILE%\.context-kernel\bin` to `%USERPROFILE%\.akernel\bin`.
 
 ## 0.1.1 - 2026-05-12
 

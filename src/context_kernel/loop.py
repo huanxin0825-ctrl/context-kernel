@@ -855,7 +855,12 @@ def recovery_target_path(request: str) -> str | None:
 def diagnose_agent_exception(exc: Exception) -> dict[str, str]:
     message = compact(str(exc), limit=500) or exc.__class__.__name__
     lower = message.casefold()
-    if "missing context_kernel_openai_base_url" in lower or "missing context_kernel_openai_api_key" in lower:
+    if (
+        "missing akernel_openai_base_url" in lower
+        or "missing akernel_openai_api_key" in lower
+        or "missing context_kernel_openai_base_url" in lower
+        or "missing context_kernel_openai_api_key" in lower
+    ):
         return {
             "category": "provider_configuration",
             "message": message,
@@ -865,7 +870,7 @@ def diagnose_agent_exception(exc: Exception) -> dict[str, str]:
         return {
             "category": "provider_auth",
             "message": message,
-            "suggestion": "Check `CONTEXT_KERNEL_OPENAI_API_KEY` in the project `.env` and confirm the endpoint accepts it.",
+            "suggestion": "Check `AKERNEL_OPENAI_API_KEY` in the project `.env` and confirm the endpoint accepts it.",
         }
     if "provider http 404" in lower:
         return {
@@ -1049,8 +1054,8 @@ def resolve_role_model(provider_name: str, model: str | None, aux_model: str | N
     if provider_name != "openai":
         return aux_model if role == "auxiliary" else model
     if role == "auxiliary":
-        return aux_model or env_value("CONTEXT_KERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
-    return model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
+        return aux_model or env_value("AKERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
+    return model or env_value("AKERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
 
 
 def run_auxiliary_review(

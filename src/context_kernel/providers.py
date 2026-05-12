@@ -13,6 +13,15 @@ from .policy import command_root_candidates
 from .tokenizer import estimate_tokens
 
 
+ENV_ALIASES = {
+    "AKERNEL_OPENAI_API_KEY": "CONTEXT_KERNEL_OPENAI_API_KEY",
+    "AKERNEL_OPENAI_BASE_URL": "CONTEXT_KERNEL_OPENAI_BASE_URL",
+    "AKERNEL_OPENAI_MODEL": "CONTEXT_KERNEL_OPENAI_MODEL",
+    "AKERNEL_OPENAI_AUX_MODEL": "CONTEXT_KERNEL_OPENAI_AUX_MODEL",
+    "AKERNEL_PROJECT_ROOT": "CONTEXT_KERNEL_PROJECT_ROOT",
+}
+
+
 @dataclass(frozen=True)
 class ProviderResponse:
     text: str
@@ -689,14 +698,14 @@ class OpenAICompatibleProvider:
         api_key: str | None = None,
         timeout_seconds: int = 120,
     ):
-        self.model = model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or "gpt-5.5"
-        self.base_url = normalize_openai_base_url(base_url or env_value("CONTEXT_KERNEL_OPENAI_BASE_URL") or "")
-        self.api_key = api_key or env_value("CONTEXT_KERNEL_OPENAI_API_KEY")
+        self.model = model or env_value("AKERNEL_OPENAI_MODEL") or "gpt-5.5"
+        self.base_url = normalize_openai_base_url(base_url or env_value("AKERNEL_OPENAI_BASE_URL") or "")
+        self.api_key = api_key or env_value("AKERNEL_OPENAI_API_KEY")
         self.timeout_seconds = timeout_seconds
         if not self.base_url:
-            raise ValueError("Missing CONTEXT_KERNEL_OPENAI_BASE_URL for OpenAI-compatible provider.")
+            raise ValueError("Missing AKERNEL_OPENAI_BASE_URL for OpenAI-compatible provider.")
         if not self.api_key:
-            raise ValueError("Missing CONTEXT_KERNEL_OPENAI_API_KEY for OpenAI-compatible provider.")
+            raise ValueError("Missing AKERNEL_OPENAI_API_KEY for OpenAI-compatible provider.")
 
     def run(self, packet: dict[str, Any]) -> ProviderResponse:
         payload = {
@@ -829,8 +838,13 @@ def env_value(name: str) -> str | None:
     value = os.environ.get(name)
     if value:
         return value
+    legacy_name = ENV_ALIASES.get(name)
+    if legacy_name:
+        value = os.environ.get(legacy_name)
+        if value:
+            return value
     env_file = project_env_values()
-    return env_file.get(name)
+    return env_file.get(name) or (env_file.get(legacy_name) if legacy_name else None)
 
 
 def project_env_values() -> dict[str, str]:
@@ -838,7 +852,7 @@ def project_env_values() -> dict[str, str]:
         path = directory / ".env"
         if path.exists():
             return parse_env_file(path)
-    project_root = os.environ.get("CONTEXT_KERNEL_PROJECT_ROOT")
+    project_root = os.environ.get("AKERNEL_PROJECT_ROOT") or os.environ.get("CONTEXT_KERNEL_PROJECT_ROOT")
     if project_root:
         path = Path(project_root) / ".env"
         if path.exists():

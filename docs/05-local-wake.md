@@ -25,7 +25,7 @@ akernel
 akernel --help
 ```
 
-The launchers live in `%USERPROFILE%\.context-kernel\bin`, and that directory is added to the user PATH. Open a new terminal if the commands are not visible immediately. `akernel` uses the current directory as the workspace, stores state in `.akernel`, and initializes it if needed. Environment lookup prefers the current directory `.env`, then falls back to the installed Context Kernel project `.env`. `akernel-chat` is kept as a compatibility shortcut.
+The launchers live in `%USERPROFILE%\.akernel\bin`, and that directory is added to the user PATH. Open a new terminal if the commands are not visible immediately. `akernel` uses the current directory as the workspace, stores state in `.akernel`, and initializes it if needed. Environment lookup prefers the current directory `.env`, then falls back to the installed Context Kernel project `.env`. `akernel-chat` is kept as a compatibility shortcut.
 
 ## Wake The Project
 

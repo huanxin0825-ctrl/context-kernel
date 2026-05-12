@@ -98,14 +98,14 @@ The model provider is an interface. The CLI includes a mock provider for determi
 
 Provider secrets are loaded from current process environment first, then project-local `.env`. The `.env` file is ignored by git and should stay local to the working copy.
 
-- `CONTEXT_KERNEL_OPENAI_API_KEY`
-- `CONTEXT_KERNEL_OPENAI_BASE_URL`
-- `CONTEXT_KERNEL_OPENAI_MODEL`
-- `CONTEXT_KERNEL_OPENAI_AUX_MODEL`
+- `AKERNEL_OPENAI_API_KEY`
+- `AKERNEL_OPENAI_BASE_URL`
+- `AKERNEL_OPENAI_MODEL`
+- `AKERNEL_OPENAI_AUX_MODEL`
 
 OpenAI-compatible base URLs are normalized to a `/v1` API root, so both `https://host` and `https://host/v1` are accepted.
 
-`CONTEXT_KERNEL_OPENAI_MODEL` is the primary execution model used for high-risk, deep, warning-heavy, or synthesis steps. `CONTEXT_KERNEL_OPENAI_AUX_MODEL` is the auxiliary model role used for low/medium first-step planning in automatic routing and for auxiliary review before primary-model steps. Review traces are saved and their tokens are included in agent cost reports.
+`AKERNEL_OPENAI_MODEL` is the primary execution model used for high-risk, deep, warning-heavy, or synthesis steps. `AKERNEL_OPENAI_AUX_MODEL` is the auxiliary model role used for low/medium first-step planning in automatic routing and for auxiliary review before primary-model steps. Review traces are saved and their tokens are included in agent cost reports.
 
 ### Verifier
 
