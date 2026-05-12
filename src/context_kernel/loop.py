@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -792,7 +794,7 @@ def auto_recovery_tools(
     if action["action"] == "patch_file":
         return [executor.read_file(action["path"], max_chars=min(4000, MAX_CAPTURE_CHARS))]
     if action["action"] == "run_command":
-        target = recovery_target_path(request)
+        target = recovery_target_path(request) or command_failure_target_path(executor.workspace, tool_result)
         if target:
             return [executor.read_file(target, max_chars=min(4000, MAX_CAPTURE_CHARS))]
     return []
@@ -809,6 +811,36 @@ def recovery_target_path(request: str) -> str | None:
     if write:
         return write[0]
     return None
+
+
+def command_failure_target_path(workspace: Workspace, tool_result: dict[str, Any]) -> str | None:
+    output = tool_result.get("output", {})
+    text = "\n".join(
+        str(part)
+        for part in [output.get("stderr", ""), output.get("stdout", ""), tool_result.get("error", "")]
+        if part
+    )
+    if not text:
+        return None
+    candidates = python_failure_path_candidates(text)
+    for candidate in reversed(candidates):
+        normalized = candidate.strip().strip('"').strip("'").replace("\\", "/")
+        if any(part in normalized for part in ["/.venv/", "/site-packages/", "/.akernel/"]):
+            continue
+        path = Path(normalized)
+        if path.is_absolute():
+            try:
+                return path.resolve().relative_to(workspace.root).as_posix()
+            except ValueError:
+                continue
+        return normalized.lstrip("./")
+    return None
+
+
+def python_failure_path_candidates(text: str) -> list[str]:
+    candidates = re.findall(r"File\s+\"([^\"]+\.py)\",\s+line\s+\d+", text)
+    candidates.extend(re.findall(r"((?:[A-Za-z]:)?[^\s:]+\.py):\d+", text))
+    return candidates
 
 
 def write_agent_run_memory(workspace: Workspace, tasks: TaskStore, report: dict[str, Any]) -> dict[str, Any]:

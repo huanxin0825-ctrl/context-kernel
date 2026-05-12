@@ -84,6 +84,7 @@ class MockProvider:
             or self._mock_patch_verify_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_write_verify_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_read_file_action(request, linked_tools)
+            or self._mock_fix_failing_tests_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_run_command_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_write_file_action(request, linked_tools)
             or self._mock_batch_patch_action(request, linked_tools)
@@ -472,6 +473,76 @@ class MockProvider:
             reason="Need command output before responding.",
         )
 
+    def _mock_fix_failing_tests_action(
+        self,
+        request: str,
+        linked_tools: list[dict[str, Any]],
+        allowed_roots: set[str],
+        project_commands: dict[str, str],
+    ) -> dict[str, Any] | None:
+        if not asks_to_fix_tests(request):
+            return None
+        command = resolve_requested_command(request, project_commands)
+        if not command:
+            return None
+        command_traces = find_command_traces(linked_tools, command)
+        if not command_traces:
+            return run_command_or_policy_response(
+                command,
+                allowed_roots,
+                reason="Run the project test command before attempting a fix.",
+            )
+
+        latest_command = command_traces[-1]
+        command_summary = latest_command.get("output_summary") or "command completed"
+        if latest_command.get("ok") and not latest_command.get("blocked"):
+            return {
+                "action": "respond",
+                "message": f"Project tests passed: {command_summary}",
+                "reason": "The project test command now succeeds.",
+            }
+        if latest_command.get("blocked"):
+            return {
+                "action": "respond",
+                "message": f"Project test command `{command}` was blocked: {command_summary}",
+                "reason": "Stop because verification is blocked by policy.",
+            }
+
+        failure_path = failure_path_from_summary(command_summary)
+        read_trace = find_tool_trace(linked_tools, "read_file", failure_path) if failure_path else None
+        if failure_path and not read_trace:
+            return {
+                "action": "read_file",
+                "path": failure_path,
+                "max_chars": 4000,
+                "reason": "Read the file referenced by the failing test output before patching.",
+            }
+
+        patch_trace = find_tool_trace(linked_tools, "patch_file", failure_path) if failure_path else None
+        if patch_trace and len(command_traces) == 1:
+            return run_command_or_policy_response(
+                command,
+                allowed_roots,
+                reason="Re-run the project test command after applying the fix.",
+            )
+        if patch_trace and len(command_traces) > 1:
+            return {
+                "action": "respond",
+                "message": f"Applied a candidate fix, but `{command}` still failed: {command_summary}",
+                "reason": "Stop after one verified fix attempt to avoid looping.",
+            }
+
+        if read_trace:
+            patch = infer_patch_from_failure(read_trace, command_summary)
+            if patch:
+                return patch
+
+        return {
+            "action": "respond",
+            "message": f"Project tests failed, but no safe automatic patch was inferred: {command_summary}",
+            "reason": "Stop because the failing output did not map to a safe patch.",
+        }
+
     def _mock_batch_patch_action(self, request: str, linked_tools: list[dict[str, Any]]) -> dict[str, Any] | None:
         edits = extract_batch_patch_requests(request)
         if len(edits) < 2:
@@ -778,15 +849,21 @@ def find_tool_trace(
 
 
 def find_command_trace(traces: list[dict[str, Any]], command: str) -> dict[str, Any] | None:
+    matches = find_command_traces(traces, command)
+    return matches[-1] if matches else None
+
+
+def find_command_traces(traces: list[dict[str, Any]], command: str) -> list[dict[str, Any]]:
     normalized_command = " ".join(command.split()).casefold()
+    matches: list[dict[str, Any]] = []
     for trace in reversed(traces):
         if trace.get("tool") != "run_command":
             continue
         subject = " ".join(str(trace.get("subject", "")).split()).casefold()
         summary = " ".join(str(trace.get("output_summary", "")).split()).casefold()
         if normalized_command and (normalized_command in subject or normalized_command in summary):
-            return trace
-    return None
+            matches.append(trace)
+    return list(reversed(matches))
 
 
 def normalize_subject(text: str) -> str:
@@ -903,6 +980,84 @@ def project_profile_command(request: str, project_commands: dict[str, str]) -> s
         command = project_commands.get(name)
         if isinstance(command, str) and command.strip() and any(marker in lower for marker in markers):
             return command.strip()
+    return None
+
+
+def asks_to_fix_tests(request: str) -> bool:
+    lower = request.casefold()
+    return any(marker in lower for marker in ["fix failing test", "fix the failing test", "fix tests", "fix the tests"])
+
+
+def failure_path_from_summary(summary: str) -> str | None:
+    text = str(summary)
+    candidates = re.findall(r"File\s+\"([^\"]+\.py)\",\s+line\s+\d+", text)
+    candidates.extend(re.findall(r"((?:[A-Za-z]:)?[^\s:]+\.py):\d+", text))
+    for candidate in reversed(candidates):
+        normalized = candidate.strip().strip('"').strip("'").replace("\\", "/")
+        if any(part in normalized for part in ["/.venv/", "/site-packages/", "/.akernel/"]):
+            continue
+        return normalized.lstrip("./")
+    return None
+
+
+def infer_patch_from_failure(read_trace: dict[str, Any], failure_summary: str) -> dict[str, Any] | None:
+    path = str(read_trace.get("subject") or read_trace.get("path") or "")
+    if not path:
+        path = str(read_trace.get("output", {}).get("path", ""))
+    summary = read_trace.get("output_summary", "")
+    content = read_content(summary)
+    expected = expected_number_from_failure(failure_summary)
+    actual = actual_number_from_failure(failure_summary)
+
+    if expected is not None and actual is not None and f"return {actual}" in content:
+        return {
+            "action": "patch_file",
+            "path": path,
+            "old": f"return {actual}",
+            "new": f"return {expected}",
+            "reason": "Patch the implementation value suggested by the failing assertion.",
+        }
+    if expected is not None and "raise ValueError" in content:
+        line = first_matching_statement(content, "raise ValueError")
+        if line:
+            return {
+                "action": "patch_file",
+                "path": path,
+                "old": line,
+                "new": f"return {expected}",
+                "reason": "Replace the failing exception with the value expected by the test.",
+            }
+    if "return False" in content and re.search(r"(?i)\btrue\b", failure_summary):
+        return {
+            "action": "patch_file",
+            "path": path,
+            "old": "return False",
+            "new": "return True",
+            "reason": "Patch the boolean return value suggested by the failing assertion.",
+        }
+    return None
+
+
+def expected_number_from_failure(text: str) -> str | None:
+    match = re.search(r"assert\s+(-?\d+)\s*==\s*(-?\d+)", str(text))
+    if match:
+        return match.group(2)
+    match = re.search(r"expected\s+(-?\d+)", str(text), flags=re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def actual_number_from_failure(text: str) -> str | None:
+    match = re.search(r"assert\s+(-?\d+)\s*==\s*(-?\d+)", str(text))
+    if match:
+        return match.group(1)
+    return None
+
+
+def first_matching_statement(content: str, prefix: str) -> str | None:
+    for part in re.split(r"\s{2,}|\n", content):
+        stripped = part.strip()
+        if stripped.startswith(prefix):
+            return stripped
     return None
 
 

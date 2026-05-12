@@ -175,6 +175,49 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(report["steps"][0]["action"]["command"], 'python -c "print(42)"')
             self.assertIn("42", report["final_response"])
 
+    def test_agent_can_fix_simple_failing_test_from_project_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            test_file = root / "tests" / "test_bug.py"
+            test_file.write_text(
+                "def answer():\n"
+                "    return 1\n\n"
+                "if answer() != 2:\n"
+                "    raise AssertionError('assert 1 == 2')\n",
+                encoding="utf-8",
+            )
+            workspace = Workspace(root)
+            workspace.init()
+            Workspace.write_json(
+                workspace.project_file,
+                {
+                    "version": 1,
+                    "summary": "simple failing test fixture",
+                    "languages": ["python"],
+                    "package_managers": ["python/custom"],
+                    "commands": {"test": "python tests/test_bug.py"},
+                    "command_roots": ["python"],
+                    "key_files": ["tests/test_bug.py"],
+                },
+            )
+
+            report = AgentLoop(workspace).run(
+                "Fix the failing tests.",
+                provider_name="mock",
+                budget=2600,
+                max_steps=4,
+                remember=False,
+            )
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual(
+                [step["action"]["action"] for step in report["steps"]],
+                ["run_command", "patch_file", "run_command", "respond"],
+            )
+            self.assertIn("return 2", test_file.read_text(encoding="utf-8"))
+            self.assertIn("Project tests passed", report["final_response"])
+
     def test_eval_runner_reports_checks_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))
