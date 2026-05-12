@@ -74,11 +74,12 @@ Python 3.10 or newer is required.
 
 ```powershell
 akernel setup
+akernel init . --scan
 akernel
 akernel --provider mock
 ```
 
-Inside the interactive session, type a task and press Enter. Bare `akernel` accepts chat flags such as `--provider mock`, `--model`, `--aux-model`, and `--max-steps` without requiring the explicit `chat` subcommand. Use `/status` for the live workspace view, `/model` for primary and auxiliary model roles, `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave. The shell UI renders a session dashboard with current directory, workspace, provider, model roles, budget profile, state counts, command palette, task progress, run summaries, and assistant responses. In `--model-routing auto` mode, low/medium first-step planning can run on the auxiliary model while high-risk, deep, warning-heavy, or synthesis steps stay on the primary model. In `--aux-review auto` mode, auxiliary review runs before primary-model steps and is included in token cost reports.
+Inside the interactive session, type a task and press Enter. Bare `akernel` accepts chat flags such as `--provider mock`, `--model`, `--aux-model`, and `--max-steps` without requiring the explicit `chat` subcommand. `akernel init . --scan` or `akernel project scan` writes a compact `.akernel/project.json` profile with detected languages, package managers, key files, and test/build commands; this profile enters future context packets without loading the whole repository. Use `/status` for the live workspace view, `/model` for primary and auxiliary model roles, `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave. The shell UI renders a session dashboard with current directory, workspace, provider, model roles, budget profile, state counts, command palette, task progress, run summaries, and assistant responses. In `--model-routing auto` mode, low/medium first-step planning can run on the auxiliary model while high-risk, deep, warning-heavy, or synthesis steps stay on the primary model. In `--aux-review auto` mode, auxiliary review runs before primary-model steps and is included in token cost reports.
 
 If you want to prepare the benchmark workspace manually:
 
@@ -126,6 +127,8 @@ The base URL should include `/v1`.
 akernel
 akernel --workspace .sandbox chat
 akernel context "Continue this task" --task <task-id> --resume
+akernel project scan
+akernel project show
 akernel compare "Summarize the project goal"
 akernel eval run examples\evals\phase2.json
 akernel eval cost <report-id>

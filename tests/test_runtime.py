@@ -17,6 +17,7 @@ from context_kernel.loop import AgentLoop, parse_agent_action
 from context_kernel.memory import MemoryStore, is_relevant_memory_match
 from context_kernel.planner import ExecutionPlanner
 from context_kernel.policy import assess_request_policy, check_command_policy, check_file_policy
+from context_kernel.project import load_project_profile, scan_project
 from context_kernel.providers import build_messages, env_value, extract_text, normalize_openai_base_url, parse_env_file
 from context_kernel.report_costs import build_benchmark_cost_report, build_eval_cost_report, diff_cost_reports, render_cost_report
 from context_kernel.runner import AgentRunner
@@ -93,6 +94,45 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(lean.profile, "lean")
         self.assertEqual(deep.profile, "deep")
         self.assertLess(lean.total, deep.total)
+
+    def test_project_scan_writes_profile_and_enters_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+            (root / "README.md").write_text("demo", encoding="utf-8")
+            (root / "tests").mkdir()
+            (root / "tests" / "test_demo.py").write_text("def test_demo():\n    assert True\n", encoding="utf-8")
+            workspace = Workspace(root)
+            workspace.init()
+
+            profile = scan_project(workspace)
+            packet = ContextBuilder(workspace).build("Run tests", 1200)
+            config = workspace.load_config()
+
+            self.assertTrue(workspace.project_file.exists())
+            self.assertEqual(load_project_profile(workspace)["version"], 1)
+            self.assertIn("python", profile["languages"])
+            self.assertEqual(profile["commands"]["test"], "python -m pytest")
+            self.assertIn("README.md", profile["key_files"])
+            self.assertIn("project", packet["runtime"])
+            self.assertIn("python", packet["runtime"]["project"]["languages"])
+            self.assertIn("python", config["command_policy"]["allowed_roots"])
+
+    def test_project_scan_cli_outputs_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text('{"scripts":{"test":"node test.js","build":"node build.js"}}', encoding="utf-8")
+            workspace = Workspace(root)
+            workspace.init()
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(root), "project", "scan"])
+
+            output = stdout.getvalue()
+            self.assertTrue(workspace.project_file.exists())
+            self.assertIn("languages: javascript/typescript", output)
+            self.assertIn("command_test:", output)
+            self.assertIn("config_updated: True", output)
 
     def test_eval_runner_reports_checks_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

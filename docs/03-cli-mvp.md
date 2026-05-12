@@ -9,6 +9,8 @@
 .\wake.cmd
 akernel setup
 akernel doctor
+akernel init . --scan
+akernel project scan
 ```
 
 `setup.cmd` creates `.venv`, installs the editable CLI, keeps provider credentials in project `.env`, and installs a user-level launcher so `akernel` can run from any directory after opening a new terminal. `akernel setup` writes API key, base URL, and model configuration into project `.env`. `wake.cmd` activates `.venv`, loads `.env`, and prints common commands.
@@ -19,9 +21,12 @@ akernel doctor
 
 ```powershell
 akernel init .
+akernel init . --scan
+akernel project scan
+akernel project show
 ```
 
-Creates `.akernel` state directories.
+Creates `.akernel` state directories. `--scan` and `project scan` also write `.akernel/project.json`, a compact profile containing detected languages, package managers, key files, safe command roots, and likely test/build commands. The profile is injected into context packets as `runtime.project` so the model can understand the repository without loading the whole tree.
 
 ### Register Skill
 
@@ -264,6 +269,9 @@ Benchmarks run every eval fixture in a directory and save aggregate reports unde
 
 ```text
 akernel init [path]
+akernel init [path] [--scan] [--no-config-update]
+akernel project scan [--no-config-update] [--json]
+akernel project show [--json]
 akernel skill register <json-file>
 akernel skill compile <markdown-file> [--id skill-id] [--output skill.json] [--register]
 akernel skill validate <json-file>

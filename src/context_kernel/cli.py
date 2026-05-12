@@ -18,6 +18,7 @@ from .loop import AgentLoop, summarize_tool_result
 from .memory import ALLOWED_KINDS, MemoryStore
 from .planner import ExecutionPlanner
 from .policy import FILE_OPERATIONS, check_command_policy, check_file_policy, summarize_command_policy
+from .project import load_project_profile, scan_project
 from .providers import env_value, list_provider_models, normalize_openai_base_url
 from .report_costs import build_benchmark_cost_report, build_eval_cost_report, render_cost_report
 from .runner import AgentRunner
@@ -50,6 +51,7 @@ COMMAND_NAMES = {
     "models",
     "plan",
     "policy",
+    "project",
     "run",
     "setup",
     "skill",
@@ -124,6 +126,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     init_parser = subparsers.add_parser("init", help="Initialize a Context Kernel workspace.")
     init_parser.add_argument("path", nargs="?", default=".")
+    init_parser.add_argument("--scan", action="store_true", help="Scan the project and save .akernel/project.json.")
+    init_parser.add_argument("--no-config-update", action="store_true", help="Do not extend safe command roots from scan results.")
     init_parser.set_defaults(func=cmd_init)
 
     setup_parser = subparsers.add_parser("setup", help="Configure project-local provider environment.")
@@ -251,6 +255,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser("doctor", help="Check local project configuration.")
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    project_parser = subparsers.add_parser("project", help="Scan and inspect project profile metadata.")
+    project_sub = project_parser.add_subparsers(dest="project_command", required=True)
+    project_scan = project_sub.add_parser("scan", help="Scan the workspace and write .akernel/project.json.")
+    project_scan.add_argument("--no-config-update", action="store_true", help="Do not extend safe command roots from scan results.")
+    project_scan.add_argument("--json", action="store_true", help="Print the full project profile JSON.")
+    project_scan.set_defaults(func=cmd_project_scan)
+    project_show = project_sub.add_parser("show", help="Show the saved project profile.")
+    project_show.add_argument("--json", action="store_true", help="Print the full project profile JSON.")
+    project_show.set_defaults(func=cmd_project_show)
 
     plan_parser = subparsers.add_parser("plan", help="Create an execution plan without calling a provider.")
     plan_parser.add_argument("request")
@@ -498,6 +512,29 @@ def cmd_init(args: argparse.Namespace) -> None:
     workspace = Workspace(Path(args.path))
     workspace.init()
     print(f"initialized: {workspace.state}")
+    if args.scan:
+        profile = scan_project(workspace, update_config=not args.no_config_update)
+        print_project_scan_summary(profile, config_updated=not args.no_config_update)
+
+
+def cmd_project_scan(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    profile = scan_project(workspace, update_config=not args.no_config_update)
+    if args.json:
+        print_json(profile)
+        return
+    print_project_scan_summary(profile, config_updated=not args.no_config_update)
+
+
+def cmd_project_show(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    profile = load_project_profile(workspace)
+    if not profile:
+        raise FileNotFoundError(f"No project profile found: {workspace.project_file}. Run `akernel project scan` first.")
+    if args.json:
+        print_json(profile)
+        return
+    print_project_scan_summary(profile, config_updated=False)
 
 
 def cmd_setup(args: argparse.Namespace) -> None:
@@ -1303,10 +1340,27 @@ def compact_path(path: Path) -> str:
 def workspace_state_summary(workspace: Workspace) -> str:
     skills = len(list(workspace.skills_dir.glob("*.json"))) if workspace.skills_dir.exists() else 0
     runs = len(list(workspace.agent_runs_dir.glob("*.json"))) if workspace.agent_runs_dir.exists() else 0
+    project = 1 if workspace.project_file.exists() else 0
     memories = 0
     if workspace.memory_file.exists():
         memories = sum(1 for line in workspace.memory_file.read_text(encoding="utf-8").splitlines() if line.strip())
-    return f"{skills} skills, {memories} memories, {runs} runs"
+    return f"{skills} skills, {memories} memories, {runs} runs, {project} project profiles"
+
+
+def print_project_scan_summary(profile: dict[str, Any], *, config_updated: bool) -> None:
+    print(f"project_profile: {profile.get('root')}")
+    print(f"languages: {', '.join(profile.get('languages', [])) or 'unknown'}")
+    managers = profile.get("package_managers", [])
+    print(f"package_managers: {', '.join(managers) if managers else 'none'}")
+    commands = profile.get("commands", {})
+    if commands:
+        for name, command in commands.items():
+            print(f"command_{name}: {command}")
+    else:
+        print("commands: none")
+    print(f"key_files: {', '.join(profile.get('key_files', [])[:8]) or 'none'}")
+    print(f"command_roots: {', '.join(profile.get('command_roots', [])[:16])}")
+    print(f"config_updated: {config_updated}")
 
 
 def print_agent_report(report: dict[str, Any]) -> None:
@@ -1396,6 +1450,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print(f"project_env_base_url: {normalize_openai_base_url(base_url or '') if base_url else ''}")
     print(f"project_env_primary_model: {model}")
     print(f"project_env_auxiliary_model: {aux_model}")
+    profile = load_project_profile(workspace)
+    print(f"project_profile: {workspace.project_file if profile else ''}")
+    print(f"project_summary: {profile.get('summary', '') if profile else ''}")
     print(f"command_allowed_roots: {', '.join(command_policy['allowed_roots'])}")
     print(f"command_blocked_terms: {', '.join(command_policy['blocked_terms'])}")
 
