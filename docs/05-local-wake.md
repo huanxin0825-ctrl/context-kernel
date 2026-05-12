@@ -13,7 +13,7 @@ akernel setup
 To rewrite project-local provider configuration:
 
 ```powershell
-.\setup.cmd -ApiKey "<your-key>" -BaseUrl "https://clarmy.cloud/v1" -Model "gpt-5.5" -ForceEnv
+.\setup.cmd -ApiKey "<your-key>" -BaseUrl "https://clarmy.cloud/v1" -Model "gpt-5.5" -AuxModel "gpt-5.3-codex" -ForceEnv
 ```
 
 Secrets are written only to project `.env`, which is ignored by git.

@@ -77,7 +77,7 @@ akernel setup
 akernel
 ```
 
-Inside the interactive session, type a task and press Enter. Use `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave. The shell UI renders a session dashboard with current directory, workspace, provider, model, budget profile, state counts, command palette, task progress, run summaries, and assistant responses.
+Inside the interactive session, type a task and press Enter. Use `/status` for the live workspace view, `/model` for primary and auxiliary model roles, `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave. The shell UI renders a session dashboard with current directory, workspace, provider, model roles, budget profile, state counts, command palette, task progress, run summaries, and assistant responses.
 
 If you want to prepare the benchmark workspace manually:
 
@@ -105,6 +105,7 @@ Provider configuration is project-local. Copy `.env.example` to `.env` or use `s
 CONTEXT_KERNEL_OPENAI_API_KEY=replace-with-your-key
 CONTEXT_KERNEL_OPENAI_BASE_URL=https://clarmy.cloud/v1
 CONTEXT_KERNEL_OPENAI_MODEL=gpt-5.5
+CONTEXT_KERNEL_OPENAI_AUX_MODEL=gpt-5.3-codex
 ```
 
 Useful checks:

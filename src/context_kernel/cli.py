@@ -35,6 +35,10 @@ from .tools import ToolExecutor
 from .verifier import verify_trace
 
 
+DEFAULT_PRIMARY_MODEL = "gpt-5.5"
+DEFAULT_AUXILIARY_MODEL = "gpt-5.3-codex"
+
+
 def main(argv: list[str] | None = None) -> None:
     configure_console_output()
     parser = build_parser()
@@ -55,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
         func=cmd_chat,
         provider="openai",
         model=None,
+        aux_model=None,
         base_url=None,
         budget=None,
         profile=DEFAULT_PROFILE,
@@ -75,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--api-key", default=None, help="OpenAI-compatible API key. If omitted, prompt securely.")
     setup_parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL. `/v1` is added when missing.")
     setup_parser.add_argument("--model", default=None, help="Default model id, for example gpt-5.5.")
+    setup_parser.add_argument("--aux-model", default=None, help="Auxiliary model id for planning, review, and compression.")
     setup_parser.add_argument("--env-file", default=None, help="Environment file path. Defaults to .env in the current project.")
     setup_parser.add_argument("--force", action="store_true", help="Rewrite an existing env file without keeping old values.")
     setup_parser.add_argument("--verify", action="store_true", help="List provider models after writing configuration.")
@@ -408,6 +414,7 @@ def add_budget_args(parser: argparse.ArgumentParser) -> None:
 def add_provider_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--provider", choices=["mock", "openai"], default="mock")
     parser.add_argument("--model", default=None, help="Provider model id. Defaults to gpt-5.5 for openai.")
+    parser.add_argument("--aux-model", default=None, help="Auxiliary model id for planning, review, and compression.")
     parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL override.")
 
 
@@ -465,24 +472,32 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     model = args.model
     if model is None:
-        default_model = existing.get("CONTEXT_KERNEL_OPENAI_MODEL") or "gpt-5.5"
-        model = prompt_text("Default model", default_model, interactive=interactive)
+        default_model = existing.get("CONTEXT_KERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
+        model = prompt_text("Primary model", default_model, interactive=interactive)
 
-    write_project_env(env_path, api_key=api_key, base_url=base_url, model=model)
+    aux_model = args.aux_model
+    if aux_model is None:
+        default_aux_model = existing.get("CONTEXT_KERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
+        aux_model = prompt_text("Auxiliary model", default_aux_model, interactive=interactive)
+
+    write_project_env(env_path, api_key=api_key, base_url=base_url, model=model, aux_model=aux_model)
     print(f"configured: {env_path}")
     print("api_key: set")
     print(f"base_url: {base_url}")
-    print(f"model: {model}")
+    print(f"primary_model: {model}")
+    print(f"auxiliary_model: {aux_model}")
     if args.verify:
         previous = {
             "CONTEXT_KERNEL_OPENAI_API_KEY": os.environ.get("CONTEXT_KERNEL_OPENAI_API_KEY"),
             "CONTEXT_KERNEL_OPENAI_BASE_URL": os.environ.get("CONTEXT_KERNEL_OPENAI_BASE_URL"),
             "CONTEXT_KERNEL_OPENAI_MODEL": os.environ.get("CONTEXT_KERNEL_OPENAI_MODEL"),
+            "CONTEXT_KERNEL_OPENAI_AUX_MODEL": os.environ.get("CONTEXT_KERNEL_OPENAI_AUX_MODEL"),
         }
         try:
             os.environ["CONTEXT_KERNEL_OPENAI_API_KEY"] = api_key
             os.environ["CONTEXT_KERNEL_OPENAI_BASE_URL"] = base_url
             os.environ["CONTEXT_KERNEL_OPENAI_MODEL"] = model
+            os.environ["CONTEXT_KERNEL_OPENAI_AUX_MODEL"] = aux_model
             models = list_provider_models("openai", base_url=base_url)
         finally:
             restore_env(previous)
@@ -511,12 +526,13 @@ def prompt_text(label: str, default: str, *, interactive: bool) -> str:
     return value or default
 
 
-def write_project_env(path: Path, *, api_key: str, base_url: str, model: str) -> None:
+def write_project_env(path: Path, *, api_key: str, base_url: str, model: str, aux_model: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"CONTEXT_KERNEL_OPENAI_API_KEY={api_key}",
         f"CONTEXT_KERNEL_OPENAI_BASE_URL={base_url}",
         f"CONTEXT_KERNEL_OPENAI_MODEL={model}",
+        f"CONTEXT_KERNEL_OPENAI_AUX_MODEL={aux_model}",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -749,6 +765,12 @@ def cmd_chat(args: argparse.Namespace) -> None:
         if lowered == "/help":
             print_chat_help()
             continue
+        if lowered == "/status":
+            print_status_panel(workspace, task_id, args)
+            continue
+        if lowered == "/config":
+            print_config_panel()
+            continue
         if lowered == "/task":
             print_json(tasks.get(task_id))
             continue
@@ -787,7 +809,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
 
 
 def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespace) -> None:
-    model = args.model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or "default"
+    model = primary_model(args)
     base_url = args.base_url or env_value("CONTEXT_KERNEL_OPENAI_BASE_URL") or ""
     api_key_set = bool(env_value("CONTEXT_KERNEL_OPENAI_API_KEY"))
     chat_banner(
@@ -801,7 +823,8 @@ def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespa
             ("workspace", compact_path(workspace.root)),
             ("task", task_id),
             ("provider", args.provider),
-            ("model", model),
+            ("primary", model),
+            ("auxiliary", auxiliary_model(args)),
             ("profile", args.profile),
             ("loop", f"max {args.max_steps} steps per message"),
             ("state", workspace_state_summary(workspace)),
@@ -813,8 +836,8 @@ def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespa
         "Start",
         [
             ("type", "Describe a task in natural language and press Enter."),
-            ("inspect", "/model, /task, /runs, /cost"),
-            ("control", "/help, /clear, /exit"),
+            ("inspect", "/status, /model, /task, /runs, /cost"),
+            ("control", "/help, /config, /clear, /exit"),
         ],
     )
 
@@ -862,7 +885,9 @@ def print_chat_help() -> None:
         "Command Palette",
         [
             ("/help", "show this command palette"),
-            ("/model", "show provider, model, and base URL"),
+            ("/status", "show workspace and runtime status"),
+            ("/model", "show primary and auxiliary model roles"),
+            ("/config", "show setup and environment guidance"),
             ("/task", "print the current task session JSON"),
             ("/runs", "list recent agent runs"),
             ("/cost", "print the last agent run cost report"),
@@ -894,18 +919,56 @@ def print_recent_agent_runs(workspace: Workspace, *, limit: int) -> None:
 
 def print_model_panel(args: argparse.Namespace) -> None:
     chat_panel(
-        "Model",
+        "Model Roles",
         [
             ("provider", args.provider),
-            ("model", args.model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or "default"),
+            ("primary", primary_model(args)),
+            ("auxiliary", auxiliary_model(args)),
+            ("routing", "primary handles agent execution; auxiliary is reserved for planning/review/compression"),
             ("base_url", args.base_url or env_value("CONTEXT_KERNEL_OPENAI_BASE_URL") or "default"),
         ],
     )
 
 
+def print_status_panel(workspace: Workspace, task_id: str, args: argparse.Namespace) -> None:
+    chat_panel(
+        "Status",
+        [
+            ("cwd", compact_path(Path.cwd())),
+            ("workspace", compact_path(workspace.root)),
+            ("task", task_id),
+            ("provider", args.provider),
+            ("primary", primary_model(args)),
+            ("auxiliary", auxiliary_model(args)),
+            ("profile", args.profile),
+            ("state", workspace_state_summary(workspace)),
+        ],
+    )
+
+
+def print_config_panel() -> None:
+    chat_panel(
+        "Config",
+        [
+            ("setup", "akernel setup"),
+            ("env", "CONTEXT_KERNEL_OPENAI_API_KEY, CONTEXT_KERNEL_OPENAI_BASE_URL"),
+            ("models", "CONTEXT_KERNEL_OPENAI_MODEL, CONTEXT_KERNEL_OPENAI_AUX_MODEL"),
+            ("scope", "current project .env first, installed Context Kernel .env fallback"),
+        ],
+    )
+
+
 def chat_prompt(args: argparse.Namespace) -> str:
-    model = args.model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or args.provider
+    model = primary_model(args)
     return "\n" + chat_color("akernel", "cyan", bold=True) + chat_color(f" [{model}]", "dim") + "> "
+
+
+def primary_model(args: argparse.Namespace) -> str:
+    return args.model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
+
+
+def auxiliary_model(args: argparse.Namespace) -> str:
+    return getattr(args, "aux_model", None) or env_value("CONTEXT_KERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
 
 
 def clear_chat_screen() -> None:
@@ -1074,7 +1137,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     command_policy = summarize_command_policy(workspace)
     base_url = env_value("CONTEXT_KERNEL_OPENAI_BASE_URL")
     api_key = env_value("CONTEXT_KERNEL_OPENAI_API_KEY")
-    model = env_value("CONTEXT_KERNEL_OPENAI_MODEL") or "gpt-5.5"
+    model = env_value("CONTEXT_KERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
+    aux_model = env_value("CONTEXT_KERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
     print(f"project_root: {Path.cwd().resolve()}")
     print(f"workspace: {workspace.root}")
     print(f"workspace_initialized: {workspace.state.exists()}")
@@ -1082,7 +1146,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print(f"workspace_config_version: {config.get('version')}")
     print(f"project_env_api_key_set: {bool(api_key)}")
     print(f"project_env_base_url: {normalize_openai_base_url(base_url or '') if base_url else ''}")
-    print(f"project_env_model: {model}")
+    print(f"project_env_primary_model: {model}")
+    print(f"project_env_auxiliary_model: {aux_model}")
     print(f"command_allowed_roots: {', '.join(command_policy['allowed_roots'])}")
     print(f"command_blocked_terms: {', '.join(command_policy['blocked_terms'])}")
 

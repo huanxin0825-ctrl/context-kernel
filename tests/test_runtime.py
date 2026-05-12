@@ -622,7 +622,7 @@ class RuntimeTests(unittest.TestCase):
             workspace = Workspace(Path(tmp))
             workspace.init()
 
-            with patch("builtins.input", side_effect=["Continue the runtime work", "/cost", "/exit"]):
+            with patch("builtins.input", side_effect=["/status", "/model", "/config", "Continue the runtime work", "/cost", "/exit"]):
                 with patch("sys.stdout", new=io.StringIO()) as stdout:
                     main(
                         [
@@ -631,6 +631,8 @@ class RuntimeTests(unittest.TestCase):
                             "chat",
                             "--provider",
                             "mock",
+                            "--aux-model",
+                            "gpt-5.3-codex",
                             "--max-steps",
                             "1",
                         ]
@@ -643,6 +645,9 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(reports), 1)
             self.assertEqual(len(tasks), 1)
             self.assertIn("Context Kernel Agent", output)
+            self.assertIn("Model Roles", output)
+            self.assertIn("auxiliary", output)
+            self.assertIn("CONTEXT_KERNEL_OPENAI_AUX_MODEL", output)
             self.assertIn("agent_run:", output)
             self.assertIn("Mock agent response", output)
             self.assertIn("Step Breakdown", output)
@@ -680,6 +685,8 @@ class RuntimeTests(unittest.TestCase):
                             "https://example.test",
                             "--model",
                             "gpt-5.5",
+                            "--aux-model",
+                            "gpt-5.3-codex",
                         ]
                     )
             finally:
@@ -689,7 +696,9 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(values["CONTEXT_KERNEL_OPENAI_API_KEY"], "sk-test123456789012345")
             self.assertEqual(values["CONTEXT_KERNEL_OPENAI_BASE_URL"], "https://example.test/v1")
             self.assertEqual(values["CONTEXT_KERNEL_OPENAI_MODEL"], "gpt-5.5")
+            self.assertEqual(values["CONTEXT_KERNEL_OPENAI_AUX_MODEL"], "gpt-5.3-codex")
             self.assertIn("api_key: set", stdout.getvalue())
+            self.assertIn("auxiliary_model: gpt-5.3-codex", stdout.getvalue())
 
     def test_agent_loop_can_read_file_then_respond_with_tool_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

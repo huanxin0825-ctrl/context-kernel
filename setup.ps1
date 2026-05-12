@@ -2,6 +2,7 @@ param(
     [string]$ApiKey = "",
     [string]$BaseUrl = "https://clarmy.cloud/v1",
     [string]$Model = "gpt-5.5",
+    [string]$AuxModel = "gpt-5.3-codex",
     [switch]$ForceEnv,
     [switch]$NoGlobalLauncher,
     [switch]$Verify
@@ -83,7 +84,8 @@ if ($ForceEnv -or -not (Test-Path -LiteralPath $EnvPath)) {
         $lines = @(
             "CONTEXT_KERNEL_OPENAI_API_KEY=$ApiKey",
             "CONTEXT_KERNEL_OPENAI_BASE_URL=$BaseUrl",
-            "CONTEXT_KERNEL_OPENAI_MODEL=$Model"
+            "CONTEXT_KERNEL_OPENAI_MODEL=$Model",
+            "CONTEXT_KERNEL_OPENAI_AUX_MODEL=$AuxModel"
         )
         Set-Content -LiteralPath $EnvPath -Value $lines -Encoding UTF8
         Write-Host "Wrote project-local .env."
