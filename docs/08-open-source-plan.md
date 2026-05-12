@@ -46,6 +46,24 @@ Context Kernel is not yet:
 - `.env`, `.akernel`, virtualenv, build artifacts, and caches are ignored.
 - First GitHub release should attach benchmark output and known limitations.
 
+## Current Alpha Surface
+
+The current public alpha is strong enough to demonstrate the core thesis:
+
+- `akernel` starts an interactive project-local CLI agent by default.
+- `akernel setup` configures local OpenAI-compatible provider settings.
+- The runtime separates primary and auxiliary model roles for routing and review.
+- Project scanning builds a compact profile instead of loading the full repository.
+- Agent runs are bounded, policy-gated, traced, and cost-reported.
+- Simple failing-test repair, wrapped-action recovery, and structured failure diagnostics show how the runtime can reduce wasted turns without hiding evidence.
+
+Known alpha limits:
+
+- Real-provider behavior still needs broader smoke testing across model gateways.
+- Complex multi-file bug repair is intentionally conservative.
+- The CLI is the product surface; no UI should be started until CLI workflows are proven.
+- Public APIs and `.akernel` file formats may change before a stable release.
+
 ## Contribution Strategy
 
 Accept small, focused pull requests first:
