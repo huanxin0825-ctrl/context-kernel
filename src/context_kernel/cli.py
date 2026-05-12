@@ -18,7 +18,7 @@ from .context import ContextBuilder
 from .evals import EvalRunner
 from .global_memory import pull_global_memories, push_global_memories
 from .loop import AgentLoop, summarize_tool_result
-from .marketplace import install_marketplace_skill, list_marketplace_skills
+from .marketplace import install_marketplace_skill, is_remote_reference, list_marketplace_skills
 from .memory import ALLOWED_KINDS, MemoryStore
 from .planner import ExecutionPlanner
 from .policy import FILE_OPERATIONS, check_command_policy, check_file_policy, summarize_command_policy
@@ -173,11 +173,15 @@ def build_parser() -> argparse.ArgumentParser:
     skill_inspect.add_argument("--budget", type=int, default=300)
     skill_inspect.set_defaults(func=cmd_skill_inspect)
     skill_market_list = skill_sub.add_parser("market-list", help="List skills from a marketplace index.")
-    skill_market_list.add_argument("--index", default=None, help="Marketplace index JSON path.")
+    skill_market_list.add_argument("--index", default=None, help="Marketplace index JSON path, file URL, or HTTP(S) URL.")
+    skill_market_list.add_argument("--json", action="store_true")
     skill_market_list.set_defaults(func=cmd_skill_market_list)
     skill_market_install = skill_sub.add_parser("market-install", help="Install a skill from a marketplace index.")
     skill_market_install.add_argument("skill_id")
-    skill_market_install.add_argument("--index", default=None, help="Marketplace index JSON path.")
+    skill_market_install.add_argument("--index", default=None, help="Marketplace index JSON path, file URL, or HTTP(S) URL.")
+    skill_market_install.add_argument("--trust-remote", action="store_true", help="Allow installing a skill fetched from a remote marketplace source.")
+    skill_market_install.add_argument("--ignore-compat", action="store_true", help="Install even when marketplace compatibility metadata does not match.")
+    skill_market_install.add_argument("--json", action="store_true")
     skill_market_install.set_defaults(func=cmd_skill_market_install)
 
     memory_parser = subparsers.add_parser("memory", help="Manage structured memory.")
@@ -744,20 +748,46 @@ def cmd_skill_inspect(args: argparse.Namespace) -> None:
 
 
 def cmd_skill_market_list(args: argparse.Namespace) -> None:
-    index = Path(args.index) if args.index else None
+    index = args.index if args.index else None
     skills = list_marketplace_skills(index)
+    if args.json:
+        print_json({"count": len(skills), "skills": skills})
+        return
     if not skills:
         print("no marketplace skills")
         return
     for skill in skills:
-        print(f"{skill.get('id')}\t{skill.get('name')}\t{skill.get('summary', '')}")
+        compat = skill.get("compatibility_check", {})
+        remote = "remote" if skill.get("remote") else "local"
+        print(
+            f"{skill.get('id')}\t{skill.get('name')}\t"
+            f"v{skill.get('version', '0.0.0')}\t{remote}\t"
+            f"compat={'ok' if compat.get('ok', True) else 'blocked'}\t"
+            f"{skill.get('summary', '')}"
+        )
 
 
 def cmd_skill_market_install(args: argparse.Namespace) -> None:
     workspace = workspace_from_args(args)
-    index = Path(args.index) if args.index else None
-    result = install_marketplace_skill(workspace, args.skill_id, index=index)
+    index = args.index if args.index else None
+    trust_remote = args.trust_remote
+    if index and is_remote_reference(index) and not trust_remote and sys.stdin.isatty():
+        answer = input(f"Install from remote marketplace {index}? Type 'yes' to trust this source: ").strip().casefold()
+        trust_remote = answer == "yes"
+    result = install_marketplace_skill(
+        workspace,
+        args.skill_id,
+        index=index,
+        trust_remote=trust_remote,
+        ignore_compat=args.ignore_compat,
+    )
+    if args.json:
+        print_json(result)
+        return
     print(f"installed marketplace skill: {result['id']} ({result['name']})")
+    print(f"version: {result.get('version')}")
+    print(f"source: {result.get('source')}")
+    print(f"compatibility: {'ok' if result.get('compatibility', {}).get('ok') else 'warning'}")
 
 
 def cmd_memory_add(args: argparse.Namespace) -> None:

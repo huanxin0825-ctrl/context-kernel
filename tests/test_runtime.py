@@ -597,8 +597,96 @@ class RuntimeTests(unittest.TestCase):
             installed = install_marketplace_skill(workspace, "multi_file_bugfix")
 
             self.assertTrue(any(skill.get("id") == "multi_file_bugfix" for skill in skills))
+            self.assertTrue(all("version" in skill for skill in skills))
+            self.assertTrue(all(skill.get("compatibility_check", {}).get("ok") for skill in skills))
             self.assertEqual(installed["id"], "multi_file_bugfix")
+            self.assertEqual(installed["version"], "0.1.0")
+            self.assertTrue(installed["compatibility"]["ok"])
             self.assertEqual(SkillRegistry(workspace).get("multi_file_bugfix").name, "Multi File Bugfix")
+
+    def test_marketplace_blocks_incompatible_or_untrusted_remote_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = Workspace(root / "workspace")
+            workspace.init()
+            skill_path = root / "sample_skill.json"
+            Workspace.write_json(
+                skill_path,
+                {
+                    "id": "sample_skill",
+                    "name": "Sample Skill",
+                    "summary": "Sample marketplace skill.",
+                    "intent": "Exercise marketplace compatibility checks.",
+                    "inputs": ["task"],
+                    "outputs": ["result"],
+                    "constraints": ["test only"],
+                    "failure_modes": ["none"],
+                    "procedure": ["return a result"],
+                    "examples": [],
+                },
+            )
+            incompatible_index = root / "incompatible-index.json"
+            Workspace.write_json(
+                incompatible_index,
+                {
+                    "version": 2,
+                    "name": "Incompatible Test Market",
+                    "skills": [
+                        {
+                            "id": "sample_skill",
+                            "name": "Sample Skill",
+                            "summary": "Sample marketplace skill.",
+                            "version": "9.0.0",
+                            "compatibility": {"context_kernel": ">=9.0.0"},
+                            "path": "sample_skill.json",
+                        }
+                    ],
+                },
+            )
+            remote_index = root / "remote-index.json"
+            Workspace.write_json(
+                remote_index,
+                {
+                    "version": 2,
+                    "name": "Remote Test Market",
+                    "skills": [
+                        {
+                            "id": "remote_skill",
+                            "name": "Remote Skill",
+                            "summary": "Remote marketplace skill.",
+                            "version": "0.1.0",
+                            "compatibility": {"context_kernel": ">=0.1.0"},
+                            "path": "https://example.invalid/remote_skill.json",
+                        }
+                    ],
+                },
+            )
+
+            with self.assertRaises(ValueError):
+                install_marketplace_skill(workspace, "sample_skill", index=incompatible_index)
+            with self.assertRaises(PermissionError):
+                install_marketplace_skill(workspace, "remote_skill", index=remote_index)
+
+            installed = install_marketplace_skill(
+                workspace,
+                "sample_skill",
+                index=incompatible_index,
+                ignore_compat=True,
+            )
+            self.assertEqual(installed["id"], "sample_skill")
+
+    def test_marketplace_cli_lists_version_remote_and_compatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "skill", "market-list"])
+
+            output = stdout.getvalue()
+            self.assertIn("multi_file_bugfix", output)
+            self.assertIn("v0.1.0", output)
+            self.assertIn("compat=ok", output)
 
     def test_execution_planner_reports_route_budget_and_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

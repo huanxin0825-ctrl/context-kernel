@@ -139,7 +139,9 @@ akernel memory prune --max-records 100 --dry-run
 akernel memory global-push
 akernel memory global-pull --limit 20
 akernel skill market-list
+akernel skill market-list --index examples\marketplace\skills\index.json
 akernel skill market-install multi_file_bugfix
+akernel skill market-install remote_skill --index https://example.com/context-kernel/skills/index.json --trust-remote
 akernel compare "Summarize the project goal"
 akernel eval run examples\evals\phase2.json
 akernel eval cost <report-id>

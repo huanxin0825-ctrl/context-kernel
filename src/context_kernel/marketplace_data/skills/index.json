@@ -1,35 +1,65 @@
 {
-  "version": 1,
+  "version": 2,
   "name": "Context Kernel packaged skill marketplace",
   "skills": [
     {
       "id": "context_budget",
       "name": "Context Budget",
       "summary": "Plan and inspect token-aware context budget work.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "publisher": "context-kernel",
+      "compatibility": {
+        "context_kernel": ">=0.1.0"
+      },
       "path": "context_budget.json"
     },
     {
       "id": "edit_file",
       "name": "Edit File",
       "summary": "Make focused file edits while preserving unrelated changes.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "publisher": "context-kernel",
+      "compatibility": {
+        "context_kernel": ">=0.1.0"
+      },
       "path": "edit_file.json"
     },
     {
       "id": "multi_file_bugfix",
       "name": "Multi File Bugfix",
       "summary": "Investigate and repair bugs that may span multiple files.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "publisher": "context-kernel",
+      "compatibility": {
+        "context_kernel": ">=0.1.0"
+      },
       "path": "multi_file_bugfix.json"
     },
     {
       "id": "long_task_planning",
       "name": "Long Task Planning",
       "summary": "Break long-running work into resumable checkpoints.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "publisher": "context-kernel",
+      "compatibility": {
+        "context_kernel": ">=0.1.0"
+      },
       "path": "long_task_planning.json"
     },
     {
       "id": "context_compaction",
       "name": "Context Compaction",
       "summary": "Compress task state and memory without losing required evidence.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "publisher": "context-kernel",
+      "compatibility": {
+        "context_kernel": ">=0.1.0"
+      },
       "path": "context_compaction.json"
     }
   ]

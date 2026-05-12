@@ -68,12 +68,13 @@ Current alpha:
 
 - Packaged marketplace index ships with built-in skills.
 - `skill market-list` and `skill market-install` install skills into the current workspace.
+- Marketplace v2 metadata includes skill version, license, publisher, Context Kernel compatibility, local/file/HTTP(S) index support, and explicit remote trust gates.
 
 Next bar:
 
 - Support signed remote marketplace indexes.
-- Add semantic version and compatibility metadata.
-- Add skill trust prompts before installing remote sources.
+- Add detached signatures and checksum verification for remote sources.
+- Add marketplace namespaces, update checks, and installed skill provenance reports.
 
 ## Cross-Project Global Memory
 

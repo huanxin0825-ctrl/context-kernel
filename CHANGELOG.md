@@ -21,6 +21,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - `memory prune` archives lower-priority active memories by record count or token budget, with dry-run support.
 - `memory global-push` and `memory global-pull` provide explicit cross-project memory sync through a user-level global store.
 - `skill market-list` and `skill market-install` install packaged skill contracts from the built-in marketplace.
+- Skill marketplace indexes now support v2 metadata with skill versions, licenses, publisher, Context Kernel compatibility checks, file/HTTP(S) indexes, and explicit remote trust gates.
 - Packaged marketplace skills now include multi-file bugfix, long task planning, and context compaction contracts.
 - Release helper scripts and a thin npm launcher wrapper prepare the project for PyPI/npm distribution.
 - Scale benchmark fixtures cover context pressure, editing, global memory, and marketplace workflows.

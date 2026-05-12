@@ -44,6 +44,19 @@ Stores skills as structured JSON contracts. Each skill exposes progressive load 
 
 The runtime starts small and escalates only when the budget and task complexity justify it.
 
+### Skill Marketplace
+
+Marketplace indexes are JSON manifests for installable skill contracts.
+
+Current behavior:
+
+- Packaged indexes ship with the project and can be listed with `skill market-list`.
+- v2 index entries include `version`, `license`, `publisher`, `compatibility.context_kernel`, and `path`.
+- Indexes can be local paths, `file://` URLs, or HTTP(S) URLs.
+- `skill market-install` blocks incompatible skills unless `--ignore-compat` is explicit.
+- Installing from a remote skill source requires `--trust-remote` or an interactive trust confirmation.
+- Installed skills are copied into the workspace skill registry; marketplace metadata remains audit context, not runtime prompt content.
+
 ### Memory Store
 
 Stores typed records instead of compressed transcript blobs.
