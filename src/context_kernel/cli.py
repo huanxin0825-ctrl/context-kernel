@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
 from getpass import getpass
+import io
 import json
 import os
 from pathlib import Path
@@ -123,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
         no_remember=False,
         allow_over_budget=False,
         expect_json=False,
+        ui="auto",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -272,6 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--no-remember", action="store_true", help="Do not write explicit task-state memory.")
     chat_parser.add_argument("--allow-over-budget", action="store_true", help="Execute even when preflight budget verification fails.")
     chat_parser.add_argument("--expect-json", action="store_true", help="Require provider responses to be valid JSON.")
+    chat_parser.add_argument("--ui", choices=["auto", "classic", "tui"], default="auto", help="Choose interactive UI mode. auto uses TUI only on real terminals.")
     chat_parser.set_defaults(provider="openai", func=cmd_chat)
 
     models_parser = subparsers.add_parser("models", help="List models from a provider.")
@@ -927,7 +931,12 @@ def cmd_chat(args: argparse.Namespace) -> None:
         task_id = task["id"]
 
     last_report: dict[str, Any] | None = None
+    state: dict[str, Any] = {"last_report": None}
     pending_context: list[str] = []
+    if resolve_chat_ui(args) == "tui":
+        run_chat_loop_tui(workspace, tasks, task_id, args)
+        return
+
     print_chat_header(workspace, task_id, args)
     while True:
         try:
@@ -1047,6 +1056,343 @@ def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespa
             ("control", "/help, /config, /clear, /exit"),
         ],
     )
+
+
+def resolve_chat_ui(args: argparse.Namespace) -> str:
+    requested = getattr(args, "ui", "auto")
+    if requested in {"classic", "tui"}:
+        return requested
+    if os.environ.get("AKERNEL_UI"):
+        value = os.environ["AKERNEL_UI"].strip().lower()
+        if value in {"classic", "tui"}:
+            return value
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return "classic"
+    if os.environ.get("TERM", "").lower() == "dumb":
+        return "classic"
+    return "tui"
+
+
+def run_chat_loop_tui(
+    workspace: Workspace,
+    tasks: TaskStore,
+    task_id: str,
+    args: argparse.Namespace,
+) -> None:
+    last_report: dict[str, Any] | None = None
+    pending_context: list[str] = []
+    transcript: list[dict[str, str]] = [
+        {
+            "role": "system",
+            "title": "Welcome",
+            "text": "Describe a task, attach files with @path, run safe commands with !command, or type /help.",
+        }
+    ]
+    use_alt_screen = sys.stdout.isatty() and not os.environ.get("AKERNEL_NO_ALT_SCREEN")
+    if use_alt_screen:
+        print("\033[?1049h", end="")
+    try:
+        render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready")
+        while True:
+            try:
+                request = input(tui_prompt(args)).strip()
+            except EOFError:
+                break
+            except KeyboardInterrupt:
+                transcript.append({"role": "system", "title": "Interrupted", "text": "Keyboard interrupt received."})
+                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="interrupted")
+                break
+            if not request:
+                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready")
+                continue
+            lowered = request.lower()
+            if lowered in {"/exit", "/quit", "exit", "quit"}:
+                break
+            if lowered == "/clear":
+                transcript.clear()
+                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="cleared")
+                continue
+            state["last_report"] = last_report
+            if handle_tui_command(
+                request,
+                lowered,
+                workspace=workspace,
+                tasks=tasks,
+                task_id=task_id,
+                args=args,
+                pending_context=pending_context,
+                transcript=transcript,
+                state=state,
+            ):
+                last_report = state.get("last_report")
+                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready")
+                continue
+
+            request_for_agent = merge_pending_context(request, pending_context)
+            pending_context.clear()
+            transcript.append({"role": "user", "title": "You", "text": request_for_agent})
+            render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="running")
+            last_report = AgentLoop(workspace).run(
+                request_for_agent,
+                provider_name=args.provider,
+                budget=args.budget,
+                profile=args.profile,
+                model=args.model,
+                aux_model=args.aux_model,
+                model_routing=args.model_routing,
+                aux_review=args.aux_review,
+                base_url=args.base_url,
+                task_id=task_id,
+                max_steps=args.max_steps,
+                remember=not args.no_remember,
+                allow_over_budget=args.allow_over_budget,
+                expect_json=args.expect_json,
+            )
+            transcript.append({"role": "assistant", "title": "Assistant", "text": format_tui_report(last_report)})
+            render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready")
+    finally:
+        if use_alt_screen:
+            print("\033[?1049l", end="")
+    print("bye")
+
+
+def handle_tui_command(
+    request: str,
+    lowered: str,
+    *,
+    workspace: Workspace,
+    tasks: TaskStore,
+    task_id: str,
+    args: argparse.Namespace,
+    pending_context: list[str],
+    transcript: list[dict[str, str]],
+    state: dict[str, Any],
+) -> bool:
+    last_report = state.get("last_report")
+    if lowered == "/help":
+        transcript.append({"role": "system", "title": "Help", "text": format_chat_help_text()})
+        return True
+    if lowered == "/compact":
+        transcript.append({"role": "system", "title": "Compact Brief", "text": capture_chat_output(lambda: print_task_brief_panel(tasks, task_id))})
+        return True
+    if lowered == "/status":
+        transcript.append({"role": "system", "title": "Status", "text": capture_chat_output(lambda: print_status_panel(workspace, task_id, args))})
+        return True
+    if lowered == "/config":
+        transcript.append({"role": "system", "title": "Config", "text": capture_chat_output(print_config_panel)})
+        return True
+    if lowered == "/task":
+        transcript.append({"role": "system", "title": "Task", "text": json.dumps(tasks.get(task_id), indent=2, ensure_ascii=False)})
+        return True
+    if lowered == "/model":
+        transcript.append({"role": "system", "title": "Model Roles", "text": capture_chat_output(lambda: print_model_panel(args))})
+        return True
+    if lowered == "/runs":
+        transcript.append({"role": "system", "title": "Recent Runs", "text": capture_chat_output(lambda: print_recent_agent_runs(workspace, limit=5))})
+        return True
+    if lowered == "/cost":
+        text = "no agent run yet" if last_report is None else render_agent_cost_report(build_agent_cost_report(last_report))
+        transcript.append({"role": "system", "title": "Cost", "text": text})
+        return True
+    if lowered == "/paste":
+        transcript.append({"role": "system", "title": "Paste", "text": "Paste mode uses the terminal below. Finish with /end."})
+        pasted = read_paste_block()
+        if pasted:
+            transcript.append({"role": "user", "title": "Pasted Task", "text": pasted})
+            request_for_agent = merge_pending_context(pasted, pending_context)
+            pending_context.clear()
+            report = AgentLoop(workspace).run(
+                request_for_agent,
+                provider_name=args.provider,
+                budget=args.budget,
+                profile=args.profile,
+                model=args.model,
+                aux_model=args.aux_model,
+                model_routing=args.model_routing,
+                aux_review=args.aux_review,
+                base_url=args.base_url,
+                task_id=task_id,
+                max_steps=args.max_steps,
+                remember=not args.no_remember,
+                allow_over_budget=args.allow_over_budget,
+                expect_json=args.expect_json,
+            )
+            state["last_report"] = report
+            transcript.append({"role": "assistant", "title": "Assistant", "text": format_tui_report(report)})
+        return True
+    if request.startswith("@"):
+        text = capture_chat_output(lambda: attach_chat_file(workspace, tasks, task_id, request[1:].strip(), pending_context))
+        transcript.append({"role": "system", "title": "Attach File", "text": text})
+        return True
+    if request.startswith("!"):
+        text = capture_chat_output(lambda: run_chat_command(workspace, tasks, task_id, request[1:].strip(), pending_context))
+        transcript.append({"role": "system", "title": "Command", "text": text})
+        return True
+    return False
+
+
+def capture_chat_output(func: Any) -> str:
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        func()
+    return buffer.getvalue().strip()
+
+
+def format_chat_help_text() -> str:
+    rows = [
+        ("/help", "show this command palette"),
+        ("/status", "show workspace and runtime status"),
+        ("/model", "show primary and auxiliary model roles"),
+        ("/config", "show setup and environment guidance"),
+        ("/compact", "show the compact task brief used for resume context"),
+        ("/paste", "enter a multi-line task; finish with /end"),
+        ("@path", "attach a workspace file to the next task"),
+        ("!command", "run a policy-checked command and attach its summary"),
+        ("/task", "print the current task session JSON"),
+        ("/runs", "list recent agent runs"),
+        ("/cost", "print the last agent run cost report"),
+        ("/clear", "clear the transcript"),
+        ("/exit", "leave the interactive session"),
+    ]
+    return "\n".join(f"{name:<10} {description}" for name, description in rows)
+
+
+def tui_prompt(args: argparse.Namespace) -> str:
+    return chat_color("\nakernel", "cyan", bold=True) + chat_color(f" [{primary_model(args)}]", "dim") + "> "
+
+
+def render_chat_tui_screen(
+    workspace: Workspace,
+    task_id: str,
+    args: argparse.Namespace,
+    transcript: list[dict[str, str]],
+    last_report: dict[str, Any] | None,
+    pending_context: list[str],
+    *,
+    status: str,
+) -> None:
+    screen = build_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status=status)
+    print("\033[2J\033[H" + screen, end="")
+
+
+def build_chat_tui_screen(
+    workspace: Workspace,
+    task_id: str,
+    args: argparse.Namespace,
+    transcript: list[dict[str, str]],
+    last_report: dict[str, Any] | None,
+    pending_context: list[str],
+    *,
+    status: str,
+) -> str:
+    width = chat_width()
+    height = max(24, shutil.get_terminal_size((width, 32)).lines)
+    right_width = 30
+    left_width = max(40, width - right_width - 3)
+    body_height = max(10, height - 8)
+    title = f" Context Kernel TUI | {status.upper()} | {compact_path(workspace.root)} "
+    lines = [tui_rule(title, width)]
+    body = tui_body_lines(transcript, left_width)
+    side = tui_sidebar_lines(workspace, task_id, args, last_report, pending_context, right_width)
+    body = body[-body_height:]
+    side = side[:body_height]
+    for index in range(body_height):
+        left = body[index] if index < len(body) else ""
+        right = side[index] if index < len(side) else ""
+        lines.append(f"{left:<{left_width}} | {right:<{right_width}}")
+    lines.append(tui_rule(" Input ", width))
+    lines.append("Enter task text, /help for commands, @path to attach, !command to run, /exit to quit.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def tui_body_lines(transcript: list[dict[str, str]], width: int) -> list[str]:
+    if not transcript:
+        return ["No messages yet."]
+    lines: list[str] = []
+    for item in transcript:
+        title = item.get("title", item.get("role", "message"))
+        role = item.get("role", "system")
+        lines.append(f"[{title}]")
+        prefix = "  " if role != "user" else "> "
+        for line in wrap_plain(item.get("text", ""), width=max(20, width - len(prefix))).splitlines():
+            lines.append(prefix + line)
+        lines.append("")
+    return lines
+
+
+def tui_sidebar_lines(
+    workspace: Workspace,
+    task_id: str,
+    args: argparse.Namespace,
+    last_report: dict[str, Any] | None,
+    pending_context: list[str],
+    width: int,
+) -> list[str]:
+    rows = [
+        "Session",
+        f"provider: {args.provider}",
+        f"primary: {primary_model(args)}",
+        f"aux: {auxiliary_model(args)}",
+        f"profile: {args.profile}",
+        f"steps: {args.max_steps}",
+        f"task: {task_id}",
+        f"state: {workspace_state_summary(workspace)}",
+        f"pending: {len(pending_context)}",
+    ]
+    if last_report:
+        actions = " -> ".join(str((step.get("action") or {}).get("action") or "none") for step in last_report.get("steps", []))
+        rows.extend(
+            [
+                "",
+                "Last Run",
+                f"id: {last_report.get('id')}",
+                f"status: {last_report.get('status')}",
+                f"tokens: {last_report.get('totals', {}).get('total_tokens', 0)}",
+                f"actions: {actions or 'none'}",
+            ]
+        )
+        diagnostic = last_report.get("diagnostic")
+        if isinstance(diagnostic, dict) and diagnostic:
+            rows.extend(["", "Diagnostic", str(diagnostic.get("category", "")), str(diagnostic.get("suggestion", ""))])
+    return [truncate_line(line, width) for line in rows]
+
+
+def format_tui_report(report: dict[str, Any]) -> str:
+    actions = " -> ".join(str((step.get("action") or {}).get("action") or "none") for step in report.get("steps", []))
+    parts = [
+        f"status: {report.get('status')}",
+        f"agent_run: {report.get('id')}",
+        f"steps: {len(report.get('steps', []))}/{report.get('max_steps')}",
+        f"tokens: {report.get('totals', {}).get('total_tokens', 0)}",
+    ]
+    if actions:
+        parts.append(f"actions: {actions}")
+    diagnostic = report.get("diagnostic")
+    if isinstance(diagnostic, dict) and diagnostic:
+        parts.append(f"diagnostic: {diagnostic.get('category')}")
+        parts.append(f"next: {diagnostic.get('suggestion')}")
+    if report.get("final_response"):
+        parts.append("")
+        parts.append(str(report["final_response"]))
+    return "\n".join(parts)
+
+
+def tui_rule(title: str, width: int) -> str:
+    text = title[:width]
+    remaining = max(0, width - len(text))
+    left = remaining // 2
+    right = remaining - left
+    return "=" * left + text + "=" * right
+
+
+def wrap_plain(text: str, *, width: int) -> str:
+    return "\n".join(wrap_chat_text(text, width=width).splitlines())
+
+
+def truncate_line(text: str, width: int) -> str:
+    value = str(text)
+    return value if len(value) <= width else value[: max(0, width - 3)] + "..."
 
 
 def print_chat_turn_start(request: str, args: argparse.Namespace) -> None:

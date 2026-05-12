@@ -10,7 +10,7 @@ from unittest.mock import patch
 from context_kernel.agent_reports import build_agent_cost_report, render_agent_cost_report
 from context_kernel.benchmarks import BenchmarkRunner, render_benchmark_markdown
 from context_kernel.budget import allocate_budget
-from context_kernel.cli import load_batch_patch_specs, main, print_agent_report
+from context_kernel.cli import build_chat_tui_screen, load_batch_patch_specs, main, print_agent_report
 from context_kernel.context import ContextBuilder
 from context_kernel.evals import EvalRunner
 from context_kernel.global_memory import pull_global_memories, push_global_memories
@@ -946,6 +946,45 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("Compact Brief", output)
             self.assertIn("Paste mode", output)
             self.assertIn("Mock agent response", output)
+
+    def test_tui_screen_renders_session_and_last_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            args = type(
+                "Args",
+                (),
+                {
+                    "provider": "mock",
+                    "model": None,
+                    "aux_model": "gpt-5.3-codex",
+                    "profile": "balanced",
+                    "max_steps": 2,
+                },
+            )()
+            report = {
+                "id": "run123",
+                "status": "responded",
+                "max_steps": 2,
+                "steps": [{"action": {"action": "respond"}}],
+                "totals": {"total_tokens": 42},
+                "final_response": "ready",
+            }
+
+            screen = build_chat_tui_screen(
+                workspace,
+                "task123",
+                args,
+                [{"role": "user", "title": "You", "text": "Summarize this project"}],
+                report,
+                ["attached context"],
+                status="ready",
+            )
+
+            self.assertIn("Context Kernel TUI", screen)
+            self.assertIn("provider: mock", screen)
+            self.assertIn("Last Run", screen)
+            self.assertIn("actions: respond", screen)
 
     def test_bare_akernel_starts_chat_and_initializes_default_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

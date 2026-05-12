@@ -52,12 +52,14 @@ Current alpha:
 
 - Bare `akernel` starts an interactive session.
 - The shell view shows workspace, model roles, commands, task progress, run summaries, costs, and diagnostics.
+- `--ui auto|classic|tui` switches between classic stream output and the full-screen ANSI terminal UI.
+- The TUI keeps a transcript, fixed session sidebar, last-run summary, diagnostics, pending context count, and bottom input hint without adding runtime dependencies.
 
 Next bar:
 
-- Add a richer terminal layout without requiring a GUI.
 - Keep plain output mode for CI and screen readers.
 - Make long command output collapsible while preserving trace links.
+- Add keyboard shortcuts and collapsible sections after the zero-dependency TUI stabilizes.
 
 ## Plugin And Skill Marketplace
 
