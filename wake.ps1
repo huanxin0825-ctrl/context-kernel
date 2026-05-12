@@ -59,6 +59,7 @@ if ($RunSmoke) {
 Write-Host "Useful commands:"
 Write-Host "  akernel models --provider openai"
 Write-Host "  akernel init $Workspace"
+Write-Host "  akernel --workspace $Workspace chat"
 Write-Host "  akernel --workspace $Workspace bench run examples\benchmarks\phase2"
 Write-Host "  akernel --workspace $Workspace bench gate examples\benchmarks\phase2"
 Write-Host "  akernel --workspace $Workspace bench run examples\benchmarks\phase2 --execute --provider openai --model $env:CONTEXT_KERNEL_OPENAI_MODEL"

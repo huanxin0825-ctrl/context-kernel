@@ -616,6 +616,37 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("Step Breakdown", rendered)
             self.assertIn("actions:", rendered)
 
+    def test_chat_runs_agent_loop_and_cost_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            with patch("builtins.input", side_effect=["Continue the runtime work", "/cost", "/exit"]):
+                with patch("sys.stdout", new=io.StringIO()) as stdout:
+                    main(
+                        [
+                            "--workspace",
+                            str(workspace.root),
+                            "chat",
+                            "--provider",
+                            "mock",
+                            "--max-steps",
+                            "1",
+                        ]
+                    )
+
+            output = stdout.getvalue()
+            reports = list(workspace.agent_runs_dir.glob("*.json"))
+            tasks = TaskStore(workspace).list(status="active")
+
+            self.assertEqual(len(reports), 1)
+            self.assertEqual(len(tasks), 1)
+            self.assertIn("Context Kernel chat", output)
+            self.assertIn("agent_run:", output)
+            self.assertIn("Mock agent response", output)
+            self.assertIn("Step Breakdown", output)
+            self.assertIn("bye", output)
+
     def test_agent_loop_can_read_file_then_respond_with_tool_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))

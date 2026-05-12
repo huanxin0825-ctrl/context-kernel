@@ -63,6 +63,8 @@ akernel agent run "Write notes/new.txt with 'hello cli' and run command python -
 akernel agent run "Patch notes/plan.txt replace 'soon' with 'now' and run command pytest" --provider openai --max-steps 4
 akernel agent run "Patch notes/plan.txt replace 'soon' with 'now' and run command python -m unittest discover -s tests" --provider openai --max-steps 3
 akernel agent run "Continue the current task" --provider openai --task <task-id> --max-steps 5
+akernel chat
+akernel chat --task <task-id>
 akernel agent list
 akernel agent show <agent-run-id>
 ```
@@ -77,6 +79,8 @@ For OpenAI-compatible providers, put credentials in project `.env` using `.env.e
 `--resume` injects `task brief` into the context packet. It requires `--task <task-id>` and is the preferred way to continue multi-step work from a checkpoint.
 
 `agent run` is the first bounded loop entrypoint. It creates or resumes a task, generates a plan, calls the provider with task resume context, requires a one-action JSON reply, executes one policy-gated tool when needed, feeds the resulting tool summary back into the task brief, and saves an agent report under `.akernel/agent_runs/`.
+
+`chat` starts an interactive Claude Code-style session. Each normal line is sent through the same bounded `agent run` loop while reusing one task session, so the runtime can keep compact progress state instead of replaying the full conversation. Built-in commands are `/help`, `/task`, `/cost`, and `/exit`.
 
 Current action set:
 
@@ -273,6 +277,7 @@ akernel doctor
 akernel models [--provider mock|openai] [--base-url url]
 akernel plan <request> [--budget n] [--profile lean|balanced|deep] [--task task-id] [--resume] [--json]
 akernel agent run <request> [--provider mock|openai] [--model model-id] [--base-url url] [--budget n] [--profile lean|balanced|deep] [--task task-id] [--max-steps n(default 5)] [--no-remember] [--allow-over-budget] [--expect-json] [--json]
+akernel chat [--provider mock|openai] [--model model-id] [--base-url url] [--budget n] [--profile lean|balanced|deep] [--task task-id] [--title title] [--max-steps n(default 5)] [--no-remember] [--allow-over-budget] [--expect-json]
 akernel agent list
 akernel agent show <agent-run-id>
 akernel agent cost <agent-run-id> [--json]

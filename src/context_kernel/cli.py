@@ -144,6 +144,17 @@ def build_parser() -> argparse.ArgumentParser:
     agent_cost.add_argument("--json", action="store_true")
     agent_cost.set_defaults(func=cmd_agent_cost)
 
+    chat_parser = subparsers.add_parser("chat", help="Start an interactive Claude Code-style task session.")
+    add_provider_args(chat_parser)
+    add_budget_args(chat_parser)
+    chat_parser.add_argument("--task", default=None, help="Continue an existing task session.")
+    chat_parser.add_argument("--title", default="Interactive chat", help="Title for a new task session.")
+    chat_parser.add_argument("--max-steps", type=int, default=5, help="Maximum agent loop steps per user message.")
+    chat_parser.add_argument("--no-remember", action="store_true", help="Do not write explicit task-state memory.")
+    chat_parser.add_argument("--allow-over-budget", action="store_true", help="Execute even when preflight budget verification fails.")
+    chat_parser.add_argument("--expect-json", action="store_true", help="Require provider responses to be valid JSON.")
+    chat_parser.set_defaults(provider="openai", func=cmd_chat)
+
     models_parser = subparsers.add_parser("models", help="List models from a provider.")
     models_parser.add_argument("--provider", choices=["mock", "openai"], default="openai")
     models_parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL override.")
@@ -577,6 +588,79 @@ def cmd_agent_run(args: argparse.Namespace) -> None:
         print_json(report)
         return
 
+    print_agent_report(report)
+
+
+def cmd_chat(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    tasks = TaskStore(workspace)
+    if args.task:
+        ensure_task_attachable(workspace, args.task)
+        task_id = args.task
+    else:
+        task = tasks.start(args.title, goal="Interactive agent chat session")
+        task_id = task["id"]
+
+    last_report: dict[str, Any] | None = None
+    print("Context Kernel chat")
+    print(f"workspace: {workspace.root}")
+    print(f"task: {task_id}")
+    print(f"provider: {args.provider} model={args.model or 'default'}")
+    print("Type a task and press Enter. Commands: /help, /task, /cost, /exit")
+    while True:
+        try:
+            request = input("akernel> ").strip()
+        except EOFError:
+            print("")
+            break
+        except KeyboardInterrupt:
+            print("")
+            print("interrupted")
+            break
+        if not request:
+            continue
+        lowered = request.lower()
+        if lowered in {"/exit", "/quit", "exit", "quit"}:
+            print("bye")
+            break
+        if lowered == "/help":
+            print_chat_help()
+            continue
+        if lowered == "/task":
+            print_json(tasks.get(task_id))
+            continue
+        if lowered == "/cost":
+            if last_report is None:
+                print("no agent run yet")
+            else:
+                print(render_agent_cost_report(build_agent_cost_report(last_report)))
+            continue
+
+        last_report = AgentLoop(workspace).run(
+            request,
+            provider_name=args.provider,
+            budget=args.budget,
+            profile=args.profile,
+            model=args.model,
+            base_url=args.base_url,
+            task_id=task_id,
+            max_steps=args.max_steps,
+            remember=not args.no_remember,
+            allow_over_budget=args.allow_over_budget,
+            expect_json=args.expect_json,
+        )
+        print_agent_report(last_report)
+
+
+def print_chat_help() -> None:
+    print("Commands:")
+    print("  /help   show this help")
+    print("  /task   print the current task session JSON")
+    print("  /cost   print the last agent run cost report")
+    print("  /exit   leave chat")
+
+
+def print_agent_report(report: dict[str, Any]) -> None:
     print(f"agent_run: {report['id']}")
     print(f"task: {report['task_id']}")
     print(f"status: {report['status']}")

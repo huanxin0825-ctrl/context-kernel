@@ -76,6 +76,7 @@ akernel --workspace .sandbox skill register examples\skills\context_budget.json
 akernel --workspace .sandbox memory add --kind preference --text "Prefer CLI-first context budget prototypes." --tags cli
 akernel --workspace .sandbox plan "Plan a CLI context budget prototype"
 akernel --workspace .sandbox run "Summarize the project goal" --provider mock
+akernel --workspace .sandbox chat
 ```
 
 Run the benchmark suite and gate it against the latest matching baseline:
@@ -111,6 +112,7 @@ The base URL should include `/v1`.
 ## CLI Highlights
 
 ```powershell
+akernel chat --workspace .sandbox
 akernel context "Continue this task" --task <task-id> --resume
 akernel compare "Summarize the project goal"
 akernel eval run examples\evals\phase2.json
@@ -121,6 +123,8 @@ akernel bench diff <before-id> <after-id> --fail-on-regression
 akernel agent run "Patch notes/plan.txt and run tests" --provider openai --max-steps 4
 akernel agent cost <agent-run-id>
 ```
+
+Inside `akernel chat`, type a natural-language task and press Enter. Use `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave.
 
 See [docs/03-cli-mvp.md](docs/03-cli-mvp.md) for the full command surface.
 
