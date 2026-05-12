@@ -57,6 +57,8 @@ if ($RunSmoke) {
 }
 
 Write-Host "Useful commands:"
+Write-Host "  akernel"
+Write-Host "  akernel setup"
 Write-Host "  akernel models --provider openai"
 Write-Host "  akernel init $Workspace"
 Write-Host "  akernel --workspace $Workspace chat"

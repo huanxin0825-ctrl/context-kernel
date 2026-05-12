@@ -703,6 +703,11 @@ def project_env_values() -> dict[str, str]:
         path = directory / ".env"
         if path.exists():
             return parse_env_file(path)
+    project_root = os.environ.get("CONTEXT_KERNEL_PROJECT_ROOT")
+    if project_root:
+        path = Path(project_root) / ".env"
+        if path.exists():
+            return parse_env_file(path)
     return {}
 
 

@@ -53,12 +53,13 @@ The guiding rule is simple: every context inclusion should be explainable before
 git clone <repository-url>
 cd context-kernel
 .\setup.cmd
-.\wake.cmd
+akernel setup
+akernel
 ```
 
 `setup.cmd` creates `.venv`, installs the local CLI in editable mode, and prepares project-local `.env` if needed. `wake.cmd` activates the environment, loads `.env`, and prints common commands. The `.cmd` wrappers avoid local PowerShell execution-policy friction.
 
-`setup.cmd` also installs user-level launchers in `%USERPROFILE%\.context-kernel\bin` and adds that directory to the user PATH. After opening a new terminal, `akernel` works from any directory and `akernel-chat` starts the interactive agent session directly.
+`setup.cmd` also installs user-level launchers in `%USERPROFILE%\.context-kernel\bin` and adds that directory to the user PATH. After opening a new terminal, `akernel` works from any directory, starts the interactive agent session by default, and uses that current directory as the workspace location. Environment lookup prefers the current project `.env`, then falls back to the installed Context Kernel project `.env`. `akernel-chat` remains as a compatibility shortcut.
 
 ### Manual Python Install
 
@@ -72,14 +73,19 @@ Python 3.10 or newer is required.
 ## Quick Start
 
 ```powershell
-akernel init .sandbox
+akernel setup
+akernel
+```
+
+Inside the interactive session, type a task and press Enter. Use `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave.
+
+If you want to prepare the benchmark workspace manually:
+
+```powershell
 akernel --workspace .sandbox skill register examples\skills\edit_file.json
 akernel --workspace .sandbox skill register examples\skills\context_budget.json
 akernel --workspace .sandbox memory add --kind preference --text "Prefer CLI-first context budget prototypes." --tags cli
 akernel --workspace .sandbox plan "Plan a CLI context budget prototype"
-akernel --workspace .sandbox run "Summarize the project goal" --provider mock
-akernel --workspace .sandbox chat
-akernel-chat
 ```
 
 Run the benchmark suite and gate it against the latest matching baseline:
@@ -115,8 +121,8 @@ The base URL should include `/v1`.
 ## CLI Highlights
 
 ```powershell
+akernel
 akernel --workspace .sandbox chat
-akernel-chat
 akernel context "Continue this task" --task <task-id> --resume
 akernel compare "Summarize the project goal"
 akernel eval run examples\evals\phase2.json
@@ -128,7 +134,7 @@ akernel agent run "Patch notes/plan.txt and run tests" --provider openai --max-s
 akernel agent cost <agent-run-id>
 ```
 
-Inside `akernel chat`, type a natural-language task and press Enter. Use `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave.
+Inside `akernel`, type a natural-language task and press Enter. Use `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave.
 
 See [docs/03-cli-mvp.md](docs/03-cli-mvp.md) for the full command surface.
 

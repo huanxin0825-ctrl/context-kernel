@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from getpass import getpass
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -35,7 +37,10 @@ from .verifier import verify_trace
 def main(argv: list[str] | None = None) -> None:
     configure_console_output()
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = sys.argv[1:] if argv is None else list(argv)
+    if not raw_argv:
+        raw_argv = ["chat"]
+    args = parser.parse_args(raw_argv)
     try:
         args.func(args)
     except Exception as exc:
@@ -44,12 +49,35 @@ def main(argv: list[str] | None = None) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="akernel", description="Context Kernel CLI")
-    parser.add_argument("--workspace", default=".", help="Workspace root containing .akernel state.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--workspace", default=".sandbox", help="Workspace root containing .akernel state.")
+    parser.set_defaults(
+        func=cmd_chat,
+        provider="openai",
+        model=None,
+        base_url=None,
+        budget=None,
+        profile=DEFAULT_PROFILE,
+        task=None,
+        title="Interactive chat",
+        max_steps=5,
+        no_remember=False,
+        allow_over_budget=False,
+        expect_json=False,
+    )
+    subparsers = parser.add_subparsers(dest="command")
 
     init_parser = subparsers.add_parser("init", help="Initialize a Context Kernel workspace.")
     init_parser.add_argument("path", nargs="?", default=".")
     init_parser.set_defaults(func=cmd_init)
+
+    setup_parser = subparsers.add_parser("setup", help="Configure project-local provider environment.")
+    setup_parser.add_argument("--api-key", default=None, help="OpenAI-compatible API key. If omitted, prompt securely.")
+    setup_parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL. `/v1` is added when missing.")
+    setup_parser.add_argument("--model", default=None, help="Default model id, for example gpt-5.5.")
+    setup_parser.add_argument("--env-file", default=None, help="Environment file path. Defaults to .env in the current project.")
+    setup_parser.add_argument("--force", action="store_true", help="Rewrite an existing env file without keeping old values.")
+    setup_parser.add_argument("--verify", action="store_true", help="List provider models after writing configuration.")
+    setup_parser.set_defaults(func=cmd_setup)
 
     skill_parser = subparsers.add_parser("skill", help="Manage skill contracts.")
     skill_sub = skill_parser.add_subparsers(dest="skill_command", required=True)
@@ -396,10 +424,108 @@ def workspace_from_args(args: argparse.Namespace, *, initialized: bool = True) -
     return workspace
 
 
+def chat_workspace_from_args(args: argparse.Namespace) -> Workspace:
+    workspace = Workspace(Path(args.workspace))
+    if not workspace.state.exists():
+        workspace.init()
+        print(f"initialized workspace: {workspace.state}")
+    return workspace
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     workspace = Workspace(Path(args.path))
     workspace.init()
     print(f"initialized: {workspace.state}")
+
+
+def cmd_setup(args: argparse.Namespace) -> None:
+    env_path = Path(args.env_file) if args.env_file else Path.cwd() / ".env"
+    existing = parse_simple_env(env_path) if env_path.exists() and not args.force else {}
+    interactive = sys.stdin.isatty()
+
+    api_key = args.api_key
+    if api_key is None:
+        current_key = existing.get("CONTEXT_KERNEL_OPENAI_API_KEY", "")
+        if current_key and interactive:
+            typed = getpass("API key [keep existing]: ").strip()
+            api_key = typed or current_key
+        elif interactive:
+            api_key = getpass("API key: ").strip()
+        else:
+            api_key = current_key
+    if not api_key:
+        raise ValueError("Missing API key. Run `akernel setup --api-key <key>` or use interactive setup.")
+
+    base_url = args.base_url
+    if base_url is None:
+        default_base_url = existing.get("CONTEXT_KERNEL_OPENAI_BASE_URL") or "https://clarmy.cloud/v1"
+        base_url = prompt_text("Base URL", default_base_url, interactive=interactive)
+    base_url = normalize_openai_base_url(base_url)
+
+    model = args.model
+    if model is None:
+        default_model = existing.get("CONTEXT_KERNEL_OPENAI_MODEL") or "gpt-5.5"
+        model = prompt_text("Default model", default_model, interactive=interactive)
+
+    write_project_env(env_path, api_key=api_key, base_url=base_url, model=model)
+    print(f"configured: {env_path}")
+    print("api_key: set")
+    print(f"base_url: {base_url}")
+    print(f"model: {model}")
+    if args.verify:
+        previous = {
+            "CONTEXT_KERNEL_OPENAI_API_KEY": os.environ.get("CONTEXT_KERNEL_OPENAI_API_KEY"),
+            "CONTEXT_KERNEL_OPENAI_BASE_URL": os.environ.get("CONTEXT_KERNEL_OPENAI_BASE_URL"),
+            "CONTEXT_KERNEL_OPENAI_MODEL": os.environ.get("CONTEXT_KERNEL_OPENAI_MODEL"),
+        }
+        try:
+            os.environ["CONTEXT_KERNEL_OPENAI_API_KEY"] = api_key
+            os.environ["CONTEXT_KERNEL_OPENAI_BASE_URL"] = base_url
+            os.environ["CONTEXT_KERNEL_OPENAI_MODEL"] = model
+            models = list_provider_models("openai", base_url=base_url)
+        finally:
+            restore_env(previous)
+        print("models:")
+        for item in models[:20]:
+            print(f"- {item}")
+
+
+def parse_simple_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip().lstrip("\ufeff")] = value.strip().strip('"').strip("'")
+    return values
+
+
+def prompt_text(label: str, default: str, *, interactive: bool) -> str:
+    if not interactive:
+        return default
+    value = input(f"{label} [{default}]: ").strip()
+    return value or default
+
+
+def write_project_env(path: Path, *, api_key: str, base_url: str, model: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"CONTEXT_KERNEL_OPENAI_API_KEY={api_key}",
+        f"CONTEXT_KERNEL_OPENAI_BASE_URL={base_url}",
+        f"CONTEXT_KERNEL_OPENAI_MODEL={model}",
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def restore_env(previous: dict[str, str | None]) -> None:
+    for key, value in previous.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 def cmd_skill_register(args: argparse.Namespace) -> None:
@@ -592,7 +718,7 @@ def cmd_agent_run(args: argparse.Namespace) -> None:
 
 
 def cmd_chat(args: argparse.Namespace) -> None:
-    workspace = workspace_from_args(args)
+    workspace = chat_workspace_from_args(args)
     tasks = TaskStore(workspace)
     if args.task:
         ensure_task_attachable(workspace, args.task)
@@ -602,14 +728,10 @@ def cmd_chat(args: argparse.Namespace) -> None:
         task_id = task["id"]
 
     last_report: dict[str, Any] | None = None
-    print("Context Kernel chat")
-    print(f"workspace: {workspace.root}")
-    print(f"task: {task_id}")
-    print(f"provider: {args.provider} model={args.model or 'default'}")
-    print("Type a task and press Enter. Commands: /help, /task, /cost, /exit")
+    print_chat_header(workspace, task_id, args)
     while True:
         try:
-            request = input("akernel> ").strip()
+            request = input("\nakernel> ").strip()
         except EOFError:
             print("")
             break
@@ -629,6 +751,17 @@ def cmd_chat(args: argparse.Namespace) -> None:
         if lowered == "/task":
             print_json(tasks.get(task_id))
             continue
+        if lowered == "/model":
+            print(f"provider: {args.provider}")
+            print(f"model: {args.model or env_value('CONTEXT_KERNEL_OPENAI_MODEL') or 'default'}")
+            print(f"base_url: {args.base_url or env_value('CONTEXT_KERNEL_OPENAI_BASE_URL') or 'default'}")
+            continue
+        if lowered == "/runs":
+            print_recent_agent_runs(workspace, limit=5)
+            continue
+        if lowered == "/clear":
+            print("\n" * 30)
+            continue
         if lowered == "/cost":
             if last_report is None:
                 print("no agent run yet")
@@ -636,6 +769,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
                 print(render_agent_cost_report(build_agent_cost_report(last_report)))
             continue
 
+        print_chat_turn_start(request, args)
         last_report = AgentLoop(workspace).run(
             request,
             provider_name=args.provider,
@@ -649,15 +783,84 @@ def cmd_chat(args: argparse.Namespace) -> None:
             allow_over_budget=args.allow_over_budget,
             expect_json=args.expect_json,
         )
-        print_agent_report(last_report)
+        print_chat_report(last_report)
+
+
+def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespace) -> None:
+    model = args.model or env_value("CONTEXT_KERNEL_OPENAI_MODEL") or "default"
+    base_url = args.base_url or env_value("CONTEXT_KERNEL_OPENAI_BASE_URL") or ""
+    api_key_set = bool(env_value("CONTEXT_KERNEL_OPENAI_API_KEY"))
+    print("")
+    print("Context Kernel Agent")
+    print("====================")
+    print(f"workspace : {workspace.root}")
+    print(f"task      : {task_id}")
+    print(f"provider  : {args.provider}")
+    print(f"model     : {model}")
+    print(f"steps     : max {args.max_steps} per message")
+    if args.provider == "openai" and (not api_key_set or not base_url):
+        print("")
+        print("setup needed: run `akernel setup` before sending OpenAI-backed tasks.")
+    print("")
+    print("Type a task and press Enter.")
+    print("Commands: /help  /model  /task  /runs  /cost  /clear  /exit")
+
+
+def print_chat_turn_start(request: str, args: argparse.Namespace) -> None:
+    preview = request if len(request) <= 90 else request[:87] + "..."
+    print("")
+    print(f"> {preview}")
+    print(f"running agent loop: provider={args.provider} max_steps={args.max_steps}")
+
+
+def print_chat_report(report: dict[str, Any]) -> None:
+    actions = [
+        str((step.get("action") or {}).get("action") or "none")
+        for step in report.get("steps", [])
+    ]
+    print("")
+    print(
+        f"done: status={report['status']} "
+        f"steps={len(report['steps'])}/{report['max_steps']} "
+        f"tokens={report['totals']['total_tokens']}"
+    )
+    if actions:
+        print("actions: " + " -> ".join(actions))
+    print(f"agent_run: {report['id']}")
+    if report.get("state", {}).get("enabled"):
+        print(f"memory: wrote {report['state']['written_count']} record(s)")
+    if report.get("final_response"):
+        print("")
+        print("assistant:")
+        print(report["final_response"])
+    print("")
+    print(f"cost: /cost  | inspect: akernel agent show {report['id']}")
 
 
 def print_chat_help() -> None:
     print("Commands:")
-    print("  /help   show this help")
-    print("  /task   print the current task session JSON")
-    print("  /cost   print the last agent run cost report")
-    print("  /exit   leave chat")
+    print("  /help    show this help")
+    print("  /model   show provider, model, and base URL")
+    print("  /task    print the current task session JSON")
+    print("  /runs    list recent agent runs")
+    print("  /cost    print the last agent run cost report")
+    print("  /clear   add spacing to clear the visible terminal")
+    print("  /exit    leave chat")
+
+
+def print_recent_agent_runs(workspace: Workspace, *, limit: int) -> None:
+    reports = list_agent_reports(workspace)[:limit]
+    if not reports:
+        print("no agent runs")
+        return
+    for report in reports:
+        print(
+            f"{report['id']}\t"
+            f"{report.get('status', '')}\t"
+            f"steps={len(report.get('steps', []))}\t"
+            f"tokens={report.get('totals', {}).get('total_tokens', 0)}\t"
+            f"{report.get('request', '')}"
+        )
 
 
 def print_agent_report(report: dict[str, Any]) -> None:

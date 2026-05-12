@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,7 +17,7 @@ from context_kernel.loop import AgentLoop
 from context_kernel.memory import MemoryStore, is_relevant_memory_match
 from context_kernel.planner import ExecutionPlanner
 from context_kernel.policy import assess_request_policy, check_command_policy, check_file_policy
-from context_kernel.providers import build_messages, extract_text, normalize_openai_base_url, parse_env_file
+from context_kernel.providers import build_messages, env_value, extract_text, normalize_openai_base_url, parse_env_file
 from context_kernel.report_costs import build_benchmark_cost_report, build_eval_cost_report, diff_cost_reports, render_cost_report
 from context_kernel.runner import AgentRunner
 from context_kernel.state_writer import StateWriter, marker_candidates, redact
@@ -641,11 +642,54 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertEqual(len(reports), 1)
             self.assertEqual(len(tasks), 1)
-            self.assertIn("Context Kernel chat", output)
+            self.assertIn("Context Kernel Agent", output)
             self.assertIn("agent_run:", output)
             self.assertIn("Mock agent response", output)
             self.assertIn("Step Breakdown", output)
             self.assertIn("bye", output)
+
+    def test_bare_akernel_starts_chat_and_initializes_default_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = Path.cwd()
+            os.chdir(tmp)
+            try:
+                with patch("builtins.input", side_effect=["/exit"]):
+                    with patch("sys.stdout", new=io.StringIO()) as stdout:
+                        main([])
+            finally:
+                os.chdir(previous)
+
+            output = stdout.getvalue()
+            self.assertTrue((Path(tmp) / ".sandbox" / ".akernel").exists())
+            self.assertIn("initialized workspace:", output)
+            self.assertIn("Context Kernel Agent", output)
+            self.assertIn("bye", output)
+
+    def test_setup_command_writes_project_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = Path.cwd()
+            os.chdir(tmp)
+            try:
+                with patch("sys.stdout", new=io.StringIO()) as stdout:
+                    main(
+                        [
+                            "setup",
+                            "--api-key",
+                            "sk-test123456789012345",
+                            "--base-url",
+                            "https://example.test",
+                            "--model",
+                            "gpt-5.5",
+                        ]
+                    )
+            finally:
+                os.chdir(previous)
+
+            values = parse_env_file(Path(tmp) / ".env")
+            self.assertEqual(values["CONTEXT_KERNEL_OPENAI_API_KEY"], "sk-test123456789012345")
+            self.assertEqual(values["CONTEXT_KERNEL_OPENAI_BASE_URL"], "https://example.test/v1")
+            self.assertEqual(values["CONTEXT_KERNEL_OPENAI_MODEL"], "gpt-5.5")
+            self.assertIn("api_key: set", stdout.getvalue())
 
     def test_agent_loop_can_read_file_then_respond_with_tool_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1067,6 +1111,23 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(parse_env_file(path)["CONTEXT_KERNEL_OPENAI_MODEL"], "gpt-5.5")
             self.assertEqual(normalize_openai_base_url("https://clarmy.cloud"), "https://clarmy.cloud/v1")
             self.assertEqual(normalize_openai_base_url("https://clarmy.cloud/v1"), "https://clarmy.cloud/v1")
+
+    def test_project_root_env_is_fallback_when_running_elsewhere(self) -> None:
+        with tempfile.TemporaryDirectory() as root_tmp, tempfile.TemporaryDirectory() as work_tmp:
+            root = Path(root_tmp)
+            (root / ".env").write_text("CONTEXT_KERNEL_TEST_VALUE=from-project-root\n", encoding="utf-8")
+            previous = Path.cwd()
+            previous_root = os.environ.get("CONTEXT_KERNEL_PROJECT_ROOT")
+            os.chdir(work_tmp)
+            os.environ["CONTEXT_KERNEL_PROJECT_ROOT"] = str(root)
+            try:
+                self.assertEqual(env_value("CONTEXT_KERNEL_TEST_VALUE"), "from-project-root")
+            finally:
+                os.chdir(previous)
+                if previous_root is None:
+                    os.environ.pop("CONTEXT_KERNEL_PROJECT_ROOT", None)
+                else:
+                    os.environ["CONTEXT_KERNEL_PROJECT_ROOT"] = previous_root
 
     def test_eval_runner_can_execute_with_mock_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

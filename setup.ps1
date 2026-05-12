@@ -23,21 +23,19 @@ function Install-GlobalLaunchers {
 
     New-Item -ItemType Directory -Force -Path $LauncherDir | Out-Null
 
-    $akernel = @"
+$akernel = @"
 @echo off
 setlocal
 set "CONTEXT_KERNEL_PROJECT_ROOT=$ProjectRoot"
-cd /d "$ProjectRoot"
 "$PythonPath" -m context_kernel %*
 exit /b %ERRORLEVEL%
 "@
     Set-Content -LiteralPath (Join-Path $LauncherDir "akernel.cmd") -Value $akernel -Encoding ASCII
 
-    $chat = @"
+$chat = @"
 @echo off
 setlocal
 set "CONTEXT_KERNEL_PROJECT_ROOT=$ProjectRoot"
-cd /d "$ProjectRoot"
 if not exist ".sandbox\.akernel" "$PythonPath" -m context_kernel init .sandbox >nul
 "$PythonPath" -m context_kernel --workspace .sandbox chat %*
 exit /b %ERRORLEVEL%
@@ -108,8 +106,10 @@ Write-Host "Setup complete."
 Write-Host "Wake the project with:"
 Write-Host "  .\wake.cmd"
 Write-Host "Global commands:"
+Write-Host "  akernel"
+Write-Host "  akernel setup"
 Write-Host "  akernel --help"
-Write-Host "  akernel-chat"
+Write-Host "  akernel-chat  (compatibility shortcut)"
 Write-Host "Open a new terminal if these commands are not found in the current one."
 Write-Host "If you prefer the raw PowerShell entrypoint:"
 Write-Host "  .\wake.ps1"

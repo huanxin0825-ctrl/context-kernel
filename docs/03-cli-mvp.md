@@ -7,10 +7,11 @@
 ```powershell
 .\setup.cmd
 .\wake.cmd
+akernel setup
 akernel doctor
 ```
 
-`setup.cmd` creates `.venv`, installs the editable CLI, keeps provider credentials in project `.env`, and installs user-level launchers so `akernel` and `akernel-chat` can run from any directory after opening a new terminal. `wake.cmd` activates `.venv`, loads `.env`, and prints common commands.
+`setup.cmd` creates `.venv`, installs the editable CLI, keeps provider credentials in project `.env`, and installs a user-level launcher so `akernel` can run from any directory after opening a new terminal. `akernel setup` writes API key, base URL, and model configuration into project `.env`. `wake.cmd` activates `.venv`, loads `.env`, and prints common commands.
 
 `akernel doctor` also prints the workspace command allowlist resolved from `.akernel/config.json`.
 
@@ -63,6 +64,7 @@ akernel agent run "Write notes/new.txt with 'hello cli' and run command python -
 akernel agent run "Patch notes/plan.txt replace 'soon' with 'now' and run command pytest" --provider openai --max-steps 4
 akernel agent run "Patch notes/plan.txt replace 'soon' with 'now' and run command python -m unittest discover -s tests" --provider openai --max-steps 3
 akernel agent run "Continue the current task" --provider openai --task <task-id> --max-steps 5
+akernel
 akernel chat
 akernel chat --task <task-id>
 akernel agent list
@@ -80,7 +82,7 @@ For OpenAI-compatible providers, put credentials in project `.env` using `.env.e
 
 `agent run` is the first bounded loop entrypoint. It creates or resumes a task, generates a plan, calls the provider with task resume context, requires a one-action JSON reply, executes one policy-gated tool when needed, feeds the resulting tool summary back into the task brief, and saves an agent report under `.akernel/agent_runs/`.
 
-`chat` starts an interactive Claude Code-style session. Each normal line is sent through the same bounded `agent run` loop while reusing one task session, so the runtime can keep compact progress state instead of replaying the full conversation. Built-in commands are `/help`, `/task`, `/cost`, and `/exit`.
+`akernel` without a subcommand starts an interactive Claude Code-style session. Each normal line is sent through the same bounded `agent run` loop while reusing one task session, so the runtime can keep compact progress state instead of replaying the full conversation. Built-in commands are `/help`, `/model`, `/task`, `/runs`, `/cost`, `/clear`, and `/exit`.
 
 Current action set:
 
@@ -275,6 +277,7 @@ akernel memory update <memory-id> [--kind <kind>] [--text <text>] [--tags tag1,t
 akernel memory forget <memory-id>
 akernel doctor
 akernel models [--provider mock|openai] [--base-url url]
+akernel setup [--api-key key] [--base-url url] [--model model-id] [--env-file .env] [--force] [--verify]
 akernel plan <request> [--budget n] [--profile lean|balanced|deep] [--task task-id] [--resume] [--json]
 akernel agent run <request> [--provider mock|openai] [--model model-id] [--base-url url] [--budget n] [--profile lean|balanced|deep] [--task task-id] [--max-steps n(default 5)] [--no-remember] [--allow-over-budget] [--expect-json] [--json]
 akernel chat [--provider mock|openai] [--model model-id] [--base-url url] [--budget n] [--profile lean|balanced|deep] [--task task-id] [--title title] [--max-steps n(default 5)] [--no-remember] [--allow-over-budget] [--expect-json]
