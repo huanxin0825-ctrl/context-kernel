@@ -8,7 +8,7 @@ Do not commit credentials to the repository. Do not paste PyPI or npm tokens int
 
 You need:
 
-- A GitHub account with admin access to `huanxin0825-ctrl/context-kernel`.
+- A GitHub account with admin access to `huanxin0825-ctrl/context-akernel`.
 - A PyPI account with two-factor authentication enabled.
 - An npm account with two-factor authentication enabled.
 - Either an npm organization or user scope that can publish the package name used by `packages/npm/akernel/package.json`.
@@ -30,7 +30,7 @@ Configure a PyPI trusted publisher with these values:
 | --- | --- |
 | PyPI project name | `akernel-runtime` |
 | Owner | `huanxin0825-ctrl` |
-| Repository name | `context-kernel` |
+| Repository name | `context-akernel` |
 | Workflow filename | `release.yml` |
 | Environment name | `pypi` |
 
@@ -63,7 +63,7 @@ Recommended path: use npm Trusted Publishing. It avoids a long-lived npm token a
 | --- | --- |
 | Package | `@context-akernel/akernel` |
 | Owner | `huanxin0825-ctrl` |
-| Repository name | `context-kernel` |
+| Repository name | `context-akernel` |
 | Workflow filename | `release.yml` |
 | Environment name | `npm` |
 

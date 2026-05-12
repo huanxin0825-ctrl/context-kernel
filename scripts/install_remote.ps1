@@ -1,5 +1,5 @@
 param(
-  [string]$Source = "git+https://github.com/huanxin0825-ctrl/context-kernel.git",
+  [string]$Source = "git+https://github.com/huanxin0825-ctrl/context-akernel.git",
   [string]$LauncherDir = "$env:USERPROFILE\.akernel\bin"
 )
 

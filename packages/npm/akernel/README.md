@@ -18,7 +18,7 @@ python -m pip install --user --upgrade akernel-runtime
 
 Useful environment overrides:
 
-- `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0825-ctrl/context-kernel.git` installs from GitHub instead of PyPI.
+- `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0825-ctrl/context-akernel.git` installs from GitHub instead of PyPI.
 - `AKERNEL_SKIP_BOOTSTRAP=1` disables automatic pip installation.
 
 Python 3.10 or newer is required. The Python package remains the source of truth.

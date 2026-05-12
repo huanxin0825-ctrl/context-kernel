@@ -8,6 +8,12 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.3 - 2026-05-12
+
+### Changed
+
+- Renamed repository metadata and install links from `context-kernel` to `context-akernel` to align with the npm scope.
+
 ## 0.1.2 - 2026-05-12
 
 ### Changed

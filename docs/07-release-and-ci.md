@@ -94,7 +94,7 @@ akernel
 Until PyPI publishing is enabled, Windows users can install from GitHub with:
 
 ```powershell
-irm https://raw.githubusercontent.com/huanxin0825-ctrl/context-kernel/main/scripts/install_remote.ps1 | iex
+irm https://raw.githubusercontent.com/huanxin0825-ctrl/context-akernel/main/scripts/install_remote.ps1 | iex
 akernel setup
 akernel
 ```
@@ -107,7 +107,7 @@ akernel setup
 akernel
 ```
 
-Before PyPI publication, set `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0825-ctrl/context-kernel.git` so the npm wrapper bootstraps from GitHub.
+Before PyPI publication, set `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0825-ctrl/context-akernel.git` so the npm wrapper bootstraps from GitHub.
 
 `bench gate` also requires the current benchmark report itself to pass its checks. This prevents a bad first run from becoming the new normal just because the relative diff has no regression.
 The release workflow also uploads benchmark evidence as a workflow artifact so release preparation carries a reproducible token-savings snapshot.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "akernel-runtime"
-version = "0.1.2"
+version = "0.1.3"
 description = "Agent Kernel: a CLI-first context-native agent runtime prototype."
 readme = "README.md"
 license = "Apache-2.0"
@@ -26,10 +26,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/huanxin0825-ctrl/context-kernel"
-Repository = "https://github.com/huanxin0825-ctrl/context-kernel"
-Issues = "https://github.com/huanxin0825-ctrl/context-kernel/issues"
-Changelog = "https://github.com/huanxin0825-ctrl/context-kernel/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/huanxin0825-ctrl/context-akernel"
+Repository = "https://github.com/huanxin0825-ctrl/context-akernel"
+Issues = "https://github.com/huanxin0825-ctrl/context-akernel/issues"
+Changelog = "https://github.com/huanxin0825-ctrl/context-akernel/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = ["build>=1.2", "twine>=5.0"]

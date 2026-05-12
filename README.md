@@ -100,7 +100,7 @@ akernel
 Windows users can also install directly from GitHub:
 
 ```powershell
-irm https://raw.githubusercontent.com/huanxin0825-ctrl/context-kernel/main/scripts/install_remote.ps1 | iex
+irm https://raw.githubusercontent.com/huanxin0825-ctrl/context-akernel/main/scripts/install_remote.ps1 | iex
 akernel setup
 akernel
 ```
@@ -115,7 +115,7 @@ akernel setup
 akernel
 ```
 
-Set `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0825-ctrl/context-kernel.git` to make the npm launcher bootstrap from GitHub instead of PyPI.
+Set `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0825-ctrl/context-akernel.git` to make the npm launcher bootstrap from GitHub instead of PyPI.
 
 ## Quick Start
 
