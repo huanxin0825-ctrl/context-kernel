@@ -85,15 +85,17 @@ akernel --help
 
 Python 3.10 or newer is required.
 
-### Remote Install
+### PyPI Install
 
-After the package is published, users can install from PyPI:
+The Python runtime is published on PyPI as `akernel-runtime`:
 
 ```powershell
 python -m pip install --user akernel-runtime
 akernel setup
 akernel
 ```
+
+### GitHub Remote Install
 
 Windows users can also install directly from GitHub:
 
@@ -103,7 +105,9 @@ akernel setup
 akernel
 ```
 
-The npm launcher provides a Node-style entrypoint and can bootstrap the Python package if it is missing:
+### npm Launcher
+
+The npm launcher is prepared for publication. After `@context-kernel/akernel` is published, it will provide a Node-style entrypoint and bootstrap the Python package if it is missing:
 
 ```powershell
 npm install -g @context-kernel/akernel
@@ -111,7 +115,7 @@ akernel setup
 akernel
 ```
 
-Set `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0825-ctrl/context-kernel.git` to make the npm launcher bootstrap from GitHub before the PyPI package is available.
+Set `AKERNEL_PIP_SOURCE=git+https://github.com/huanxin0825-ctrl/context-kernel.git` to make the npm launcher bootstrap from GitHub instead of PyPI.
 
 ## Quick Start
 
