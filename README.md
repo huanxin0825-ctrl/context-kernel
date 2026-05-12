@@ -6,6 +6,20 @@ Most agent systems treat the prompt as the runtime. Context Kernel treats the pr
 
 The project is currently an alpha CLI release. It is ready for local experimentation, benchmark-driven iteration, and early contributor feedback.
 
+## Naming
+
+`akernel` means **Agent Kernel**. The project name is Context Kernel because the runtime focuses on context assembly, memory, policy, skills, and token budgets; the executable is `akernel` because users invoke the agent-facing kernel directly from the terminal.
+
+The shorter `kernel` command is intentionally avoided because it is too broad and already carries strong meanings in operating systems, Jupyter, and other AI projects. `akernel` keeps the kernel idea while giving the CLI a distinct, searchable identity.
+
+Package and command names map to the same idea:
+
+- GitHub repository: `context-kernel`
+- Python distribution: `akernel-runtime`
+- Python import package: `context_kernel`
+- CLI command: `akernel`
+- npm launcher: `@context-kernel/akernel`
+
 ## Why This Exists
 
 Modern agent workflows often become expensive for reasons that are hard to see:

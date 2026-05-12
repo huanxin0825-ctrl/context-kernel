@@ -1,6 +1,8 @@
 # @context-kernel/akernel
 
-This package is a small npm launcher wrapper for the Python `context-kernel` CLI.
+This package is a small npm launcher wrapper for the Python Context Kernel runtime.
+
+`akernel` means **Agent Kernel**: the command starts the agent-facing runtime that assembles context, memory, skills, policy, and token budgets before model calls.
 
 ```bash
 npm install -g @context-kernel/akernel
