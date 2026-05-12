@@ -686,6 +686,40 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("Step Breakdown", output)
             self.assertIn("bye", output)
 
+    def test_chat_supports_file_command_paste_and_compact_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            (Path(tmp) / "notes").mkdir(parents=True, exist_ok=True)
+            (Path(tmp) / "notes" / "context.txt").write_text("attached context works", encoding="utf-8")
+
+            with patch(
+                "builtins.input",
+                side_effect=[
+                    "@notes/context.txt",
+                    "!python -c \"print(456)\"",
+                    "/compact",
+                    "/paste",
+                    "Use the attached context and command output.",
+                    "/end",
+                    "/exit",
+                ],
+            ):
+                with patch("sys.stdout", new=io.StringIO()) as stdout:
+                    main(["--workspace", str(workspace.root), "chat", "--provider", "mock", "--max-steps", "1"])
+
+            output = stdout.getvalue()
+            reports = list(workspace.agent_runs_dir.glob("*.json"))
+            tool_traces = list(workspace.tool_traces_dir.glob("*.json"))
+
+            self.assertEqual(len(reports), 1)
+            self.assertGreaterEqual(len(tool_traces), 2)
+            self.assertIn("Attached File", output)
+            self.assertIn("Command Complete", output)
+            self.assertIn("Compact Brief", output)
+            self.assertIn("Paste mode", output)
+            self.assertIn("Mock agent response", output)
+
     def test_bare_akernel_starts_chat_and_initializes_default_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             previous = Path.cwd()

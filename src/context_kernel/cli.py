@@ -14,7 +14,7 @@ from .benchmarks import BenchmarkRunner, benchmark_ref
 from .budget import DEFAULT_PROFILE, profile_names
 from .context import ContextBuilder
 from .evals import EvalRunner
-from .loop import AgentLoop
+from .loop import AgentLoop, summarize_tool_result
 from .memory import ALLOWED_KINDS, MemoryStore
 from .planner import ExecutionPlanner
 from .policy import FILE_OPERATIONS, check_command_policy, check_file_policy, summarize_command_policy
@@ -754,6 +754,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
         task_id = task["id"]
 
     last_report: dict[str, Any] | None = None
+    pending_context: list[str] = []
     print_chat_header(workspace, task_id, args)
     while True:
         try:
@@ -773,6 +774,21 @@ def cmd_chat(args: argparse.Namespace) -> None:
             break
         if lowered == "/help":
             print_chat_help()
+            continue
+        if lowered == "/compact":
+            print_task_brief_panel(tasks, task_id)
+            continue
+        if lowered == "/paste":
+            pasted = read_paste_block()
+            if not pasted:
+                chat_notice("Paste", "No pasted task was captured.")
+                continue
+            request = pasted
+        elif request.startswith("@"):
+            attach_chat_file(workspace, tasks, task_id, request[1:].strip(), pending_context)
+            continue
+        elif request.startswith("!"):
+            run_chat_command(workspace, tasks, task_id, request[1:].strip(), pending_context)
             continue
         if lowered == "/status":
             print_status_panel(workspace, task_id, args)
@@ -800,9 +816,11 @@ def cmd_chat(args: argparse.Namespace) -> None:
                 print(render_agent_cost_report(build_agent_cost_report(last_report)))
             continue
 
-        print_chat_turn_start(request, args)
+        request_for_agent = merge_pending_context(request, pending_context)
+        pending_context.clear()
+        print_chat_turn_start(request_for_agent, args)
         last_report = AgentLoop(workspace).run(
-            request,
+            request_for_agent,
             provider_name=args.provider,
             budget=args.budget,
             profile=args.profile,
@@ -850,6 +868,8 @@ def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespa
         "Start",
         [
             ("type", "Describe a task in natural language and press Enter."),
+            ("include", "@path attaches a workspace file; !cmd runs a policy-checked command."),
+            ("compose", "/paste captures a multi-line task; /compact shows the task brief."),
             ("inspect", "/status, /model, /task, /runs, /cost"),
             ("control", "/help, /config, /clear, /exit"),
         ],
@@ -908,6 +928,10 @@ def print_chat_help() -> None:
             ("/status", "show workspace and runtime status"),
             ("/model", "show primary and auxiliary model roles"),
             ("/config", "show setup and environment guidance"),
+            ("/compact", "show the compact task brief used for resume context"),
+            ("/paste", "enter a multi-line task; finish with /end"),
+            ("@path", "attach a workspace file to the next task"),
+            ("!command", "run a policy-checked command and attach its summary"),
             ("/task", "print the current task session JSON"),
             ("/runs", "list recent agent runs"),
             ("/cost", "print the last agent run cost report"),
@@ -935,6 +959,115 @@ def print_recent_agent_runs(workspace: Workspace, *, limit: int) -> None:
             f"tokens={report.get('totals', {}).get('total_tokens', 0):<5}  "
             f"{request}"
         )
+
+
+def attach_chat_file(
+    workspace: Workspace,
+    tasks: TaskStore,
+    task_id: str,
+    path: str,
+    pending_context: list[str],
+) -> None:
+    if not path:
+        chat_notice("Attach File", "Usage: @relative/path.txt")
+        return
+    result = ToolExecutor(workspace).read_file(path)
+    tasks.attach(task_id, "tool", result["id"])
+    summary = summarize_tool_result(result)
+    tasks.step(
+        task_id,
+        f"User attached file {path}: {summary}",
+        kind="chat_file",
+        refs={"tool_traces": [result["id"]]},
+    )
+    if result["ok"] and not result["blocked"]:
+        output = result.get("output", {})
+        content = str(output.get("content", ""))
+        pending_context.append(
+            f"Attached file `{path}` ({output.get('size_chars', len(content))} chars, "
+            f"truncated={bool(output.get('truncated'))}):\n{content}"
+        )
+        chat_notice("Attached File", f"{path} is attached to the next task.")
+    else:
+        chat_notice("Attach Failed", summary)
+
+
+def run_chat_command(
+    workspace: Workspace,
+    tasks: TaskStore,
+    task_id: str,
+    command: str,
+    pending_context: list[str],
+) -> None:
+    if not command:
+        chat_notice("Command", "Usage: !python -c \"print(123)\"")
+        return
+    result = ToolExecutor(workspace).run_command(command)
+    tasks.attach(task_id, "tool", result["id"])
+    summary = summarize_tool_result(result)
+    tasks.step(
+        task_id,
+        f"User ran command `{command}`: {summary}",
+        kind="chat_command",
+        refs={"tool_traces": [result["id"]]},
+    )
+    output = result.get("output", {})
+    pending_context.append(
+        "Command result attached to the next task:\n"
+        f"command: {command}\n"
+        f"ok: {result.get('ok')}\n"
+        f"blocked: {result.get('blocked')}\n"
+        f"summary: {summary}\n"
+        f"stdout: {str(output.get('stdout', ''))[:1200]}\n"
+        f"stderr: {str(output.get('stderr', ''))[:800]}"
+    )
+    title = "Command Complete" if result.get("ok") else "Command Blocked" if result.get("blocked") else "Command Failed"
+    chat_notice(title, summary)
+
+
+def read_paste_block() -> str:
+    print(chat_color("Paste mode. Finish with /end on its own line.", "dim"))
+    lines: list[str] = []
+    while True:
+        try:
+            line = input(chat_color("paste> ", "dim"))
+        except EOFError:
+            break
+        if line.strip().lower() == "/end":
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def merge_pending_context(request: str, pending_context: list[str]) -> str:
+    if not pending_context:
+        return request
+    context = "\n\n".join(pending_context)
+    return (
+        "Use the attached local context below when helpful. "
+        "Do not assume it is complete if the task needs more evidence.\n\n"
+        f"{context}\n\nUser task:\n{request}"
+    )
+
+
+def print_task_brief_panel(tasks: TaskStore, task_id: str) -> None:
+    brief = tasks.brief(task_id)
+    rows = [
+        ("task", brief["task"]["id"]),
+        ("title", brief["task"]["title"]),
+        ("status", brief["task"]["status"]),
+        ("estimated_tokens", str(brief.get("estimated_tokens", 0))),
+        ("recent_steps", str(len(brief.get("recent_steps", [])))),
+        ("run_traces", str(len(brief.get("linked_run_traces", [])))),
+        ("tool_traces", str(len(brief.get("linked_tool_traces", [])))),
+        ("memories", str(len(brief.get("linked_memory", [])))),
+    ]
+    chat_panel("Compact Brief", rows)
+    latest = brief.get("recent_steps", [])[-3:]
+    if latest:
+        print(chat_color("Recent", "cyan"))
+        for step in latest:
+            print(wrap_chat_text(f"{step.get('kind')}: {step.get('note')}", indent="  "))
 
 
 def print_model_panel(args: argparse.Namespace) -> None:
