@@ -77,12 +77,14 @@ class MockProvider:
         request = str(packet.get("request", ""))
         linked_tools = packet.get("task", {}).get("brief", {}).get("linked_tool_traces", [])
         allowed_roots = set(packet.get("runtime", {}).get("command_policy", {}).get("allowed_roots", []))
+        project = packet.get("runtime", {}).get("project")
+        project_commands = project.get("commands", {}) if isinstance(project, dict) else {}
         payload = (
-            self._mock_batch_patch_verify_action(request, linked_tools, allowed_roots)
-            or self._mock_patch_verify_action(request, linked_tools, allowed_roots)
-            or self._mock_write_verify_action(request, linked_tools, allowed_roots)
+            self._mock_batch_patch_verify_action(request, linked_tools, allowed_roots, project_commands)
+            or self._mock_patch_verify_action(request, linked_tools, allowed_roots, project_commands)
+            or self._mock_write_verify_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_read_file_action(request, linked_tools)
-            or self._mock_run_command_action(request, linked_tools, allowed_roots)
+            or self._mock_run_command_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_write_file_action(request, linked_tools)
             or self._mock_batch_patch_action(request, linked_tools)
             or self._mock_patch_file_action(request, linked_tools)
@@ -104,9 +106,10 @@ class MockProvider:
         request: str,
         linked_tools: list[dict[str, Any]],
         allowed_roots: set[str],
+        project_commands: dict[str, str],
     ) -> dict[str, Any] | None:
         edits = extract_batch_patch_requests(request)
-        command = extract_requested_command(request)
+        command = resolve_requested_command(request, project_commands)
         if len(edits) < 2 or not command:
             return None
         prior = find_tool_trace(linked_tools, "batch_patch", str(edits[0]["path"]))
@@ -148,9 +151,10 @@ class MockProvider:
         request: str,
         linked_tools: list[dict[str, Any]],
         allowed_roots: set[str],
+        project_commands: dict[str, str],
     ) -> dict[str, Any] | None:
         patch = extract_patch_request(request)
-        command = extract_requested_command(request)
+        command = resolve_requested_command(request, project_commands)
         if not patch or not command:
             return None
         path = str(patch["path"])
@@ -223,9 +227,10 @@ class MockProvider:
         request: str,
         linked_tools: list[dict[str, Any]],
         allowed_roots: set[str],
+        project_commands: dict[str, str],
     ) -> dict[str, Any] | None:
         write = extract_write_instruction(request)
-        command = extract_requested_command(request)
+        command = resolve_requested_command(request, project_commands)
         if not write or not command:
             return None
         path, text = write
@@ -448,8 +453,9 @@ class MockProvider:
         request: str,
         linked_tools: list[dict[str, Any]],
         allowed_roots: set[str],
+        project_commands: dict[str, str],
     ) -> dict[str, Any] | None:
-        command = extract_requested_command(request)
+        command = resolve_requested_command(request, project_commands)
         if not command:
             return None
         prior = find_command_trace(linked_tools, command)
@@ -873,6 +879,30 @@ def extract_requested_command(request: str) -> str | None:
         command = trim_command_tail(match.group(1).strip())
         if command:
             return command
+    return None
+
+
+def resolve_requested_command(request: str, project_commands: dict[str, str] | None = None) -> str | None:
+    explicit = extract_requested_command(request)
+    if explicit:
+        return explicit
+    return project_profile_command(request, project_commands or {})
+
+
+def project_profile_command(request: str, project_commands: dict[str, str]) -> str | None:
+    if not isinstance(project_commands, dict) or not project_commands:
+        return None
+    lower = request.casefold()
+    preferences = [
+        ("test", ["run tests", "run the tests", "test suite", "tests", "test", "verify", "verification"]),
+        ("lint", ["lint", "style check", "static check"]),
+        ("build", ["build", "compile"]),
+        ("install", ["install dependencies", "install", "setup"]),
+    ]
+    for name, markers in preferences:
+        command = project_commands.get(name)
+        if isinstance(command, str) and command.strip() and any(marker in lower for marker in markers):
+            return command.strip()
     return None
 
 

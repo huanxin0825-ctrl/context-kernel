@@ -202,6 +202,7 @@ Current behavior:
 - Tool actions are executed through the existing policy-gated tool executor.
 - The context packet includes `runtime.command_policy.allowed_roots`, so the model can see the workspace command allowlist before deciding whether to request `run_command`.
 - A saved `.akernel/project.json` profile can also enter the packet as `runtime.project`, giving the model compact project metadata such as language, package manager, key files, safe command roots, and likely test/build commands without loading the full repository.
+- When a user asks to run tests, verify, build, lint, or install without naming an exact command, the agent should prefer the matching `runtime.project.commands` entry over guessing a command.
 - Tool output summaries are attached back to the task brief for the next step.
 - Each provider run writes a normal trace and attaches it to the task.
 - One explicit task-state summary memory is written per agent run and attached back to the task.

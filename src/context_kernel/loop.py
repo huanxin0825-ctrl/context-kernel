@@ -423,6 +423,7 @@ def build_agent_packet(
         "Use respond when enough information is already available.",
         "Respect policy-gated tools; do not ask for destructive operations.",
         "Before choosing run_command, check runtime.command_policy.allowed_roots and only use an allowed command root.",
+        "When the user asks to run tests, verify, build, lint, or install and runtime.project.commands contains the matching command, use that exact project command.",
         "If the user's requested command root is outside runtime.command_policy.allowed_roots, respond with the restriction instead of retrying the blocked command.",
         "Prefer reusing task brief summaries instead of repeating a completed tool action.",
         "If a patch or verification step fails, check any recovery read summaries before deciding the next action.",

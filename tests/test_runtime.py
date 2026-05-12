@@ -134,6 +134,43 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("command_test:", output)
             self.assertIn("config_updated: True", output)
 
+    def test_workspace_read_json_accepts_utf8_bom(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bom.json"
+            path.write_text('{"ok": true}', encoding="utf-8-sig")
+
+            self.assertTrue(Workspace.read_json(path)["ok"])
+
+    def test_agent_uses_project_profile_test_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            Workspace.write_json(
+                workspace.project_file,
+                {
+                    "version": 1,
+                    "summary": "languages=python; commands=test",
+                    "languages": ["python"],
+                    "package_managers": ["python/custom"],
+                    "commands": {"test": "python -c \"print(42)\""},
+                    "command_roots": ["python"],
+                    "key_files": [],
+                },
+            )
+
+            report = AgentLoop(workspace).run(
+                "Run tests and tell me the result.",
+                provider_name="mock",
+                budget=1400,
+                max_steps=2,
+                remember=False,
+            )
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual([step["action"]["action"] for step in report["steps"]], ["run_command", "respond"])
+            self.assertEqual(report["steps"][0]["action"]["command"], 'python -c "print(42)"')
+            self.assertIn("42", report["final_response"])
+
     def test_eval_runner_reports_checks_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))
