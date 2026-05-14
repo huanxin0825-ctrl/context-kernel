@@ -1853,6 +1853,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("status:", text)
         self.assertNotIn("agent_run:", text)
 
+    def test_tui_report_includes_command_failure_reason(self) -> None:
+        report = {
+            "id": "run123",
+            "status": "needs_review",
+            "max_steps": 5,
+            "totals": {"total_tokens": 123},
+            "steps": [{"action": {"action": "run_command"}}],
+            "final_response": None,
+            "diagnostic": {
+                "category": "command_failed",
+                "message": "command=python missing.py; exit_code=2; stderr=No such file",
+                "suggestion": "Fix the command and rerun the task.",
+            },
+        }
+
+        text = format_tui_report(report)
+
+        self.assertIn("Run failed: command_failed", text)
+        self.assertIn("Reason: command=python missing.py; exit_code=2; stderr=No such file", text)
+        self.assertIn("Next: Fix the command and rerun the task.", text)
+
     def test_chat_inline_file_reference_attaches_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

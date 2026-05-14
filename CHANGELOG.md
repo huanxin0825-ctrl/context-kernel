@@ -8,6 +8,13 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.21 - 2026-05-14
+
+### Changed
+
+- Chat failure summaries now show the diagnostic reason before the suggested next action.
+- Failed command diagnostics now include the command string alongside exit code and stdout/stderr summaries.
+
 ## 0.1.20 - 2026-05-14
 
 ### Added

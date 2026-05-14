@@ -2128,8 +2128,13 @@ def format_tui_report(report: dict[str, Any]) -> str:
     diagnostic = report.get("diagnostic")
     if isinstance(diagnostic, dict) and diagnostic:
         category = diagnostic.get("category") or "unknown"
+        message = str(diagnostic.get("message") or "").strip()
         suggestion = diagnostic.get("suggestion") or "Use /runs for details."
-        return f"Run failed: {category}\nNext: {suggestion}"
+        lines = [f"Run failed: {category}"]
+        if message:
+            lines.append(f"Reason: {message}")
+        lines.append(f"Next: {suggestion}")
+        return "\n".join(lines)
 
     status = report.get("status", "finished")
     run_id = report.get("id", "")

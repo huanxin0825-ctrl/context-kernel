@@ -1784,14 +1784,19 @@ def summarize_tool_result(result: dict[str, Any]) -> str:
             f"edits={len(output.get('results', []))}"
         )
     if result["tool"] == "run_command":
+        command = compact(str(output.get("command", "")), limit=160)
         stdout = compact(str(output.get("stdout", "")), limit=180)
         stderr = compact(str(output.get("stderr", "")), limit=120)
         exit_code = output.get("exit_code")
+        prefix = f"command={command}; exit_code={exit_code}" if command else f"exit_code={exit_code}"
         if stdout:
-            return f"exit_code={exit_code}; stdout={stdout}"
+            return f"{prefix}; stdout={stdout}"
         if stderr:
-            return f"exit_code={exit_code}; stderr={stderr}"
-        return f"exit_code={exit_code}"
+            return f"{prefix}; stderr={stderr}"
+        timeout_seconds = output.get("timeout_seconds")
+        if timeout_seconds:
+            return f"{prefix}; timeout_seconds={timeout_seconds}"
+        return prefix
     if result["tool"] == "mcp_call":
         server = output.get("server", "")
         tool = output.get("tool", "")
