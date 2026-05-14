@@ -1352,15 +1352,15 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(report["status"], "responded")
             self.assertEqual(len(report["steps"]), 1)
             self.assertTrue(report["steps"][0]["verifier_ok"])
-            self.assertEqual(report["model_routing"]["mode"], "auto")
-            self.assertEqual(report["steps"][0]["model_role"], "auxiliary")
+            self.assertEqual(report["model_routing"]["mode"], "primary")
+            self.assertEqual(report["steps"][0]["model_role"], "primary")
             self.assertGreater(report["totals"]["total_tokens"], 0)
             self.assertIn("Mock agent response", report["final_response"])
             self.assertTrue((workspace.agent_runs_dir / f"{report['id']}.json").exists())
             self.assertEqual(saved["storage"]["detail_level"], "compact_v1")
             self.assertEqual(saved["storage"]["step_count"], 1)
             self.assertIn("model_routing", saved)
-            self.assertEqual(saved["steps"][0]["model_role"], "auxiliary")
+            self.assertEqual(saved["steps"][0]["model_role"], "primary")
             self.assertEqual(saved["steps"][0]["trace_id"], report["steps"][0]["trace_id"])
             self.assertNotIn("allocated", saved["steps"][0]["plan"]["budget"])
             self.assertEqual(len(task["refs"]["run_traces"]), 1)
@@ -1397,6 +1397,23 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(cost["hotspots"][0]["total_tokens"], max(step["total_tokens"] for step in cost["steps"]))
             self.assertIn("Step Breakdown", rendered)
             self.assertIn("actions:", rendered)
+
+    def test_agent_loop_auto_routing_can_delegate_first_step_to_auxiliary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            report = AgentLoop(workspace).run(
+                "Continue the agent runtime implementation",
+                provider_name="mock",
+                budget=900,
+                max_steps=1,
+                model_routing="auto",
+                remember=False,
+            )
+
+            self.assertEqual(report["model_routing"]["mode"], "auto")
+            self.assertEqual(report["steps"][0]["model_role"], "auxiliary")
 
     def test_agent_loop_aux_review_runs_before_primary_steps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1460,6 +1477,8 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("AKERNEL_OPENAI_AUX_MODEL", output)
             self.assertIn("agent_run:", output)
             self.assertIn("Mock agent response", output)
+            self.assertIn("contacting primary model", output)
+            self.assertIn("route=primary", output)
             self.assertIn("Step Breakdown", output)
             self.assertIn("bye", output)
 

@@ -348,7 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_budget_args(agent_run)
     agent_run.add_argument("--task", default=None, help="Continue an existing task; otherwise create a new one.")
     agent_run.add_argument("--max-steps", type=int, default=5, help="Maximum loop steps to run.")
-    agent_run.add_argument("--model-routing", choices=["auto", "primary", "auxiliary"], default="auto", help="Choose how agent steps select primary vs auxiliary model.")
+    agent_run.add_argument("--model-routing", choices=["auto", "primary", "auxiliary"], default="primary", help="Choose how agent steps select primary vs auxiliary model. Use auto for cost-saving auxiliary first-step routing.")
     agent_run.add_argument("--aux-review", choices=["auto", "off", "always"], default="auto", help="Run auxiliary context review before selected agent steps.")
     agent_run.add_argument("--no-remember", action="store_true", help="Do not write explicit task-state memory.")
     agent_run.add_argument("--allow-over-budget", action="store_true", help="Execute even when preflight budget verification fails.")
@@ -371,7 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--task", default=None, help="Continue an existing task session.")
     chat_parser.add_argument("--title", default="Interactive chat", help="Title for a new task session.")
     chat_parser.add_argument("--max-steps", type=int, default=5, help="Maximum agent loop steps per user message.")
-    chat_parser.add_argument("--model-routing", choices=["auto", "primary", "auxiliary"], default="auto", help="Choose how agent steps select primary vs auxiliary model.")
+    chat_parser.add_argument("--model-routing", choices=["auto", "primary", "auxiliary"], default="primary", help="Choose how agent steps select primary vs auxiliary model. Use auto for cost-saving auxiliary first-step routing.")
     chat_parser.add_argument("--aux-review", choices=["auto", "off", "always"], default="auto", help="Run auxiliary context review before selected agent steps.")
     chat_parser.add_argument("--no-remember", action="store_true", help="Do not write explicit task-state memory.")
     chat_parser.add_argument("--allow-over-budget", action="store_true", help="Execute even when preflight budget verification fails.")
@@ -1220,6 +1220,7 @@ def cmd_agent_run(args: argparse.Namespace) -> None:
         remember=not args.no_remember,
         allow_over_budget=args.allow_over_budget,
         expect_json=args.expect_json,
+        progress_callback=None if args.json else print_agent_progress_event,
     )
     if args.json:
         print_json(report)
@@ -1577,7 +1578,29 @@ def run_chat_agent(workspace: Workspace, task_id: str, args: argparse.Namespace,
         remember=not args.no_remember,
         allow_over_budget=args.allow_over_budget,
         expect_json=args.expect_json,
+        progress_callback=print_agent_progress_event,
     )
+
+
+def print_agent_progress_event(event: dict[str, Any]) -> None:
+    name = event.get("event")
+    step = event.get("step", "?")
+    max_steps = event.get("max_steps", "?")
+    if name == "step_start":
+        print(chat_color(f"status   step {step}/{max_steps}: {event.get('message', 'starting')}", "dim"), flush=True)
+        return
+    if name == "provider_start":
+        role = event.get("model_role") or "primary"
+        model = event.get("model") or "default"
+        reason = event.get("routing_reason") or ""
+        suffix = f" ({reason})" if reason else ""
+        print(chat_color(f"status   step {step}/{max_steps}: contacting {role} model {model}{suffix}", "dim"), flush=True)
+        return
+    if name == "step_end":
+        status = event.get("status") or "done"
+        action = event.get("action") or "none"
+        tokens = event.get("tokens", 0)
+        print(chat_color(f"status   step {step}/{max_steps}: {status}, action={action}, tokens={tokens}", "dim"), flush=True)
 
 
 def format_chat_help_text() -> str:
@@ -1746,11 +1769,11 @@ def render_chat_tui_status(
         summary = f"{run_status} | {tokens} tokens | run {run_id} | /cost"
     elif status == "running":
         attached = f" | ctx {len(pending_context)}" if pending_context else ""
-        summary = f"thinking | {primary_model(args)}{attached}"
+        summary = f"running | primary {primary_model(args)} | route {getattr(args, 'model_routing', 'primary')}{attached}"
     else:
         attached = f" | ctx {len(pending_context)}" if pending_context else ""
-        summary = f"{status} | {primary_model(args)}{attached} | / commands | @ files"
-    print(chat_color(truncate_line(summary, chat_width()), "dim"))
+        summary = f"{status} | primary {primary_model(args)} | route {getattr(args, 'model_routing', 'primary')}{attached} | / commands | @ files"
+    print(chat_color(truncate_line(summary, chat_width()), "dim"), flush=True)
 
 
 def build_chat_tui_screen(
@@ -2066,7 +2089,7 @@ def print_chat_turn_start(request: str, args: argparse.Namespace) -> None:
     print(chat_rule("New Task"))
     print(chat_color(f"you      {preview}", "bold"))
     print(chat_color("agent    building minimal context -> planning -> running bounded loop", "dim"))
-    print(chat_color(f"runtime  provider={args.provider} max_steps={args.max_steps}", "dim"))
+    print(chat_color(f"runtime  provider={args.provider} primary={primary_model(args)} route={args.model_routing} max_steps={args.max_steps}", "dim"), flush=True)
 
 
 def print_chat_report(report: dict[str, Any]) -> None:

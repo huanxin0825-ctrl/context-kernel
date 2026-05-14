@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from .memory import MemoryStore
@@ -26,6 +26,15 @@ MODEL_ROUTING_MODES = {"auto", "primary", "auxiliary"}
 AUX_REVIEW_MODES = {"auto", "off", "always"}
 
 
+def emit_agent_progress(callback: Callable[[dict[str, Any]], None] | None, event: dict[str, Any]) -> None:
+    if callback is None:
+        return
+    try:
+        callback(event)
+    except Exception:
+        return
+
+
 class AgentLoop:
     def __init__(self, workspace: Workspace):
         self.workspace = workspace
@@ -41,7 +50,7 @@ class AgentLoop:
         profile: str = "balanced",
         model: str | None = None,
         aux_model: str | None = None,
-        model_routing: str = "auto",
+        model_routing: str = "primary",
         aux_review: str = "auto",
         base_url: str | None = None,
         task_id: str | None = None,
@@ -49,6 +58,7 @@ class AgentLoop:
         remember: bool = True,
         allow_over_budget: bool = False,
         expect_json: bool = False,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
@@ -79,6 +89,15 @@ class AgentLoop:
         }
 
         for index in range(1, max_steps + 1):
+            emit_agent_progress(
+                progress_callback,
+                {
+                    "event": "step_start",
+                    "step": index,
+                    "max_steps": max_steps,
+                    "message": "building minimal context and selecting model",
+                },
+            )
             step = self._run_step(
                 request,
                 task["id"],
@@ -95,8 +114,22 @@ class AgentLoop:
                 base_url=base_url,
                 allow_over_budget=allow_over_budget,
                 expect_json=expect_json,
+                progress_callback=progress_callback,
             )
             report["steps"].append(step)
+            emit_agent_progress(
+                progress_callback,
+                {
+                    "event": "step_end",
+                    "step": index,
+                    "max_steps": max_steps,
+                    "status": step.get("status"),
+                    "action": (step.get("action") or {}).get("action"),
+                    "model_role": step.get("model_role"),
+                    "model": step.get("model"),
+                    "tokens": step.get("tokens", {}).get("total_tokens", 0),
+                },
+            )
             add_tokens(report["totals"], step.get("tokens", {}))
             add_tokens(report["totals"], step.get("aux_review", {}).get("tokens", {}))
             if step.get("final_response") is not None:
@@ -144,6 +177,7 @@ class AgentLoop:
         base_url: str | None,
         allow_over_budget: bool,
         expect_json: bool,
+        progress_callback: Callable[[dict[str, Any]], None] | None,
     ) -> dict[str, Any]:
         plan = ExecutionPlanner(self.workspace).plan(
             request,
@@ -181,6 +215,17 @@ class AgentLoop:
             profile=profile,
         )
         selected_model = resolve_role_model(provider_name, model, aux_model, selected_role)
+        emit_agent_progress(
+            progress_callback,
+            {
+                "event": "provider_start",
+                "step": index,
+                "max_steps": max_steps,
+                "model_role": selected_role,
+                "model": selected_model,
+                "routing_reason": routing_reason,
+            },
+        )
         review = run_auxiliary_review(
             self.workspace,
             request=request,

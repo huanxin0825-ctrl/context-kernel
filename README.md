@@ -218,6 +218,8 @@ akernel agent cost <agent-run-id>
 
 Inside `akernel`, type a natural-language task and press Enter. Use `/extensions` to inspect MCP servers and registered skills, `/mcp` or `/skills` for focused extension panels, `/mcp refresh <name>` and `/mcp call <server> <tool> --args "{...}"` for MCP operations without leaving chat, `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave.
 
+By default, chat and agent runs route work to the configured primary model. Use `--model-routing auto` only when you intentionally want cost-saving auxiliary first-step routing. While work is running, the CLI prints live step status such as selected model role, model name, action, and token count.
+
 MCP v1 stores local stdio server configuration in `.akernel/mcp.json`. Enabled MCP servers enter the context packet as compact summaries only: server name, transport, command root, and curated tool summaries. `akernel mcp refresh <name>` starts a stdio MCP server, runs `initialize` and `tools/list`, and stores the discovered tool summaries. `akernel mcp call <name> <tool>` manually invokes a discovered MCP tool and records the result as a tool trace. Agent runs can also choose `mcp_call` automatically, but only for enabled servers and discovered tools listed in the current context packet.
 
 When an agent run cannot continue, the CLI prints a compact diagnostic with a category, reason, and suggested next step. Common categories include provider configuration, provider auth/network/protocol errors, context budget blocks, policy blocks, command failures, malformed provider actions, and loop guards.

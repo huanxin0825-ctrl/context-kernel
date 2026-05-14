@@ -8,6 +8,13 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.17 - 2026-05-14
+
+### Changed
+
+- Changed default agent/chat model routing to `primary` so configured primary models handle work unless `--model-routing auto` is explicitly requested.
+- Added live per-step progress events in chat and agent runs, including selected model role, model name, action, status, and token count.
+
 ## 0.1.16 - 2026-05-14
 
 ### Added
