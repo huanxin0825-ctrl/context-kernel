@@ -4,6 +4,7 @@ from typing import Any
 
 from .budget import allocate_budget
 from .memory import MemoryStore
+from .mcp import mcp_context_summary
 from .policy import summarize_command_policy
 from .project import compact_project_profile, load_project_profile
 from .skills import SkillRegistry
@@ -40,6 +41,7 @@ class ContextBuilder:
                 "instructions": runtime_instructions,
                 "budget_policy": "Load the smallest useful context packet. Escalate skill levels only when needed.",
                 "command_policy": summarize_command_policy(self.workspace),
+                "mcp": mcp_context_summary(self.workspace),
                 "project": compact_project_profile(load_project_profile(self.workspace)),
             },
             "task": {
@@ -95,6 +97,7 @@ class ContextBuilder:
                 "instructions": config.get("runtime_instructions", []),
                 "budget_policy": "Naive baseline loads all memory and full skill procedures.",
                 "command_policy": summarize_command_policy(self.workspace),
+                "mcp": mcp_context_summary(self.workspace),
                 "project": compact_project_profile(load_project_profile(self.workspace)),
             },
             "memory": [record.to_dict() for record in self.memory.all()],

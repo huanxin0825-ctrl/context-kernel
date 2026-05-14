@@ -198,6 +198,11 @@ akernel skill market-list
 akernel skill market-list --index examples\marketplace\skills\index.json
 akernel skill market-install multi_file_bugfix
 akernel skill market-install remote_skill --index https://example.com/context-kernel/skills/index.json --trust-remote
+akernel mcp add filesystem --command "python -m mcp_server_filesystem ." --tool "read_file:Read workspace files"
+akernel mcp list
+akernel mcp disable filesystem
+akernel mcp enable filesystem
+akernel mcp remove filesystem
 akernel compare "Summarize the project goal"
 akernel eval run examples\evals\phase2.json
 akernel eval cost <report-id>
@@ -210,6 +215,8 @@ akernel agent cost <agent-run-id>
 ```
 
 Inside `akernel`, type a natural-language task and press Enter. Use `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave.
+
+MCP v1 stores local stdio server configuration in `.akernel/mcp.json`. Enabled MCP servers enter the context packet as compact summaries only: server name, transport, command root, and curated tool summaries. Full tool schemas and live calls are intentionally deferred to an on-demand bridge so MCP does not become another always-loaded token sink.
 
 When an agent run cannot continue, the CLI prints a compact diagnostic with a category, reason, and suggested next step. Common categories include provider configuration, provider auth/network/protocol errors, context budget blocks, policy blocks, command failures, malformed provider actions, and loop guards.
 

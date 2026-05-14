@@ -8,6 +8,14 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.11 - 2026-05-14
+
+### Added
+
+- Added MCP v1 configuration commands for local stdio servers: `mcp add`, `mcp list`, `mcp show`, `mcp enable`, `mcp disable`, and `mcp remove`.
+- Added `.akernel/mcp.json` workspace storage for enabled/disabled MCP servers and curated tool summaries.
+- Added compact MCP summaries to context packets so server availability is visible without loading full tool schemas.
+
 ## 0.1.10 - 2026-05-14
 
 ### Changed

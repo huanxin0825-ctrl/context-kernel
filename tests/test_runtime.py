@@ -25,6 +25,7 @@ from context_kernel.global_memory import pull_global_memories, push_global_memor
 from context_kernel.loop import AgentLoop, parse_agent_action
 from context_kernel.marketplace import install_marketplace_skill, list_marketplace_skills
 from context_kernel.memory import MemoryStore, is_relevant_memory_match
+from context_kernel.mcp import add_mcp_server, list_mcp_servers, mcp_context_summary
 from context_kernel.planner import ExecutionPlanner
 from context_kernel.policy import assess_request_policy, check_command_policy, check_file_policy
 from context_kernel.project import load_project_profile, scan_project
@@ -130,6 +131,69 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("python", packet["runtime"]["project"]["languages"])
             self.assertIn("Always run", packet["runtime"]["project"]["instructions"][0]["content"])
             self.assertIn("python", config["command_policy"]["allowed_roots"])
+
+    def test_mcp_server_config_enters_context_as_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            server = add_mcp_server(
+                workspace,
+                "filesystem",
+                command="python -m mcp_server_filesystem .",
+                tools=["read_file:Read workspace files", "list_dir:List directories"],
+            )
+            packet = ContextBuilder(workspace).build("Read files through MCP if needed", 1200)
+            summary = mcp_context_summary(workspace)
+
+            self.assertTrue(workspace.mcp_file.exists())
+            self.assertEqual(server["name"], "filesystem")
+            self.assertEqual(list_mcp_servers(workspace)[0]["tools"][0]["name"], "read_file")
+            self.assertEqual(summary["enabled_count"], 1)
+            self.assertIn("mcp", packet["runtime"])
+            self.assertEqual(packet["runtime"]["mcp"]["servers"][0]["name"], "filesystem")
+            self.assertEqual(packet["runtime"]["mcp"]["servers"][0]["command_root"], "python")
+
+    def test_mcp_cli_manages_server_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(
+                    [
+                        "--workspace",
+                        str(workspace.root),
+                        "mcp",
+                        "add",
+                        "demo",
+                        "--command",
+                        "python server.py",
+                        "--tool",
+                        "search:Search project data",
+                    ]
+                )
+            self.assertIn("mcp: demo", stdout.getvalue())
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "mcp", "list"])
+            self.assertIn("demo", stdout.getvalue())
+            self.assertIn("tools=1", stdout.getvalue())
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "mcp", "disable", "demo"])
+            self.assertIn("disabled MCP server: demo", stdout.getvalue())
+            self.assertEqual(mcp_context_summary(workspace)["enabled_count"], 0)
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "mcp", "enable", "demo"])
+            self.assertIn("enabled MCP server: demo", stdout.getvalue())
+            self.assertEqual(mcp_context_summary(workspace)["enabled_count"], 1)
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "mcp", "remove", "demo"])
+            self.assertIn("removed MCP server: demo", stdout.getvalue())
+            self.assertEqual(list_mcp_servers(workspace), [])
 
     def test_project_scan_cli_outputs_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

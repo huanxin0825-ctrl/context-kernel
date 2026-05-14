@@ -47,6 +47,7 @@ class Workspace:
         self.memory_file = self.state / "memory.jsonl"
         self.memory_db = self.state / "memory.sqlite3"
         self.config_file = self.state / "config.json"
+        self.mcp_file = self.state / "mcp.json"
         self.project_file = self.state / "project.json"
 
     def init(self) -> None:

@@ -21,6 +21,13 @@ from .evals import EvalRunner
 from .global_memory import pull_global_memories, push_global_memories
 from .loop import AgentLoop, summarize_tool_result
 from .marketplace import install_marketplace_skill, is_remote_reference, list_marketplace_skills
+from .mcp import (
+    add_mcp_server,
+    get_mcp_server,
+    list_mcp_servers,
+    remove_mcp_server,
+    set_mcp_server_enabled,
+)
 from .memory import ALLOWED_KINDS, MemoryStore
 from .planner import ExecutionPlanner
 from .policy import FILE_OPERATIONS, check_command_policy, check_file_policy, summarize_command_policy
@@ -84,6 +91,7 @@ COMMAND_NAMES = {
     "eval",
     "init",
     "memory",
+    "mcp",
     "models",
     "plan",
     "policy",
@@ -215,6 +223,33 @@ def build_parser() -> argparse.ArgumentParser:
     skill_market_install.add_argument("--ignore-compat", action="store_true", help="Install even when marketplace compatibility metadata does not match.")
     skill_market_install.add_argument("--json", action="store_true")
     skill_market_install.set_defaults(func=cmd_skill_market_install)
+
+    mcp_parser = subparsers.add_parser("mcp", help="Manage MCP server configurations.")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", required=True)
+    mcp_add = mcp_sub.add_parser("add", help="Add or update a stdio MCP server.")
+    mcp_add.add_argument("name")
+    mcp_add.add_argument("--command", required=True, help="Command used to launch the stdio MCP server.")
+    mcp_add.add_argument("--cwd", default="", help="Optional working directory for the server command.")
+    mcp_add.add_argument("--tool", action="append", default=[], help="Tool summary as name:description. Repeatable.")
+    mcp_add.add_argument("--disabled", action="store_true", help="Add the server but keep it disabled.")
+    mcp_add.add_argument("--json", action="store_true")
+    mcp_add.set_defaults(func=cmd_mcp_add)
+    mcp_list = mcp_sub.add_parser("list", help="List configured MCP servers.")
+    mcp_list.add_argument("--enabled-only", action="store_true")
+    mcp_list.add_argument("--json", action="store_true")
+    mcp_list.set_defaults(func=cmd_mcp_list)
+    mcp_show = mcp_sub.add_parser("show", help="Show one MCP server configuration.")
+    mcp_show.add_argument("name")
+    mcp_show.set_defaults(func=cmd_mcp_show)
+    mcp_enable = mcp_sub.add_parser("enable", help="Enable an MCP server.")
+    mcp_enable.add_argument("name")
+    mcp_enable.set_defaults(func=cmd_mcp_enable)
+    mcp_disable = mcp_sub.add_parser("disable", help="Disable an MCP server.")
+    mcp_disable.add_argument("name")
+    mcp_disable.set_defaults(func=cmd_mcp_disable)
+    mcp_remove = mcp_sub.add_parser("remove", help="Remove an MCP server.")
+    mcp_remove.add_argument("name")
+    mcp_remove.set_defaults(func=cmd_mcp_remove)
 
     memory_parser = subparsers.add_parser("memory", help="Manage structured memory.")
     memory_sub = memory_parser.add_subparsers(dest="memory_command", required=True)
@@ -833,6 +868,65 @@ def cmd_skill_market_install(args: argparse.Namespace) -> None:
     print(f"version: {result.get('version')}")
     print(f"source: {result.get('source')}")
     print(f"compatibility: {'ok' if result.get('compatibility', {}).get('ok') else 'warning'}")
+
+
+def cmd_mcp_add(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    server = add_mcp_server(
+        workspace,
+        args.name,
+        command=args.command,
+        cwd=args.cwd,
+        tools=args.tool,
+        enabled=not args.disabled,
+    )
+    if args.json:
+        print_json(server)
+        return
+    state = "enabled" if server.get("enabled") else "disabled"
+    print(f"mcp: {server['name']} ({state})")
+    print(f"transport: {server['transport']}")
+    print(f"command: {server['command']}")
+    if server.get("tools"):
+        print(f"tools: {len(server['tools'])}")
+
+
+def cmd_mcp_list(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    servers = list_mcp_servers(workspace, include_disabled=not args.enabled_only)
+    if args.json:
+        print_json({"count": len(servers), "servers": servers})
+        return
+    if not servers:
+        print("no MCP servers configured")
+        return
+    for server in servers:
+        status = "enabled" if server.get("enabled") else "disabled"
+        tools = len(server.get("tools", []))
+        print(f"{server['name']}\t{status}\t{server['transport']}\ttools={tools}\t{server['command']}")
+
+
+def cmd_mcp_show(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    print_json(get_mcp_server(workspace, args.name))
+
+
+def cmd_mcp_enable(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    server = set_mcp_server_enabled(workspace, args.name, True)
+    print(f"enabled MCP server: {server['name']}")
+
+
+def cmd_mcp_disable(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    server = set_mcp_server_enabled(workspace, args.name, False)
+    print(f"disabled MCP server: {server['name']}")
+
+
+def cmd_mcp_remove(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    server = remove_mcp_server(workspace, args.name)
+    print(f"removed MCP server: {server['name']}")
 
 
 def cmd_memory_add(args: argparse.Namespace) -> None:
