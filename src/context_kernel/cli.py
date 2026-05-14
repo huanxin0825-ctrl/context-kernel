@@ -1257,10 +1257,10 @@ def run_chat_loop_tui(
                 break
             except KeyboardInterrupt:
                 transcript.append({"role": "system", "title": "Interrupted", "text": "Keyboard interrupt received."})
-                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="interrupted", state=state, clear=use_alt_screen)
+                render_chat_tui_update(workspace, task_id, args, transcript, last_report, pending_context, status="interrupted", state=state, clear=use_alt_screen)
                 break
             if not request:
-                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready", state=state, clear=use_alt_screen)
+                render_chat_tui_update(workspace, task_id, args, transcript, last_report, pending_context, status="ready", state=state, clear=use_alt_screen)
                 continue
             lowered = request.lower()
             if lowered in {"/exit", "/quit", "exit", "quit"}:
@@ -1283,14 +1283,15 @@ def run_chat_loop_tui(
                 state=state,
             ):
                 last_report = state.get("last_report")
-                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready", state=state, clear=use_alt_screen)
+                render_chat_tui_update(workspace, task_id, args, transcript, last_report, pending_context, status="ready", state=state, clear=use_alt_screen)
                 continue
 
             request_for_agent = merge_pending_context(request, pending_context)
             pending_context.clear()
             state["scroll_offset"] = 0
             transcript.append({"role": "user", "title": "You", "text": request_for_agent})
-            render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="running", state=state, clear=use_alt_screen)
+            render_chat_tui_message({"role": "user", "title": "You", "text": request_for_agent})
+            render_chat_tui_status("running", args, pending_context)
             last_report = AgentLoop(workspace).run(
                 request_for_agent,
                 provider_name=args.provider,
@@ -1308,7 +1309,8 @@ def run_chat_loop_tui(
                 expect_json=args.expect_json,
             )
             transcript.append({"role": "assistant", "title": "Assistant", "text": format_tui_report(last_report)})
-            render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready", state=state, clear=use_alt_screen)
+            render_chat_tui_message({"role": "assistant", "title": "Assistant", "text": format_tui_report(last_report)})
+            render_chat_tui_status("ready", args, pending_context, last_report=last_report)
     finally:
         if use_alt_screen:
             print("\033[?1049l", end="")
@@ -1483,6 +1485,50 @@ def render_chat_tui_screen(
     screen = build_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status=status, state=state)
     prefix = "\033[2J\033[H" if clear else "\n"
     print(prefix + screen + ("\n" if not clear else ""), end="")
+
+
+def render_chat_tui_update(
+    workspace: Workspace,
+    task_id: str,
+    args: argparse.Namespace,
+    transcript: list[dict[str, str]],
+    last_report: dict[str, Any] | None,
+    pending_context: list[str],
+    *,
+    status: str,
+    state: dict[str, Any] | None = None,
+    clear: bool = True,
+) -> None:
+    if clear:
+        render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status=status, state=state, clear=True)
+        return
+    if transcript:
+        render_chat_tui_message(transcript[-1])
+    render_chat_tui_status(status, args, pending_context, last_report=last_report)
+
+
+def render_chat_tui_message(item: dict[str, str]) -> None:
+    width = chat_width()
+    role = item.get("role", "system")
+    title = item.get("title", role)
+    label = tui_role_label(role, title)
+    prefix = "  " if role != "user" else "> "
+    print("")
+    print(chat_color(truncate_line(label, width), "cyan" if role == "system" else "green" if role == "assistant" else "yellow", bold=True))
+    for line in wrap_plain(item.get("text", ""), width=max(20, width - len(prefix))).splitlines():
+        print(truncate_line(prefix + line, width))
+
+
+def render_chat_tui_status(
+    status: str,
+    args: argparse.Namespace,
+    pending_context: list[str],
+    *,
+    last_report: dict[str, Any] | None = None,
+) -> None:
+    tokens = 0 if not last_report else last_report.get("totals", {}).get("total_tokens", 0)
+    summary = f"{status} | provider {args.provider} | primary {primary_model(args)} | attached {len(pending_context)} | tokens {tokens}"
+    print(chat_color(truncate_line(summary, chat_width()), "dim"))
 
 
 def build_chat_tui_screen(

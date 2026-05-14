@@ -1357,6 +1357,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("Assistant", output)
             self.assertIn("Mock agent response", output)
             self.assertIn("bye", output)
+            self.assertEqual(output.count("AKERNEL // READY"), 1)
 
     def test_tui_screen_can_render_older_history_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

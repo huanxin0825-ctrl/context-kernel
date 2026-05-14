@@ -8,6 +8,16 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.8 - 2026-05-14
+
+### Changed
+
+- Changed the default TUI loop to render the full workspace view once, then append only incremental user/status/assistant updates for each turn.
+
+### Fixed
+
+- Prevented normal chat turns from repeatedly printing the full fixed UI layout and filling the terminal scrollback.
+
 ## 0.1.7 - 2026-05-14
 
 ### Added
