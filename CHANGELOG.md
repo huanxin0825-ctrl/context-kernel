@@ -8,6 +8,17 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.20 - 2026-05-14
+
+### Added
+
+- Added runtime materialization for code-block-only agent responses during code-writing tasks, saving source into explicit files or inferred `generated/` paths.
+- Added regression coverage for both explicit filename and generated filename code materialization.
+
+### Changed
+
+- Strengthened the agent action contract so code, script, app, and file creation requests must use write or patch tools instead of replying with source code only.
+
 ## 0.1.19 - 2026-05-14
 
 ### Added

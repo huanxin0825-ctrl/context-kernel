@@ -86,6 +86,7 @@ class AgentLoop:
             "diagnostic": None,
             "state": {"enabled": False, "candidate_count": 0, "written_count": 0, "records": []},
             "totals": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            "materialized_files": [],
         }
 
         for index in range(1, max_steps + 1):
@@ -134,6 +135,8 @@ class AgentLoop:
             add_tokens(report["totals"], step.get("aux_review", {}).get("tokens", {}))
             if step.get("final_response") is not None:
                 report["final_response"] = step["final_response"]
+            if step.get("materialized_files"):
+                report["materialized_files"].extend(step["materialized_files"])
 
             if not step["continue"]:
                 report["status"] = step["status"]
@@ -403,6 +406,17 @@ class AgentLoop:
 
         if action["action"] == "respond":
             response_text = render_agent_response(action)
+            materialized = materialize_code_response_if_needed(self.tools, request, response_text)
+            if materialized:
+                for trace_result in materialized["traces"]:
+                    self.tasks.attach(task_id, "tool", trace_result["id"])
+                self.tasks.step(
+                    task_id,
+                    f"Agent materialized code response into file(s): {', '.join(materialized['paths'])}",
+                    kind="agent_tool",
+                    refs={"run_traces": [trace["id"]], "tool_traces": [item["id"] for item in materialized["traces"]]},
+                )
+                response_text = materialized["message"]
             self.tasks.step(
                 task_id,
                 f"Agent response: {compact(response_text, limit=400)}",
@@ -430,6 +444,7 @@ class AgentLoop:
                 "verifier_ok": verifier_ok,
                 "contract_recovered": contract_recovered,
                 "final_response": response_text,
+                "materialized_files": materialized["paths"] if materialized else [],
             }
 
         tool_result = execute_agent_action(self.tools, action)
@@ -526,6 +541,8 @@ def build_agent_packet(
         "Choose exactly one action.",
         "Use at most one tool action in a step.",
         "Use respond when enough information is already available.",
+        "For requests to write, create, generate, implement, or modify code/scripts/apps/files, do not answer with a code block only; choose write_file, patch_file, or batch_patch so the code is saved in the workspace.",
+        "If the user asks for code but does not provide a filename, infer a safe filename under generated/ and use write_file.",
         "Respect policy-gated tools; do not ask for destructive operations.",
         "Before choosing run_command, check runtime.command_policy.allowed_roots and only use an allowed command root.",
         "When the user asks to run tests, verify, build, lint, or install and runtime.project.commands contains the matching command, use that exact project command.",
@@ -952,6 +969,175 @@ def execute_agent_action(executor: ToolExecutor, action: dict[str, Any]) -> dict
     raise ValueError(f"Unsupported tool action: {action['action']}")
 
 
+def materialize_code_response_if_needed(
+    executor: ToolExecutor,
+    request: str,
+    response_text: str,
+) -> dict[str, Any] | None:
+    if not looks_like_code_artifact_request(request):
+        return None
+    blocks = extract_response_code_blocks(response_text)
+    if not blocks:
+        return None
+    paths = infer_code_block_paths(request, response_text, blocks)
+    traces: list[dict[str, Any]] = []
+    written_paths: list[str] = []
+    for block, path in zip(blocks, paths):
+        trace_result = executor.write_file(path, block["code"])
+        traces.append(trace_result)
+        if trace_result.get("ok"):
+            written_paths.append(str(trace_result.get("output", {}).get("path", path)))
+    if not written_paths:
+        return None
+    path_lines = "\n".join(f"- {path}" for path in written_paths)
+    return {
+        "paths": written_paths,
+        "traces": traces,
+        "message": f"Wrote code to file(s):\n{path_lines}\n\nYou can ask me to modify, run, or verify these files next.",
+    }
+
+
+def looks_like_code_artifact_request(request: str) -> bool:
+    text = request.casefold()
+    terms = [
+        "write code",
+        "create code",
+        "generate code",
+        "implement",
+        "script",
+        "program",
+        "app",
+        "streamlit",
+        "python",
+        "javascript",
+        "typescript",
+        "\u5199\u4ee3\u7801",
+        "\u521b\u5efa",
+        "\u751f\u6210",
+        "\u5b9e\u73b0",
+        "\u5f00\u53d1",
+        "\u811a\u672c",
+        "\u7a0b\u5e8f",
+        "\u7f51\u9875",
+        "\u4ee3\u7801\u6587\u4ef6",
+        "\u5bfc\u51fa",
+        "excel",
+    ]
+    return any(term in text for term in terms)
+
+
+def extract_response_code_blocks(text: str) -> list[dict[str, str]]:
+    blocks: list[dict[str, str]] = []
+    for match in re.finditer(r"(?s)```([A-Za-z0-9_+.-]*)\s*\n(.*?)```", text):
+        language = match.group(1).strip().casefold()
+        code = match.group(2).strip("\n")
+        if not code.strip():
+            continue
+        if language in {"text", "txt", "console", "terminal", "output"}:
+            continue
+        if looks_like_run_instruction_block(language, code):
+            continue
+        blocks.append({"language": language, "code": code})
+    return blocks
+
+
+def looks_like_run_instruction_block(language: str, code: str) -> bool:
+    if language not in {"bash", "sh", "shell", "powershell", "ps1", "cmd", "bat"}:
+        return False
+    lines = [line.strip() for line in code.splitlines() if line.strip()]
+    if len(lines) > 4:
+        return False
+    run_prefixes = (
+        "python ",
+        "python3 ",
+        "pip ",
+        "npm ",
+        "pnpm ",
+        "yarn ",
+        "streamlit ",
+        "pytest",
+        "uv ",
+        "node ",
+    )
+    return all(line.casefold().startswith(run_prefixes) for line in lines)
+
+
+def infer_code_block_paths(request: str, response_text: str, blocks: list[dict[str, str]]) -> list[str]:
+    explicit_paths = extract_code_paths(request + "\n" + response_text)
+    paths: list[str] = []
+    for index, block in enumerate(blocks, start=1):
+        if index <= len(explicit_paths):
+            paths.append(explicit_paths[index - 1])
+            continue
+        extension = extension_for_code_block(block)
+        base = slug_from_text(request) or "generated_code"
+        suffix = "" if len(blocks) == 1 else f"_{index}"
+        paths.append(f"generated/{base}{suffix}{extension}")
+    return dedupe_paths(paths)
+
+
+def extract_code_paths(text: str) -> list[str]:
+    pattern = r"(?<![\w./\\-])([A-Za-z0-9_./\\-]+\.(?:py|js|ts|tsx|jsx|html|css|json|md|sh|ps1|sql|yaml|yml|toml|java|go|rs|cpp|c|cs))"
+    paths: list[str] = []
+    for match in re.finditer(pattern, text):
+        path = match.group(1).replace("\\", "/").strip("./")
+        if path and not path.startswith(".akernel/") and path not in paths:
+            paths.append(path)
+    return paths[:8]
+
+
+def extension_for_code_block(block: dict[str, str]) -> str:
+    language = block.get("language", "")
+    code = block.get("code", "")
+    mapping = {
+        "python": ".py",
+        "py": ".py",
+        "javascript": ".js",
+        "js": ".js",
+        "typescript": ".ts",
+        "ts": ".ts",
+        "tsx": ".tsx",
+        "jsx": ".jsx",
+        "html": ".html",
+        "css": ".css",
+        "json": ".json",
+        "bash": ".sh",
+        "sh": ".sh",
+        "powershell": ".ps1",
+        "sql": ".sql",
+    }
+    if language in mapping:
+        return mapping[language]
+    if re.search(r"(?m)^\s*(import |from .* import |def |class )", code):
+        return ".py"
+    if "streamlit" in code.casefold() or "pandas" in code.casefold():
+        return ".py"
+    return ".txt"
+
+
+def slug_from_text(text: str) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", text.casefold())
+    stop = {"write", "create", "generate", "implement", "code", "script", "file", "with", "and", "the", "a", "an"}
+    selected = [word for word in words if word not in stop][:6]
+    return "_".join(selected)
+
+
+def dedupe_paths(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for path in paths:
+        candidate = path
+        stem = str(Path(path).with_suffix(""))
+        suffix = Path(path).suffix
+        counter = 2
+        while candidate in seen:
+            candidate = f"{stem}_{counter}{suffix}"
+            counter += 1
+        seen.add(candidate)
+        result.append(candidate)
+    return result
+
+
 def attach_trace_outputs(tasks: TaskStore, task_id: str, trace: dict[str, Any]) -> None:
     tasks.attach(task_id, "run", trace["id"])
     for record in trace.get("state", {}).get("records", []):
@@ -1359,6 +1545,7 @@ def compact_saved_agent_report(report: dict[str, Any]) -> dict[str, Any]:
         "diagnostic": compact_saved_diagnostic(report.get("diagnostic")),
         "steps": [compact_saved_step(step) for step in steps],
         "final_response": compact(str(report.get("final_response") or ""), limit=800) or None,
+        "materialized_files": list(report.get("materialized_files", [])),
         "state": compact_saved_state(report.get("state", {})),
         "totals": compact_saved_tokens(report.get("totals", {})),
         "storage": {
@@ -1408,6 +1595,8 @@ def compact_saved_step(step: dict[str, Any]) -> dict[str, Any]:
         ]
     if step.get("final_response"):
         saved["final_response"] = compact(str(step.get("final_response", "")), limit=320)
+    if step.get("materialized_files"):
+        saved["materialized_files"] = list(step.get("materialized_files", []))
     return saved
 
 

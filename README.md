@@ -39,6 +39,7 @@ Context Kernel is an experiment in moving those responsibilities into a runtime 
 - Token budgets: estimate and report context pressure before provider calls.
 - Resumable task planning: keep long work in structured milestones and compact checkpoints instead of replaying chat history.
 - Bounded agent loop: support `read_file`, `write_file`, `patch_file`, `batch_patch`, `run_command`, `mcp_call`, and `respond` actions.
+- Code materialization guard: code-writing tasks are steered into file tools, and code-block-only replies are automatically saved to explicit files or safe `generated/` paths.
 - Policy-gated tools: keep file and command execution behind explicit runtime checks.
 - Traceability: write run traces, tool traces, compact agent reports, and token cost reports.
 - Regression gates: compare evals and benchmarks, including behavior and token cost regressions.

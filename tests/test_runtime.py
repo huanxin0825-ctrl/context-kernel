@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -33,7 +34,7 @@ from context_kernel.mcp import add_mcp_server, list_mcp_servers, mcp_context_sum
 from context_kernel.planner import ExecutionPlanner
 from context_kernel.policy import assess_request_policy, check_command_policy, check_file_policy
 from context_kernel.project import load_project_profile, scan_project
-from context_kernel.providers import OpenAICompatibleProvider, build_messages, env_value, extract_text, normalize_openai_base_url, parse_env_file
+from context_kernel.providers import OpenAICompatibleProvider, ProviderResponse, build_messages, env_value, extract_text, normalize_openai_base_url, parse_env_file
 from context_kernel.report_costs import build_benchmark_cost_report, build_eval_cost_report, diff_cost_reports, render_cost_report
 from context_kernel.runner import AgentRunner
 from context_kernel.state_writer import StateWriter, marker_candidates, redact
@@ -2201,6 +2202,73 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(task["refs"]["memories"]), 1)
             self.assertEqual(report["state"]["written_count"], 1)
             self.assertIn("hello agent", brief["linked_tool_traces"][-1]["output_summary"])
+
+    def test_agent_loop_materializes_code_block_response_to_explicit_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            action = {
+                "action": "respond",
+                "message": "Here is the file:\n```python\nprint('excel export ready')\n```",
+                "reason": "done",
+            }
+
+            class LeakyCodeProvider:
+                name = "leaky-code"
+                model = "test"
+
+                def run(self, packet):
+                    return ProviderResponse(json.dumps(action), input_tokens=10, output_tokens=12)
+
+            with patch("context_kernel.runner.get_provider", return_value=LeakyCodeProvider()):
+                report = AgentLoop(workspace).run(
+                    "Create financial_analyzer.py with Python code and export Excel.",
+                    provider_name="openai",
+                    budget=1800,
+                    max_steps=1,
+                    remember=False,
+                )
+
+            target = Path(tmp) / "financial_analyzer.py"
+            self.assertEqual(report["status"], "responded")
+            self.assertTrue(target.exists())
+            self.assertIn("excel export ready", target.read_text(encoding="utf-8"))
+            self.assertEqual(report["materialized_files"], [str(target)])
+            self.assertIn("Wrote code to file", report["final_response"])
+
+    def test_agent_loop_materializes_code_block_response_to_generated_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            action = {
+                "action": "respond",
+                "message": "Use this implementation:\n```python\nprint(123)\n```",
+                "reason": "done",
+            }
+
+            class LeakyCodeProvider:
+                name = "leaky-code"
+                model = "test"
+
+                def run(self, packet):
+                    return ProviderResponse(json.dumps(action), input_tokens=10, output_tokens=12)
+
+            with patch("context_kernel.runner.get_provider", return_value=LeakyCodeProvider()):
+                report = AgentLoop(workspace).run(
+                    "Create Python code that prints 123.",
+                    provider_name="openai",
+                    budget=1800,
+                    max_steps=1,
+                    remember=False,
+                )
+
+            generated = list((Path(tmp) / "generated").glob("*.py"))
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual(len(generated), 1)
+            self.assertIn("print(123)", generated[0].read_text(encoding="utf-8"))
+            self.assertEqual(report["materialized_files"], [str(generated[0])])
 
     def test_agent_loop_prepares_recovery_context_after_command_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
