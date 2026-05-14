@@ -177,7 +177,55 @@ def refresh_mcp_server_tools(workspace: Workspace, name: str, *, timeout_seconds
     return result
 
 
+def call_mcp_tool(
+    workspace: Workspace,
+    server_name: str,
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    timeout_seconds: float = 10.0,
+    allow_unknown: bool = False,
+) -> dict[str, Any]:
+    server = get_mcp_server(workspace, server_name)
+    if not server.get("enabled", True):
+        raise ValueError(f"MCP server is disabled: {server_name}")
+    known_tools = {tool.get("name") for tool in server.get("tools", []) if isinstance(tool, dict)}
+    if known_tools and tool_name not in known_tools and not allow_unknown:
+        raise ValueError(f"Unknown MCP tool for {server_name}: {tool_name}. Run `akernel mcp refresh {server_name}` first.")
+    result = run_mcp_session(
+        server,
+        [{"method": "tools/call", "params": {"name": tool_name, "arguments": arguments or {}}}],
+        timeout_seconds=timeout_seconds,
+    )[0]
+    return {
+        "server": server_name,
+        "tool": tool_name,
+        "arguments": arguments or {},
+        "result": result,
+    }
+
+
 def discover_mcp_tools(server: dict[str, Any], *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+    initialize, tools_result = run_mcp_session(
+        server,
+        [{"method": "tools/list", "params": {}}],
+        timeout_seconds=timeout_seconds,
+        include_initialize=True,
+    )
+    return {
+        "protocol": initialize.get("protocolVersion"),
+        "server_info": initialize.get("serverInfo", {}),
+        "tools": normalize_discovered_tools(tools_result.get("tools", [])),
+    }
+
+
+def run_mcp_session(
+    server: dict[str, Any],
+    calls: list[dict[str, Any]],
+    *,
+    timeout_seconds: float,
+    include_initialize: bool = False,
+) -> list[dict[str, Any]]:
     command = str(server.get("command", "")).strip()
     if not command:
         raise ValueError("MCP server command is required.")
@@ -208,12 +256,8 @@ def discover_mcp_tools(server: dict[str, Any], *, timeout_seconds: float = 10.0)
             },
         )
         client.notify("notifications/initialized", {})
-        tools_result = client.request("tools/list", {})
-        return {
-            "protocol": initialize.get("protocolVersion"),
-            "server_info": initialize.get("serverInfo", {}),
-            "tools": normalize_discovered_tools(tools_result.get("tools", [])),
-        }
+        results = [client.request(str(call["method"]), call.get("params") or {}) for call in calls]
+        return [initialize, *results] if include_initialize else results
     finally:
         terminate_process(process)
 

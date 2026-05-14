@@ -353,6 +353,24 @@ class ToolExecutor:
         )
         return self._write_trace(result)
 
+    def record_external_tool(
+        self,
+        tool: str,
+        *,
+        subject: str,
+        output: dict[str, Any] | None = None,
+        ok: bool = True,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        policy = {
+            "allowed": True,
+            "status": "allowed",
+            "operation": tool,
+            "subject": subject,
+            "reason": "manual external tool invocation",
+        }
+        return self._write_trace(tool_result(tool, policy, ok=ok, output=output, error=error))
+
     def list_traces(self) -> list[dict[str, Any]]:
         self.workspace.tool_traces_dir.mkdir(parents=True, exist_ok=True)
         items: list[dict[str, Any]] = []

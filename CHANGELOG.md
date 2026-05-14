@@ -8,6 +8,13 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.13 - 2026-05-14
+
+### Added
+
+- Added `akernel mcp call <server> <tool>` for manual stdio MCP tool calls.
+- MCP calls now write auditable `mcp_call` tool traces under `.akernel/tool_traces`.
+
 ## 0.1.12 - 2026-05-14
 
 ### Added

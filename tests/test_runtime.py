@@ -233,6 +233,60 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual([tool["name"] for tool in server["tools"]], ["search", "read"])
             self.assertEqual(packet["runtime"]["mcp"]["servers"][0]["tools"][0]["name"], "search")
 
+    def test_mcp_call_invokes_stdio_tool_and_writes_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server_path = root / "fake_mcp_call_server.py"
+            server_path.write_text(
+                "\n".join(
+                    [
+                        "import json, sys",
+                        "for line in sys.stdin:",
+                        "    msg = json.loads(line)",
+                        "    method = msg.get('method')",
+                        "    if method == 'initialize':",
+                        "        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'protocolVersion':'2024-11-05','serverInfo':{'name':'fake-call'}}}), flush=True)",
+                        "    elif method == 'tools/list':",
+                        "        tools = [{'name':'echo','description':'Echo text'}]",
+                        "        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'tools':tools}}), flush=True)",
+                        "    elif method == 'tools/call':",
+                        "        text = msg.get('params', {}).get('arguments', {}).get('text', '')",
+                        "        result = {'content':[{'type':'text','text':'echo:' + text}]}",
+                        "        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':result}), flush=True)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            workspace = Workspace(root)
+            workspace.init()
+            add_mcp_server(workspace, "fake", command=f'"{sys.executable}" "{server_path}"')
+            with patch("sys.stdout", new=io.StringIO()):
+                main(["--workspace", str(workspace.root), "mcp", "refresh", "fake"])
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(
+                    [
+                        "--workspace",
+                        str(workspace.root),
+                        "mcp",
+                        "call",
+                        "fake",
+                        "echo",
+                        "--args",
+                        '{"text":"hello"}',
+                    ]
+                )
+
+            output = stdout.getvalue()
+            traces = ToolExecutor(workspace).list_traces()
+            trace = ToolExecutor(workspace).get_trace(traces[0]["id"])
+
+            self.assertIn("mcp call: fake.echo", output)
+            self.assertIn("echo:hello", output)
+            self.assertEqual(trace["tool"], "mcp_call")
+            self.assertEqual(trace["policy"]["subject"], "fake.echo")
+            self.assertEqual(trace["output"]["result"]["content"][0]["text"], "echo:hello")
+
     def test_project_scan_cli_outputs_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

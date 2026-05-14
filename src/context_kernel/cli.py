@@ -23,6 +23,7 @@ from .loop import AgentLoop, summarize_tool_result
 from .marketplace import install_marketplace_skill, is_remote_reference, list_marketplace_skills
 from .mcp import (
     add_mcp_server,
+    call_mcp_tool,
     get_mcp_server,
     list_mcp_servers,
     refresh_mcp_server_tools,
@@ -247,6 +248,14 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_refresh.add_argument("--timeout", type=float, default=10.0, help="Discovery timeout in seconds.")
     mcp_refresh.add_argument("--json", action="store_true")
     mcp_refresh.set_defaults(func=cmd_mcp_refresh)
+    mcp_call = mcp_sub.add_parser("call", help="Call a discovered MCP tool manually and write a tool trace.")
+    mcp_call.add_argument("name", help="MCP server name.")
+    mcp_call.add_argument("tool", help="Tool name to call.")
+    mcp_call.add_argument("--args", default="{}", help="Tool arguments as a JSON object.")
+    mcp_call.add_argument("--timeout", type=float, default=10.0, help="Call timeout in seconds.")
+    mcp_call.add_argument("--allow-unknown", action="store_true", help="Allow calling a tool not present in the discovered summary.")
+    mcp_call.add_argument("--json", action="store_true")
+    mcp_call.set_defaults(func=cmd_mcp_call)
     mcp_enable = mcp_sub.add_parser("enable", help="Enable an MCP server.")
     mcp_enable.add_argument("name")
     mcp_enable.set_defaults(func=cmd_mcp_enable)
@@ -931,6 +940,31 @@ def cmd_mcp_refresh(args: argparse.Namespace) -> None:
         print(f"server: {server_info.get('name', '')} {server_info.get('version', '')}".strip())
     for tool in server.get("tools", []):
         print(f"  {tool['name']}\t{tool.get('description', '')}")
+
+
+def cmd_mcp_call(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    arguments = parse_json_object(args.args, label="MCP tool arguments")
+    call = call_mcp_tool(
+        workspace,
+        args.name,
+        args.tool,
+        arguments,
+        timeout_seconds=args.timeout,
+        allow_unknown=args.allow_unknown,
+    )
+    trace = ToolExecutor(workspace).record_external_tool(
+        "mcp_call",
+        subject=f"{args.name}.{args.tool}",
+        output=call,
+        ok=True,
+    )
+    if args.json:
+        print_json(trace)
+        return
+    print(f"mcp call: {args.name}.{args.tool}")
+    print(f"trace: {trace['id']}")
+    print_mcp_call_result(call["result"])
 
 
 def cmd_mcp_enable(args: argparse.Namespace) -> None:
@@ -2847,6 +2881,30 @@ def load_batch_patch_specs(path: Path) -> list[dict[str, object]]:
     if not all(isinstance(edit, dict) for edit in edits):
         raise ValueError("batch-patch edits must be JSON objects.")
     return edits
+
+
+def parse_json_object(text: str, *, label: str) -> dict[str, Any]:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} must be valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{label} must be a JSON object.")
+    return data
+
+
+def print_mcp_call_result(result: dict[str, Any]) -> None:
+    content = result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text":
+                print(str(item.get("text", "")))
+            else:
+                print(json.dumps(item, ensure_ascii=False))
+        return
+    print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
 
 
 def cmd_tool_delete(args: argparse.Namespace) -> None:
