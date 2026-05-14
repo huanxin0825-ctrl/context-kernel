@@ -8,6 +8,17 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.19 - 2026-05-14
+
+### Added
+
+- Added a live spinner while chat/agent work is running so provider calls no longer look frozen.
+- Added one retry for transient OpenAI-compatible provider network failures.
+
+### Changed
+
+- Provider network diagnostics now include request URL, timeout, and the underlying network error.
+
 ## 0.1.18 - 2026-05-14
 
 ### Added

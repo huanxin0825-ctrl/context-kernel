@@ -222,6 +222,8 @@ Skill workflows are also available inside chat: `/skills recommend <task>` ranks
 
 By default, chat and agent runs route work to the configured primary model. Use `--model-routing auto` only when you intentionally want cost-saving auxiliary first-step routing. While work is running, the CLI prints live step status such as selected model role, model name, action, and token count.
 
+Interactive runs show a live spinner while waiting for provider responses. Set `AKERNEL_NO_SPINNER=1` to disable it, or `AKERNEL_SPINNER=1` to force it in non-interactive terminals.
+
 When no explicit `--budget` is provided, chat and agent runs can automatically expand the per-turn context budget if the compact task state grows beyond the conservative default. Explicit budgets remain hard limits.
 
 MCP v1 stores local stdio server configuration in `.akernel/mcp.json`. Enabled MCP servers enter the context packet as compact summaries only: server name, transport, command root, and curated tool summaries. `akernel mcp refresh <name>` starts a stdio MCP server, runs `initialize` and `tools/list`, and stores the discovered tool summaries. `akernel mcp call <name> <tool>` manually invokes a discovered MCP tool and records the result as a tool trace. Agent runs can also choose `mcp_call` automatically, but only for enabled servers and discovered tools listed in the current context packet.

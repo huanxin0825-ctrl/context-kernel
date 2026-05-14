@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -808,19 +809,28 @@ class OpenAICompatibleProvider:
         return self._open_json(request)
 
     def _open_json(self, request: urllib.request.Request) -> dict[str, Any]:
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                body = response.read().decode("utf-8")
-                try:
-                    return json.loads(body)
-                except json.JSONDecodeError as exc:
-                    preview = body[:500].replace("\n", " ")
-                    raise RuntimeError(f"Provider returned invalid JSON: {preview}") from exc
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Provider HTTP {exc.code}: {body}") from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise RuntimeError(f"Provider network error: {exc}") from exc
+        last_error: urllib.error.URLError | TimeoutError | None = None
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                    body = response.read().decode("utf-8")
+                    try:
+                        return json.loads(body)
+                    except json.JSONDecodeError as exc:
+                        preview = body[:500].replace("\n", " ")
+                        raise RuntimeError(f"Provider returned invalid JSON: {preview}") from exc
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"Provider HTTP {exc.code}: {body}") from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                last_error = exc
+                if attempt == 0:
+                    time.sleep(0.8)
+                    continue
+        url = getattr(request, "full_url", self.base_url)
+        raise RuntimeError(
+            f"Provider network error after retry: url={url} timeout={self.timeout_seconds}s error={last_error}"
+        ) from last_error
 
 
 def build_messages(packet: dict[str, Any]) -> list[dict[str, str]]:

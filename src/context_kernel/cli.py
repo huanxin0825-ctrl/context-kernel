@@ -11,6 +11,8 @@ import re
 import shutil
 import shlex
 import sys
+import threading
+import time
 import unicodedata
 from typing import Any
 
@@ -1563,23 +1565,110 @@ def capture_chat_output(func: Any) -> str:
 
 
 def run_chat_agent(workspace: Workspace, task_id: str, args: argparse.Namespace, request: str) -> dict[str, Any]:
-    return AgentLoop(workspace).run(
-        request,
-        provider_name=args.provider,
-        budget=args.budget,
-        profile=args.profile,
-        model=args.model,
-        aux_model=args.aux_model,
-        model_routing=args.model_routing,
-        aux_review=args.aux_review,
-        base_url=args.base_url,
-        task_id=task_id,
-        max_steps=args.max_steps,
-        remember=not args.no_remember,
-        allow_over_budget=args.allow_over_budget,
-        expect_json=args.expect_json,
-        progress_callback=print_agent_progress_event,
-    )
+    def run_with_progress(progress_callback: Any) -> dict[str, Any]:
+        return AgentLoop(workspace).run(
+            request,
+            provider_name=args.provider,
+            budget=args.budget,
+            profile=args.profile,
+            model=args.model,
+            aux_model=args.aux_model,
+            model_routing=args.model_routing,
+            aux_review=args.aux_review,
+            base_url=args.base_url,
+            task_id=task_id,
+            max_steps=args.max_steps,
+            remember=not args.no_remember,
+            allow_over_budget=args.allow_over_budget,
+            expect_json=args.expect_json,
+            progress_callback=progress_callback,
+        )
+    if should_use_chat_spinner():
+        return run_agent_with_spinner(run_with_progress, args)
+    return run_with_progress(print_agent_progress_event)
+
+
+def should_use_chat_spinner() -> bool:
+    if os.environ.get("AKERNEL_NO_SPINNER"):
+        return False
+    if os.environ.get("AKERNEL_SPINNER", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    return bool(sys.stdout.isatty())
+
+
+def run_agent_with_spinner(run_func: Any, args: argparse.Namespace) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "message": f"starting | primary {primary_model(args)} | route {getattr(args, 'model_routing', 'primary')}",
+        "done": False,
+        "result": None,
+        "error": None,
+    }
+    lock = threading.Lock()
+
+    def progress(event: dict[str, Any]) -> None:
+        with lock:
+            state["message"] = spinner_message_from_event(event, args)
+
+    def worker() -> None:
+        try:
+            result = run_func(progress)
+        except BaseException as exc:
+            with lock:
+                state["error"] = exc
+                state["done"] = True
+            return
+        with lock:
+            state["result"] = result
+            state["done"] = True
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    frames = "|/-\\"
+    index = 0
+    last_line_width = 0
+    while True:
+        with lock:
+            done = bool(state["done"])
+            message = str(state["message"])
+        if done:
+            break
+        line = truncate_line(f"{frames[index % len(frames)]} {message}", chat_width())
+        padding = " " * max(0, last_line_width - display_width(line))
+        print("\r" + chat_color(line, "dim") + padding, end="", flush=True)
+        last_line_width = display_width(line)
+        index += 1
+        time.sleep(0.12)
+    thread.join()
+    print("\r" + " " * max(0, last_line_width) + "\r", end="", flush=True)
+    with lock:
+        error = state["error"]
+        result = state["result"]
+    if error is not None:
+        raise error
+    return result
+
+
+def spinner_message_from_event(event: dict[str, Any], args: argparse.Namespace) -> str:
+    name = event.get("event")
+    step = event.get("step", "?")
+    max_steps = event.get("max_steps", "?")
+    if name == "step_start":
+        return f"step {step}/{max_steps}: building context"
+    if name == "budget_expand":
+        return (
+            f"step {step}/{max_steps}: expanding budget "
+            f"{event.get('old_budget')}->{event.get('new_budget')} tokens"
+        )
+    if name == "provider_start":
+        role = event.get("model_role") or "primary"
+        model = event.get("model") or primary_model(args)
+        return f"step {step}/{max_steps}: waiting for {role} model {model}"
+    if name == "step_end":
+        return (
+            f"step {step}/{max_steps}: {event.get('status', 'done')} "
+            f"action={event.get('action') or 'none'} tokens={event.get('tokens', 0)}"
+        )
+    return f"running | primary {primary_model(args)} | route {getattr(args, 'model_routing', 'primary')}"
 
 
 def print_agent_progress_event(event: dict[str, Any]) -> None:

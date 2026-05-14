@@ -4,6 +4,8 @@ import io
 import os
 import sys
 import tempfile
+import time
+import urllib.error
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +21,7 @@ from context_kernel.cli import (
     load_batch_patch_specs,
     main,
     print_agent_report,
+    run_agent_with_spinner,
 )
 from context_kernel.context import ContextBuilder
 from context_kernel.evals import EvalRunner
@@ -30,7 +33,7 @@ from context_kernel.mcp import add_mcp_server, list_mcp_servers, mcp_context_sum
 from context_kernel.planner import ExecutionPlanner
 from context_kernel.policy import assess_request_policy, check_command_policy, check_file_policy
 from context_kernel.project import load_project_profile, scan_project
-from context_kernel.providers import build_messages, env_value, extract_text, normalize_openai_base_url, parse_env_file
+from context_kernel.providers import OpenAICompatibleProvider, build_messages, env_value, extract_text, normalize_openai_base_url, parse_env_file
 from context_kernel.report_costs import build_benchmark_cost_report, build_eval_cost_report, diff_cost_reports, render_cost_report
 from context_kernel.runner import AgentRunner
 from context_kernel.state_writer import StateWriter, marker_candidates, redact
@@ -1523,6 +1526,31 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("Step Breakdown", output)
             self.assertIn("bye", output)
 
+    def test_chat_spinner_renders_until_background_run_finishes(self) -> None:
+        args = type(
+            "Args",
+            (),
+            {
+                "model": "gpt-5.5",
+                "model_routing": "primary",
+            },
+        )()
+
+        def run_func(progress: object) -> dict[str, object]:
+            progress({"event": "provider_start", "step": 1, "max_steps": 5, "model_role": "primary", "model": "gpt-5.5"})
+            time.sleep(0.28)
+            progress({"event": "step_end", "step": 1, "max_steps": 5, "status": "responded", "action": "respond", "tokens": 42})
+            return {"ok": True}
+
+        with patch("sys.stdout", new=io.StringIO()) as stdout:
+            result = run_agent_with_spinner(run_func, args)
+
+        output = stdout.getvalue()
+
+        self.assertEqual(result, {"ok": True})
+        self.assertIn("waiting for primary model gpt-5.5", output)
+        self.assertIn("|", output)
+
     def test_chat_supports_file_command_paste_and_compact_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))
@@ -2400,6 +2428,38 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(messages[0]["role"], "system")
         self.assertIn("Context packet", messages[1]["content"])
         self.assertEqual(extract_text(response), "hello")
+
+    def test_openai_provider_retries_transient_network_error(self) -> None:
+        provider = OpenAICompatibleProvider(
+            model="gpt-test",
+            base_url="https://example.test/v1",
+            api_key="sk-test123456789",
+            timeout_seconds=1,
+        )
+        calls = {"count": 0}
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}'
+
+        def fake_urlopen(_request: object, timeout: int = 0) -> FakeResponse:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise urllib.error.URLError("temporary disconnect")
+            self.assertEqual(timeout, 1)
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            response = provider.run({"request": "hello"})
+
+        self.assertEqual(response.text, "ok")
+        self.assertEqual(calls["count"], 2)
 
     def test_project_env_parser_and_base_url_normalization(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
