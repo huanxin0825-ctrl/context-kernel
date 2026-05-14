@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -194,6 +195,43 @@ class RuntimeTests(unittest.TestCase):
                 main(["--workspace", str(workspace.root), "mcp", "remove", "demo"])
             self.assertIn("removed MCP server: demo", stdout.getvalue())
             self.assertEqual(list_mcp_servers(workspace), [])
+
+    def test_mcp_refresh_discovers_stdio_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server_path = root / "fake_mcp_server.py"
+            server_path.write_text(
+                "\n".join(
+                    [
+                        "import json, sys",
+                        "for line in sys.stdin:",
+                        "    msg = json.loads(line)",
+                        "    method = msg.get('method')",
+                        "    if method == 'initialize':",
+                        "        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'protocolVersion':'2024-11-05','serverInfo':{'name':'fake','version':'1.0'}}}), flush=True)",
+                        "    elif method == 'tools/list':",
+                        "        tools = [{'name':'search','description':'Search local test data'}, {'name':'read','description':'Read local test data'}]",
+                        "        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'tools':tools}}), flush=True)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            workspace = Workspace(root)
+            workspace.init()
+            command = f'"{sys.executable}" "{server_path}"'
+            add_mcp_server(workspace, "fake", command=command)
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "mcp", "refresh", "fake", "--timeout", "5"])
+
+            output = stdout.getvalue()
+            server = list_mcp_servers(workspace)[0]
+            packet = ContextBuilder(workspace).build("Use MCP search if needed", 1200)
+
+            self.assertIn("refreshed MCP server: fake", output)
+            self.assertIn("search", output)
+            self.assertEqual([tool["name"] for tool in server["tools"]], ["search", "read"])
+            self.assertEqual(packet["runtime"]["mcp"]["servers"][0]["tools"][0]["name"], "search")
 
     def test_project_scan_cli_outputs_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

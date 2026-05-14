@@ -25,6 +25,7 @@ from .mcp import (
     add_mcp_server,
     get_mcp_server,
     list_mcp_servers,
+    refresh_mcp_server_tools,
     remove_mcp_server,
     set_mcp_server_enabled,
 )
@@ -241,6 +242,11 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_show = mcp_sub.add_parser("show", help="Show one MCP server configuration.")
     mcp_show.add_argument("name")
     mcp_show.set_defaults(func=cmd_mcp_show)
+    mcp_refresh = mcp_sub.add_parser("refresh", help="Start a stdio MCP server and refresh tools/list summaries.")
+    mcp_refresh.add_argument("name")
+    mcp_refresh.add_argument("--timeout", type=float, default=10.0, help="Discovery timeout in seconds.")
+    mcp_refresh.add_argument("--json", action="store_true")
+    mcp_refresh.set_defaults(func=cmd_mcp_refresh)
     mcp_enable = mcp_sub.add_parser("enable", help="Enable an MCP server.")
     mcp_enable.add_argument("name")
     mcp_enable.set_defaults(func=cmd_mcp_enable)
@@ -909,6 +915,22 @@ def cmd_mcp_list(args: argparse.Namespace) -> None:
 def cmd_mcp_show(args: argparse.Namespace) -> None:
     workspace = workspace_from_args(args)
     print_json(get_mcp_server(workspace, args.name))
+
+
+def cmd_mcp_refresh(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    server = refresh_mcp_server_tools(workspace, args.name, timeout_seconds=args.timeout)
+    if args.json:
+        print_json(server)
+        return
+    discovery = server.get("discovery", {})
+    print(f"refreshed MCP server: {server['name']}")
+    print(f"tools: {discovery.get('tool_count', len(server.get('tools', [])))}")
+    server_info = discovery.get("server_info") or {}
+    if server_info:
+        print(f"server: {server_info.get('name', '')} {server_info.get('version', '')}".strip())
+    for tool in server.get("tools", []):
+        print(f"  {tool['name']}\t{tool.get('description', '')}")
 
 
 def cmd_mcp_enable(args: argparse.Namespace) -> None:

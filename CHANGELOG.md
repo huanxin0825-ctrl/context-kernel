@@ -8,6 +8,13 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.12 - 2026-05-14
+
+### Added
+
+- Added `akernel mcp refresh <name>` to start a stdio MCP server, run `initialize` and `tools/list`, and save discovered tool summaries.
+- Added a lightweight stdio JSON-RPC bridge for MCP tool discovery with timeout handling and process cleanup.
+
 ## 0.1.11 - 2026-05-14
 
 ### Added

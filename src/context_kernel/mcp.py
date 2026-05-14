@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from pathlib import Path
+import queue
 import re
 import shlex
+import subprocess
+import threading
 from typing import Any
 
 from .models import utc_now
@@ -150,6 +155,179 @@ def set_mcp_server_enabled(workspace: Workspace, name: str, enabled: bool) -> di
     config["servers"][name] = normalize_mcp_server(name, server)
     save_mcp_config(workspace, config)
     return config["servers"][name]
+
+
+def refresh_mcp_server_tools(workspace: Workspace, name: str, *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+    server = get_mcp_server(workspace, name)
+    if not server.get("enabled", True):
+        raise ValueError(f"MCP server is disabled: {name}")
+    discovered = discover_mcp_tools(server, timeout_seconds=timeout_seconds)
+    config = load_mcp_config(workspace)
+    updated = dict(config["servers"][name])
+    updated["tools"] = discovered["tools"]
+    updated["updated_at"] = utc_now()
+    config["servers"][name] = normalize_mcp_server(name, updated)
+    save_mcp_config(workspace, config)
+    result = dict(config["servers"][name])
+    result["discovery"] = {
+        "protocol": discovered.get("protocol"),
+        "server_info": discovered.get("server_info", {}),
+        "tool_count": len(result["tools"]),
+    }
+    return result
+
+
+def discover_mcp_tools(server: dict[str, Any], *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+    command = str(server.get("command", "")).strip()
+    if not command:
+        raise ValueError("MCP server command is required.")
+    cwd = str(server.get("cwd", "")).strip() or None
+    if cwd:
+        cwd = str(Path(cwd).resolve())
+    process = subprocess.Popen(
+        split_command(command),
+        cwd=cwd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    stderr_lines: list[str] = []
+    stderr_thread = threading.Thread(target=_collect_stderr, args=(process, stderr_lines), daemon=True)
+    stderr_thread.start()
+    client = JsonRpcLineClient(process, timeout_seconds=timeout_seconds)
+    try:
+        initialize = client.request(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "akernel", "version": "0.1"},
+            },
+        )
+        client.notify("notifications/initialized", {})
+        tools_result = client.request("tools/list", {})
+        return {
+            "protocol": initialize.get("protocolVersion"),
+            "server_info": initialize.get("serverInfo", {}),
+            "tools": normalize_discovered_tools(tools_result.get("tools", [])),
+        }
+    finally:
+        terminate_process(process)
+
+
+class JsonRpcLineClient:
+    def __init__(self, process: subprocess.Popen[str], *, timeout_seconds: float):
+        if process.stdin is None or process.stdout is None:
+            raise RuntimeError("MCP process pipes were not created.")
+        self.process = process
+        self.stdin = process.stdin
+        self.stdout = process.stdout
+        self.timeout_seconds = timeout_seconds
+        self.next_id = 1
+        self.lines: queue.Queue[str | None] = queue.Queue()
+        self.reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self.reader.start()
+
+    def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        request_id = self.next_id
+        self.next_id += 1
+        self.write({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}})
+        response = self.read_response(request_id)
+        if "error" in response:
+            raise RuntimeError(f"MCP {method} failed: {response['error']}")
+        result = response.get("result", {})
+        return result if isinstance(result, dict) else {"value": result}
+
+    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        self.write({"jsonrpc": "2.0", "method": method, "params": params or {}})
+
+    def write(self, payload: dict[str, Any]) -> None:
+        self.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        self.stdin.flush()
+
+    def read_response(self, request_id: int) -> dict[str, Any]:
+        deadline = timeout_deadline(self.timeout_seconds)
+        while True:
+            remaining = max(0.01, deadline - monotonic_time())
+            if remaining <= 0.01 and timeout_expired(deadline):
+                raise TimeoutError(f"Timed out waiting for MCP response id {request_id}.")
+            try:
+                line = self.lines.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise TimeoutError(f"Timed out waiting for MCP response id {request_id}.") from exc
+            if line is None:
+                raise RuntimeError(f"MCP server exited before responding to id {request_id}.")
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("id") == request_id:
+                return payload
+
+    def _read_stdout(self) -> None:
+        for line in self.stdout:
+            self.lines.put(line)
+        self.lines.put(None)
+
+
+def normalize_discovered_tools(tools: Any) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    source = tools if isinstance(tools, list) else []
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        description = str(item.get("description", "")).strip()
+        result.append({"name": name, "description": description})
+    return result
+
+
+def split_command(command: str) -> list[str]:
+    return shlex.split(command)
+
+
+def _collect_stderr(process: subprocess.Popen[str], lines: list[str]) -> None:
+    if process.stderr is None:
+        return
+    for line in process.stderr:
+        lines.append(line.rstrip())
+
+
+def terminate_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream:
+            stream.close()
+
+
+def timeout_deadline(timeout_seconds: float) -> float:
+    import time
+
+    return time.monotonic() + max(0.1, timeout_seconds)
+
+
+def timeout_expired(deadline: float) -> bool:
+    return monotonic_time() >= deadline
+
+
+def monotonic_time() -> float:
+    import time
+
+    return time.monotonic()
 
 
 def mcp_context_summary(workspace: Workspace, *, budget_tokens: int = 220) -> dict[str, Any]:
