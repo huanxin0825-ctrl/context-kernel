@@ -179,18 +179,40 @@ class AgentLoop:
         expect_json: bool,
         progress_callback: Callable[[dict[str, Any]], None] | None,
     ) -> dict[str, Any]:
+        effective_budget = budget
         plan = ExecutionPlanner(self.workspace).plan(
             request,
-            budget,
+            effective_budget,
             profile,
             task_id=task_id,
             resume=True,
         )
+        if plan["budget"]["over_budget"] and budget is None:
+            expanded_budget = adaptive_context_budget(plan)
+            effective_budget = expanded_budget
+            emit_agent_progress(
+                progress_callback,
+                {
+                    "event": "budget_expand",
+                    "step": index,
+                    "max_steps": max_steps,
+                    "estimated_used": plan["budget"]["estimated_used"],
+                    "old_budget": plan["budget"]["total"],
+                    "new_budget": expanded_budget,
+                },
+            )
+            plan = ExecutionPlanner(self.workspace).plan(
+                request,
+                effective_budget,
+                profile,
+                task_id=task_id,
+                resume=True,
+            )
         if plan["budget"]["over_budget"] and not allow_over_budget:
             diagnostic = {
                 "category": "context_budget",
-                "message": "Context packet is over budget.",
-                "suggestion": "Use a leaner profile, increase --budget, run /compact, or pass --allow-over-budget when you intentionally want to continue.",
+                "message": f"Context packet is over budget: used {plan['budget']['estimated_used']} / {plan['budget']['total']} tokens.",
+                "suggestion": "Use a leaner profile, run /compact, or pass a larger explicit --budget when you intentionally want a hard budget.",
             }
             return {
                 "index": index,
@@ -235,7 +257,7 @@ class AgentLoop:
             selected_model=selected_model,
             aux_model=aux_model,
             base_url=base_url,
-            budget=budget,
+            budget=effective_budget,
             profile=profile,
             task_id=task_id,
             allow_over_budget=allow_over_budget,
@@ -247,7 +269,7 @@ class AgentLoop:
             trace = AgentRunner(self.workspace).run(
                 request,
                 provider_name=provider_name,
-                budget=budget,
+                budget=effective_budget,
                 profile=profile,
                 model=selected_model,
                 base_url=base_url,
@@ -1139,6 +1161,13 @@ def summarize_plan(plan: dict[str, Any]) -> dict[str, Any]:
         },
         "warnings": plan["warnings"],
     }
+
+
+def adaptive_context_budget(plan: dict[str, Any]) -> int:
+    used = int(plan.get("budget", {}).get("estimated_used", 0) or 0)
+    current = int(plan.get("budget", {}).get("total", 0) or 0)
+    cushion = max(800, int(used * 0.25))
+    return min(32000, max(current * 2, used + cushion, 6000))
 
 
 def select_model_role(

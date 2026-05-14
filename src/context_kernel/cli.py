@@ -1278,8 +1278,8 @@ def cmd_chat(args: argparse.Namespace) -> None:
         if lowered.startswith("/mcp"):
             handle_chat_mcp_command(workspace, request)
             continue
-        if lowered == "/skills":
-            print_skills_panel(workspace)
+        if lowered.startswith("/skills"):
+            handle_chat_skills_command(workspace, request)
             continue
         if lowered == "/paste":
             pasted = read_paste_block()
@@ -1511,8 +1511,8 @@ def handle_tui_command(
     if lowered == "/mcp" or lowered.startswith("/mcp "):
         transcript.append({"role": "system", "title": "MCP", "text": capture_chat_output(lambda: handle_chat_mcp_command(workspace, request))})
         return True
-    if lowered == "/skills":
-        transcript.append({"role": "system", "title": "Skills", "text": capture_chat_output(lambda: print_skills_panel(workspace))})
+    if lowered == "/skills" or lowered.startswith("/skills "):
+        transcript.append({"role": "system", "title": "Skills", "text": capture_chat_output(lambda: handle_chat_skills_command(workspace, request))})
         return True
     if lowered == "/status":
         transcript.append({"role": "system", "title": "Status", "text": capture_chat_output(lambda: print_status_panel(workspace, task_id, args))})
@@ -1596,6 +1596,12 @@ def print_agent_progress_event(event: dict[str, Any]) -> None:
         suffix = f" ({reason})" if reason else ""
         print(chat_color(f"status   step {step}/{max_steps}: contacting {role} model {model}{suffix}", "dim"), flush=True)
         return
+    if name == "budget_expand":
+        old_budget = event.get("old_budget")
+        new_budget = event.get("new_budget")
+        used = event.get("estimated_used")
+        print(chat_color(f"status   step {step}/{max_steps}: auto-expanded context budget {old_budget}->{new_budget} tokens (estimated {used})", "dim"), flush=True)
+        return
     if name == "step_end":
         status = event.get("status") or "done"
         action = event.get("action") or "none"
@@ -1608,6 +1614,8 @@ def format_chat_help_text() -> str:
         *CHAT_COMMANDS,
         ("/mcp refresh <name>", "refresh a configured MCP server without leaving chat"),
         ("/mcp call <server> <tool>", "call a discovered MCP tool; add --args '{...}' when needed"),
+        ("/skills recommend <task>", "rank registered skills for a task"),
+        ("/skills install <id>", "install a packaged marketplace skill"),
         ("@query", "search current workspace files; use @1, @2... to attach a listed match"),
         ("@path", "mention an exact file path inside a task to attach it automatically"),
         ("!command", "run a policy-checked command and attach its summary"),
@@ -2140,6 +2148,8 @@ def print_chat_help() -> None:
             ("/mcp refresh <name>", "refresh a configured MCP server"),
             ("/mcp call <server> <tool>", "call a discovered MCP tool"),
             ("/skills", "show registered skills"),
+            ("/skills recommend <task>", "rank useful skills for a task"),
+            ("/skills install <id>", "install a packaged marketplace skill"),
             ("/compact", "show the compact task brief used for resume context"),
             ("/commands", "list saved project and user slash commands"),
             ("/paste", "enter a multi-line task; finish with /end"),
@@ -2652,6 +2662,66 @@ def handle_chat_mcp_command(workspace: Workspace, request: str) -> None:
         print_mcp_call_result(call["result"])
         return
     chat_notice("MCP", f"Unknown MCP chat command: {command}. Try /mcp, /mcp refresh <name>, or /mcp call <server> <tool>.")
+
+
+def handle_chat_skills_command(workspace: Workspace, request: str) -> None:
+    try:
+        tokens = shlex.split(request, posix=True)
+    except ValueError as exc:
+        chat_notice("Skills", f"Could not parse command: {exc}")
+        return
+    if len(tokens) <= 1 or tokens[1].casefold() in {"list", "ls"}:
+        print_skills_panel(workspace)
+        print(chat_color("  actions: /skills show <id> | /skills inspect <id> | /skills recommend <task> | /skills install <id>", "dim"))
+        return
+    command = tokens[1].casefold()
+    registry = SkillRegistry(workspace)
+    if command == "show":
+        if len(tokens) < 3:
+            chat_notice("Skills", "Usage: /skills show <id> [--level l0|l1|l2|l3]")
+            return
+        level = parse_option_value(tokens[3:], "--level", default="l1")
+        print_json(registry.get(tokens[2]).render_level(level))
+        return
+    if command == "inspect":
+        if len(tokens) < 3:
+            chat_notice("Skills", "Usage: /skills inspect <id> [--budget 300]")
+            return
+        budget = int(parse_option_float(tokens[3:], "--budget", default=300))
+        print_json(inspect_skill(registry.get(tokens[2]), budget))
+        return
+    if command == "recommend":
+        query = request.partition("recommend")[2].strip()
+        if not query:
+            chat_notice("Skills", "Usage: /skills recommend <task>")
+            return
+        selected = registry.select(query, budget_tokens=900, limit=5)
+        if not selected:
+            print("no matching skills")
+            return
+        print("recommended skills:")
+        for item in selected:
+            print(f"  {item.skill.id}\tlevel={item.level}\tscore={item.score}\t{item.reason}")
+        return
+    if command in {"market-list", "market"}:
+        skills = list_marketplace_skills()
+        if not skills:
+            print("no marketplace skills")
+            return
+        print("marketplace skills:")
+        for skill in skills[:12]:
+            print(f"  {skill.get('id')}\t{skill.get('name')}\t{skill.get('summary', '')}")
+        return
+    if command in {"install", "market-install"}:
+        if len(tokens) < 3:
+            chat_notice("Skills", "Usage: /skills install <marketplace-skill-id>")
+            return
+        result = install_marketplace_skill(workspace, tokens[2])
+        print(f"installed marketplace skill: {result['id']} ({result['name']})")
+        print(f"version: {result.get('version')}")
+        print(f"compatibility: {'ok' if result.get('compatibility', {}).get('ok') else 'warning'}")
+        return
+    chat_notice("Skills", f"Unknown skills chat command: {command}. Try /skills, /skills recommend <task>, or /skills install <id>.")
 
 
 def parse_option_value(tokens: list[str], name: str, *, default: str) -> str:

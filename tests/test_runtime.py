@@ -1415,6 +1415,47 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(report["model_routing"]["mode"], "auto")
             self.assertEqual(report["steps"][0]["model_role"], "auxiliary")
 
+    def test_agent_loop_auto_expands_default_budget_for_large_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            config = workspace.load_config()
+            config["runtime_instructions"] = ["budget pressure " * 2500]
+            workspace.save_config(config)
+            events: list[dict[str, object]] = []
+
+            report = AgentLoop(workspace).run(
+                "Continue",
+                provider_name="mock",
+                budget=None,
+                max_steps=1,
+                remember=False,
+                progress_callback=events.append,
+            )
+
+            self.assertEqual(report["status"], "responded")
+            self.assertTrue(any(event.get("event") == "budget_expand" for event in events))
+            self.assertGreater(report["steps"][0]["plan"]["budget"]["total"], 1200)
+
+    def test_agent_loop_respects_explicit_budget_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            config = workspace.load_config()
+            config["runtime_instructions"] = ["hard budget " * 2500]
+            workspace.save_config(config)
+
+            report = AgentLoop(workspace).run(
+                "Continue",
+                provider_name="mock",
+                budget=1200,
+                max_steps=1,
+                remember=False,
+            )
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertEqual(report["diagnostic"]["category"], "context_budget")
+
     def test_agent_loop_aux_review_runs_before_primary_steps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))
@@ -1589,6 +1630,34 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("disabled MCP server: fake", output)
             self.assertIn("enabled MCP server: fake", output)
             self.assertEqual(ToolExecutor(workspace).get_trace(traces[0]["id"])["tool"], "mcp_call")
+
+    def test_chat_skill_commands_show_recommend_and_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "edit_file.json")
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "context_budget.json")
+
+            with patch(
+                "builtins.input",
+                side_effect=[
+                    "/skills list",
+                    "/skills show edit_file --level l0",
+                    "/skills recommend edit a file safely",
+                    "/skills install multi_file_bugfix",
+                    "/exit",
+                ],
+            ):
+                with patch("sys.stdout", new=io.StringIO()) as stdout:
+                    main(["--workspace", str(workspace.root), "chat", "--provider", "mock"])
+
+            output = stdout.getvalue()
+            skills = [skill.id for skill in SkillRegistry(workspace).all()]
+
+            self.assertIn("edit_file", output)
+            self.assertIn("recommended skills", output)
+            self.assertIn("installed marketplace skill: multi_file_bugfix", output)
+            self.assertIn("multi_file_bugfix", skills)
 
     def test_tui_screen_renders_session_and_last_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

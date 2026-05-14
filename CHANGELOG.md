@@ -8,6 +8,17 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.18 - 2026-05-14
+
+### Added
+
+- Added chat-native skill operations: `/skills list`, `/skills show`, `/skills inspect`, `/skills recommend`, `/skills market-list`, and `/skills install`.
+- Added automatic default-budget expansion for interactive/agent runs when no explicit `--budget` is provided.
+
+### Fixed
+
+- Fixed repeated chat turns getting blocked by the tiny default context budget after a few messages. Explicit `--budget` values remain strict.
+
 ## 0.1.17 - 2026-05-14
 
 ### Changed
