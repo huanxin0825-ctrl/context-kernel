@@ -1520,6 +1520,57 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("read_file", output)
             self.assertIn("edit_file", output)
 
+    def test_chat_mcp_commands_refresh_call_and_toggle_server(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server_path = root / "fake_chat_mcp_server.py"
+            server_path.write_text(
+                "\n".join(
+                    [
+                        "import json, sys",
+                        "for line in sys.stdin:",
+                        "    msg = json.loads(line)",
+                        "    method = msg.get('method')",
+                        "    if method == 'initialize':",
+                        "        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'protocolVersion':'2024-11-05','serverInfo':{'name':'chat-mcp'}}}), flush=True)",
+                        "    elif method == 'tools/list':",
+                        "        tools = [{'name':'echo','description':'Echo text'}]",
+                        "        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'tools':tools}}), flush=True)",
+                        "    elif method == 'tools/call':",
+                        "        text = msg.get('params', {}).get('arguments', {}).get('text', '')",
+                        "        result = {'content':[{'type':'text','text':'chat-echo:' + text}]}",
+                        "        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':result}), flush=True)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            workspace = Workspace(root)
+            workspace.init()
+            add_mcp_server(workspace, "fake", command=f'"{sys.executable}" "{server_path}"')
+
+            with patch(
+                "builtins.input",
+                side_effect=[
+                    "/mcp refresh fake",
+                    '/mcp call fake echo --args "{\\"text\\":\\"hello\\"}"',
+                    "/mcp disable fake",
+                    "/mcp enable fake",
+                    "/exit",
+                ],
+            ):
+                with patch("sys.stdout", new=io.StringIO()) as stdout:
+                    main(["--workspace", str(workspace.root), "chat", "--provider", "mock"])
+
+            output = stdout.getvalue()
+            traces = ToolExecutor(workspace).list_traces()
+
+            self.assertIn("refreshed MCP server: fake", output)
+            self.assertIn("mcp call: fake.echo", output)
+            self.assertIn("chat-echo:hello", output)
+            self.assertIn("disabled MCP server: fake", output)
+            self.assertIn("enabled MCP server: fake", output)
+            self.assertEqual(ToolExecutor(workspace).get_trace(traces[0]["id"])["tool"], "mcp_call")
+
     def test_tui_screen_renders_session_and_last_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))

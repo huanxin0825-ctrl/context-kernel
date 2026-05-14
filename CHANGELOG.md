@@ -8,6 +8,14 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.16 - 2026-05-14
+
+### Added
+
+- Added interactive `/mcp refresh <name>` for refreshing MCP tool discovery inside chat.
+- Added interactive `/mcp call <server> <tool> --args "{...}"` for manual MCP calls without leaving the session.
+- Added interactive `/mcp enable <name>` and `/mcp disable <name>` toggles.
+
 ## 0.1.15 - 2026-05-14
 
 ### Added

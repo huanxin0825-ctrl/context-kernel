@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import sys
 import unicodedata
 from typing import Any
@@ -1273,8 +1274,8 @@ def cmd_chat(args: argparse.Namespace) -> None:
         if lowered in {"/extensions", "/ext"}:
             print_extensions_panel(workspace)
             continue
-        if lowered == "/mcp":
-            print_mcp_panel(workspace)
+        if lowered.startswith("/mcp"):
+            handle_chat_mcp_command(workspace, request)
             continue
         if lowered == "/skills":
             print_skills_panel(workspace)
@@ -1506,8 +1507,8 @@ def handle_tui_command(
     if lowered in {"/extensions", "/ext"}:
         transcript.append({"role": "system", "title": "Extensions", "text": capture_chat_output(lambda: print_extensions_panel(workspace))})
         return True
-    if lowered == "/mcp":
-        transcript.append({"role": "system", "title": "MCP", "text": capture_chat_output(lambda: print_mcp_panel(workspace))})
+    if lowered == "/mcp" or lowered.startswith("/mcp "):
+        transcript.append({"role": "system", "title": "MCP", "text": capture_chat_output(lambda: handle_chat_mcp_command(workspace, request))})
         return True
     if lowered == "/skills":
         transcript.append({"role": "system", "title": "Skills", "text": capture_chat_output(lambda: print_skills_panel(workspace))})
@@ -1582,6 +1583,8 @@ def run_chat_agent(workspace: Workspace, task_id: str, args: argparse.Namespace,
 def format_chat_help_text() -> str:
     rows = [
         *CHAT_COMMANDS,
+        ("/mcp refresh <name>", "refresh a configured MCP server without leaving chat"),
+        ("/mcp call <server> <tool>", "call a discovered MCP tool; add --args '{...}' when needed"),
         ("@query", "search current workspace files; use @1, @2... to attach a listed match"),
         ("@path", "mention an exact file path inside a task to attach it automatically"),
         ("!command", "run a policy-checked command and attach its summary"),
@@ -2111,6 +2114,8 @@ def print_chat_help() -> None:
             ("/config", "show setup and environment guidance"),
             ("/extensions", "show MCP servers and registered skills"),
             ("/mcp", "show MCP server/tool availability"),
+            ("/mcp refresh <name>", "refresh a configured MCP server"),
+            ("/mcp call <server> <tool>", "call a discovered MCP tool"),
             ("/skills", "show registered skills"),
             ("/compact", "show the compact task brief used for resume context"),
             ("/commands", "list saved project and user slash commands"),
@@ -2562,6 +2567,92 @@ def print_mcp_panel(workspace: Workspace, *, limit: int = 10) -> None:
         print(truncate_line(f"  {server.get('name', ''):<18} {enabled:<8} root={server.get('command_root', '')}{suffix}", chat_width()))
     if len(servers) > limit:
         print(chat_color(f"  ... +{len(servers) - limit} more", "dim"))
+
+
+def handle_chat_mcp_command(workspace: Workspace, request: str) -> None:
+    try:
+        tokens = shlex.split(request, posix=True)
+    except ValueError as exc:
+        chat_notice("MCP", f"Could not parse command: {exc}")
+        return
+    if len(tokens) <= 1:
+        print_mcp_panel(workspace)
+        print(chat_color("  actions: /mcp refresh <name> | /mcp call <server> <tool> --args \"{...}\" | /mcp enable <name> | /mcp disable <name>", "dim"))
+        return
+    command = tokens[1].casefold()
+    if command in {"list", "ls"}:
+        print_mcp_panel(workspace)
+        return
+    if command == "refresh":
+        if len(tokens) < 3:
+            chat_notice("MCP", "Usage: /mcp refresh <name>")
+            return
+        timeout = parse_option_float(tokens[3:], "--timeout", default=10.0)
+        server = refresh_mcp_server_tools(workspace, tokens[2], timeout_seconds=timeout)
+        print(f"refreshed MCP server: {server['name']}")
+        print(f"tools: {len(server.get('tools', []))}")
+        for tool in server.get("tools", [])[:12]:
+            print(f"  {tool['name']}\t{tool.get('description', '')}")
+        return
+    if command in {"enable", "disable"}:
+        if len(tokens) < 3:
+            chat_notice("MCP", f"Usage: /mcp {command} <name>")
+            return
+        server = set_mcp_server_enabled(workspace, tokens[2], command == "enable")
+        state = "enabled" if server.get("enabled", True) else "disabled"
+        print(f"{state} MCP server: {server['name']}")
+        return
+    if command == "call":
+        if len(tokens) < 4:
+            chat_notice("MCP", "Usage: /mcp call <server> <tool> --args \"{...}\"")
+            return
+        args_text = parse_option_value(tokens[4:], "--args", default="{}")
+        timeout = parse_option_float(tokens[4:], "--timeout", default=10.0)
+        allow_unknown = "--allow-unknown" in [token.casefold() for token in tokens[4:]]
+        arguments = parse_json_object(strip_wrapping_quotes(args_text), label="MCP tool arguments")
+        call = call_mcp_tool(
+            workspace,
+            tokens[2],
+            tokens[3],
+            arguments,
+            timeout_seconds=timeout,
+            allow_unknown=allow_unknown,
+        )
+        trace = ToolExecutor(workspace).record_external_tool(
+            "mcp_call",
+            subject=f"{tokens[2]}.{tokens[3]}",
+            output=call,
+            ok=True,
+        )
+        print(f"mcp call: {tokens[2]}.{tokens[3]}")
+        print(f"trace: {trace['id']}")
+        print_mcp_call_result(call["result"])
+        return
+    chat_notice("MCP", f"Unknown MCP chat command: {command}. Try /mcp, /mcp refresh <name>, or /mcp call <server> <tool>.")
+
+
+def parse_option_value(tokens: list[str], name: str, *, default: str) -> str:
+    for index, token in enumerate(tokens):
+        if token == name and index + 1 < len(tokens):
+            return tokens[index + 1]
+        if token.startswith(name + "="):
+            return token.split("=", 1)[1]
+    return default
+
+
+def parse_option_float(tokens: list[str], name: str, *, default: float) -> float:
+    value = parse_option_value(tokens, name, default=str(default))
+    try:
+        return float(strip_wrapping_quotes(value))
+    except ValueError:
+        return default
+
+
+def strip_wrapping_quotes(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1]
+    return text
 
 
 def extension_summary(workspace: Workspace) -> dict[str, int]:
