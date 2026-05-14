@@ -1323,10 +1323,10 @@ class RuntimeTests(unittest.TestCase):
                 status="ready",
             )
 
-            self.assertIn("Context Kernel TUI", screen)
-            self.assertIn("provider: mock", screen)
+            self.assertIn("AKERNEL // READY", screen)
+            self.assertIn("provider  mock", screen)
             self.assertIn("Last Run", screen)
-            self.assertIn("actions: respond", screen)
+            self.assertIn("actions   respond", screen)
 
     def test_tui_chat_runs_agent_loop_after_user_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1353,10 +1353,69 @@ class RuntimeTests(unittest.TestCase):
             reports = list(workspace.agent_runs_dir.glob("*.json"))
 
             self.assertEqual(len(reports), 1)
-            self.assertIn("Context Kernel TUI", output)
+            self.assertIn("AKERNEL // READY", output)
             self.assertIn("Assistant", output)
             self.assertIn("Mock agent response", output)
             self.assertIn("bye", output)
+
+    def test_tui_screen_can_render_older_history_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            args = type(
+                "Args",
+                (),
+                {
+                    "provider": "mock",
+                    "model": None,
+                    "aux_model": "gpt-5.3-codex",
+                    "profile": "balanced",
+                    "max_steps": 3,
+                    "model_routing": "auto",
+                    "aux_review": "auto",
+                },
+            )()
+            transcript = [
+                {"role": "user", "title": "You", "text": f"message {index}"}
+                for index in range(20)
+            ]
+
+            screen = build_chat_tui_screen(
+                workspace,
+                "task123",
+                args,
+                transcript,
+                None,
+                [],
+                status="ready",
+                state={"scroll_offset": 10},
+            )
+
+            self.assertIn("History view", screen)
+            self.assertIn("/down or /latest", screen)
+
+    def test_chat_file_search_lists_and_attaches_numbered_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "alpha.txt").write_text("alpha context works", encoding="utf-8")
+            (root / "beta.txt").write_text("beta context", encoding="utf-8")
+            workspace = Workspace(root)
+            workspace.init()
+
+            with patch("builtins.input", side_effect=["@", "@1", "Use the attached file", "/exit"]):
+                with patch("sys.stdout", new=io.StringIO()) as stdout:
+                    main(["--workspace", str(workspace.root), "chat", "--provider", "mock", "--max-steps", "1"])
+
+            output = stdout.getvalue()
+            reports = list(workspace.agent_runs_dir.glob("*.json"))
+            tool_traces = list(workspace.tool_traces_dir.glob("*.json"))
+
+            self.assertEqual(len(reports), 1)
+            self.assertGreaterEqual(len(tool_traces), 1)
+            self.assertIn("File Search", output)
+            self.assertIn("@1", output)
+            self.assertIn("Attached File", output)
+            self.assertIn("Mock agent response", output)
 
     def test_tui_screen_surfaces_task_plan_and_command_strip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1393,9 +1452,9 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertIn("AKERNEL // READY", screen)
             self.assertIn("/compact", screen)
-            self.assertIn("[ Mission ]", screen)
-            self.assertIn("plan:", screen)
-            self.assertIn("active:", screen)
+            self.assertIn("Task", screen)
+            self.assertIn("plan", screen)
+            self.assertIn("active", screen)
 
     def test_bare_akernel_starts_chat_and_initializes_default_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

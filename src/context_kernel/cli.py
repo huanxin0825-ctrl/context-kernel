@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import unicodedata
 from typing import Any
 
 from .agent_reports import build_agent_cost_report, load_agent_report, render_agent_cost_report
@@ -1065,7 +1066,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
         task_id = task["id"]
 
     last_report: dict[str, Any] | None = None
-    state: dict[str, Any] = {"last_report": None}
+    state: dict[str, Any] = {"last_report": None, "file_matches": []}
     pending_context: list[str] = []
     if resolve_chat_ui(args) == "tui":
         run_chat_loop_tui(workspace, tasks, task_id, args)
@@ -1101,7 +1102,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
                 continue
             request = pasted
         elif request.startswith("@"):
-            attach_chat_file(workspace, tasks, task_id, request[1:].strip(), pending_context)
+            attach_chat_file_command(workspace, tasks, task_id, request[1:].strip(), pending_context, state)
             continue
         elif request.startswith("!"):
             run_chat_command(workspace, tasks, task_id, request[1:].strip(), pending_context)
@@ -1214,20 +1215,25 @@ def run_chat_loop_tui(
     args: argparse.Namespace,
 ) -> None:
     last_report: dict[str, Any] | None = None
-    state: dict[str, Any] = {"last_report": None}
+    state: dict[str, Any] = {"last_report": None, "scroll_offset": 0, "file_matches": []}
     pending_context: list[str] = []
     transcript: list[dict[str, str]] = [
         {
             "role": "system",
             "title": "Welcome",
-            "text": "Describe a task, attach files with @path, run safe commands with !command, or type /help.",
+            "text": "Describe a task, search files with @query, run safe commands with !command, or type /help.",
         }
     ]
-    use_alt_screen = sys.stdout.isatty() and not os.environ.get("AKERNEL_NO_ALT_SCREEN")
+    use_alt_screen = (
+        sys.stdout.isatty()
+        and os.environ.get("AKERNEL_ALT_SCREEN", "").strip().lower() in {"1", "true", "yes"}
+        and not os.environ.get("AKERNEL_NO_ALT_SCREEN")
+    )
     if use_alt_screen:
         print("\033[?1049h", end="")
+    state["scrollback_mode"] = not use_alt_screen
     try:
-        render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready")
+        render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready", state=state, clear=use_alt_screen)
         while True:
             try:
                 request = input(tui_prompt(args)).strip()
@@ -1235,17 +1241,18 @@ def run_chat_loop_tui(
                 break
             except KeyboardInterrupt:
                 transcript.append({"role": "system", "title": "Interrupted", "text": "Keyboard interrupt received."})
-                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="interrupted")
+                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="interrupted", state=state, clear=use_alt_screen)
                 break
             if not request:
-                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready")
+                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready", state=state, clear=use_alt_screen)
                 continue
             lowered = request.lower()
             if lowered in {"/exit", "/quit", "exit", "quit"}:
                 break
             if lowered == "/clear":
                 transcript.clear()
-                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="cleared")
+                state["scroll_offset"] = 0
+                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="cleared", state=state, clear=use_alt_screen)
                 continue
             state["last_report"] = last_report
             if handle_tui_command(
@@ -1260,13 +1267,14 @@ def run_chat_loop_tui(
                 state=state,
             ):
                 last_report = state.get("last_report")
-                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready")
+                render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready", state=state, clear=use_alt_screen)
                 continue
 
             request_for_agent = merge_pending_context(request, pending_context)
             pending_context.clear()
+            state["scroll_offset"] = 0
             transcript.append({"role": "user", "title": "You", "text": request_for_agent})
-            render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="running")
+            render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="running", state=state, clear=use_alt_screen)
             last_report = AgentLoop(workspace).run(
                 request_for_agent,
                 provider_name=args.provider,
@@ -1284,7 +1292,7 @@ def run_chat_loop_tui(
                 expect_json=args.expect_json,
             )
             transcript.append({"role": "assistant", "title": "Assistant", "text": format_tui_report(last_report)})
-            render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready")
+            render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready", state=state, clear=use_alt_screen)
     finally:
         if use_alt_screen:
             print("\033[?1049l", end="")
@@ -1304,6 +1312,15 @@ def handle_tui_command(
     state: dict[str, Any],
 ) -> bool:
     last_report = state.get("last_report")
+    if lowered in {"/up", "/pageup", "/pgup"}:
+        state["scroll_offset"] = int(state.get("scroll_offset", 0)) + 12
+        return True
+    if lowered in {"/down", "/pagedown", "/pgdn"}:
+        state["scroll_offset"] = max(0, int(state.get("scroll_offset", 0)) - 12)
+        return True
+    if lowered in {"/latest", "/bottom"}:
+        state["scroll_offset"] = 0
+        return True
     if lowered == "/help":
         transcript.append({"role": "system", "title": "Help", "text": format_chat_help_text()})
         return True
@@ -1356,7 +1373,7 @@ def handle_tui_command(
             transcript.append({"role": "assistant", "title": "Assistant", "text": format_tui_report(report)})
         return True
     if request.startswith("@"):
-        text = capture_chat_output(lambda: attach_chat_file(workspace, tasks, task_id, request[1:].strip(), pending_context))
+        text = capture_chat_output(lambda: attach_chat_file_command(workspace, tasks, task_id, request[1:].strip(), pending_context, state))
         transcript.append({"role": "system", "title": "Attach File", "text": text})
         return True
     if request.startswith("!"):
@@ -1386,8 +1403,12 @@ def format_chat_help_text() -> str:
         ("/task", "print the current task session JSON"),
         ("/runs", "list recent agent runs"),
         ("/cost", "print the last agent run cost report"),
+        ("/up", "show older transcript lines in the viewport"),
+        ("/down", "move the viewport back toward latest messages"),
+        ("/latest", "jump to the newest transcript lines"),
         ("/clear", "clear the transcript"),
         ("/exit", "leave the interactive session"),
+        ("@query", "search current workspace files; use @1, @2... to attach a listed match"),
     ]
     return "\n".join(f"{name:<10} {description}" for name, description in rows)
 
@@ -1405,9 +1426,12 @@ def render_chat_tui_screen(
     pending_context: list[str],
     *,
     status: str,
+    state: dict[str, Any] | None = None,
+    clear: bool = True,
 ) -> None:
-    screen = build_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status=status)
-    print("\033[2J\033[H" + screen, end="")
+    screen = build_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status=status, state=state)
+    prefix = "\033[2J\033[H" if clear else "\n"
+    print(prefix + screen + ("\n" if not clear else ""), end="")
 
 
 def build_chat_tui_screen(
@@ -1419,9 +1443,12 @@ def build_chat_tui_screen(
     pending_context: list[str],
     *,
     status: str,
+    state: dict[str, Any] | None = None,
 ) -> str:
     width = chat_width()
     height = max(24, shutil.get_terminal_size((width, 32)).lines)
+    if (state or {}).get("scrollback_mode"):
+        height = min(height, 22)
     right_width = min(40, max(32, width // 3))
     left_width = max(46, width - right_width - 3)
     header = tui_header_lines(workspace, args, last_report, status=status, width=width)
@@ -1430,12 +1457,13 @@ def build_chat_tui_screen(
     lines = header
     body = tui_body_lines(transcript, left_width, status=status)
     side = tui_sidebar_lines(workspace, task_id, args, last_report, pending_context, right_width)
-    body = body[-body_height:]
+    scroll_offset = max(0, int((state or {}).get("scroll_offset", 0)))
+    body = slice_tui_body(body, body_height, scroll_offset, left_width)
     side = side[:body_height]
     for index in range(body_height):
         left = body[index] if index < len(body) else ""
         right = side[index] if index < len(side) else ""
-        lines.append(f"{left:<{left_width}} {chat_color('|', 'dim')} {right:<{right_width}}")
+        lines.append(f"{pad_display(left, left_width)} {chat_color('|', 'dim')} {pad_display(right, right_width)}")
     lines.extend(footer)
     return "\n".join(lines)
 
@@ -1451,10 +1479,10 @@ def tui_header_lines(
     status_label = status.upper()
     status_color = "green" if status == "ready" else "yellow" if status == "running" else "cyan"
     tokens = 0 if not last_report else last_report.get("totals", {}).get("total_tokens", 0)
-    title = f" Context Kernel TUI // AKERNEL // {status_label} "
+    title = f" AKERNEL // {status_label} "
     subtitle = (
-        f"{compact_path(workspace.root)} | provider={args.provider} | "
-        f"primary={primary_model(args)} | aux={auxiliary_model(args)} | last_tokens={tokens}"
+        f"{compact_path(workspace.root)}  |  provider {args.provider}  |  "
+        f"primary {primary_model(args)}  |  aux {auxiliary_model(args)}  |  tokens {tokens}"
     )
     return [
         chat_color(tui_rule(title, width), status_color, bold=True),
@@ -1466,13 +1494,13 @@ def tui_header_lines(
 def tui_footer_lines(width: int) -> list[str]:
     return [
         tui_rule(" Input ", width),
-        truncate_line("Type a task. Use /help for palette, /compact for resume brief, @path for files, !command for checked shell, /exit to quit.", width),
+        truncate_line("Type a task. @ finds files, @1 attaches a match, /up and /down move transcript view, /latest returns to now.", width),
         "",
     ]
 
 
 def tui_command_strip(width: int) -> str:
-    commands = " /help  /status  /model  /compact  /runs  /cost  @file  !cmd "
+    commands = " /help  /status  /model  /compact  /runs  /cost  /up  /down  @file  !cmd "
     return chat_color(truncate_line(commands.center(width, "-"), width), "dim")
 
 
@@ -1480,25 +1508,24 @@ def tui_body_lines(transcript: list[dict[str, str]], width: int, *, status: str 
     if not transcript:
         return ["No messages yet. Start with one concrete task."]
     lines: list[str] = []
-    lines.append(f"Transcript [{status}]")
-    lines.append("-" * min(width, 22))
+    lines.append(f"Conversation [{status}]")
+    lines.append("-" * min(width, 24))
     for item in transcript:
         title = item.get("title", item.get("role", "message"))
         role = item.get("role", "system")
         label = tui_role_label(role, title)
         lines.append("")
-        lines.append(truncate_line(f"+-- {label} " + "-" * max(0, width - len(label) - 5), width))
-        prefix = "| " if role != "user" else "> "
+        lines.append(truncate_line(f"{label}", width))
+        prefix = "  " if role != "user" else "> "
         for line in wrap_plain(item.get("text", ""), width=max(20, width - len(prefix))).splitlines():
             lines.append(truncate_line(prefix + line, width))
-        lines.append("")
     return lines
 
 
 def tui_role_label(role: str, title: str) -> str:
     labels = {
         "user": "YOU",
-        "assistant": "AGENT",
+        "assistant": "AKERNEL",
         "system": "SYSTEM",
     }
     base = labels.get(role, role.upper())
@@ -1513,23 +1540,23 @@ def tui_sidebar_lines(
     pending_context: list[str],
     width: int,
 ) -> list[str]:
-    rows = tui_section("Cockpit", width)
+    rows = tui_section("Session", width)
     rows.extend(
         [
-            f"provider: {args.provider}",
-            f"profile:  {getattr(args, 'profile', DEFAULT_PROFILE)}",
-            f"routing:  {getattr(args, 'model_routing', 'auto')}",
-            f"steps:    {getattr(args, 'max_steps', '?')}",
-            f"pending:  {len(pending_context)}",
+            tui_kv("provider", args.provider, width),
+            tui_kv("profile", getattr(args, "profile", DEFAULT_PROFILE), width),
+            tui_kv("routing", getattr(args, "model_routing", "auto"), width),
+            tui_kv("steps", getattr(args, "max_steps", "?"), width),
+            tui_kv("attached", len(pending_context), width),
             "",
         ]
     )
-    rows.extend(tui_section("Model Stack", width))
+    rows.extend(tui_section("Models", width))
     rows.extend(
         [
-            f"primary:   {primary_model(args)}",
-            f"auxiliary: {auxiliary_model(args)}",
-            f"review:    {getattr(args, 'aux_review', 'auto')}",
+            tui_kv("primary", primary_model(args), width),
+            tui_kv("aux", auxiliary_model(args), width),
+            tui_kv("review", getattr(args, "aux_review", "auto"), width),
             "",
         ]
     )
@@ -1549,22 +1576,26 @@ def tui_sidebar_lines(
 
 
 def tui_section(title: str, width: int) -> list[str]:
-    label = f"[ {title} ]"
-    return [label, "-" * min(width, len(label) + 6)]
+    label = f"{title}"
+    return [label, "-" * min(width, max(10, len(label) + 4))]
+
+
+def tui_kv(key: str, value: Any, width: int) -> str:
+    return truncate_line(f"{key:<9} {value}", width)
 
 
 def tui_task_panel(workspace: Workspace, task_id: str, width: int) -> list[str]:
-    rows = tui_section("Mission", width)
+    rows = tui_section("Task", width)
     try:
         task = TaskStore(workspace).get(task_id)
     except (KeyError, FileNotFoundError):
-        rows.extend([f"task      {task_id}", "status    unknown", ""])
+        rows.extend([tui_kv("id", task_id, width), tui_kv("status", "unknown", width), ""])
         return rows
     rows.extend(
         [
-            f"task:   {task.get('id', task_id)}",
-            f"status: {task.get('status', 'unknown')}",
-            f"title:  {truncate_line(str(task.get('title', '')), max(10, width - 10))}",
+            tui_kv("id", task.get("id", task_id), width),
+            tui_kv("status", task.get("status", "unknown"), width),
+            tui_kv("title", task.get("title", ""), width),
         ]
     )
     plan = task.get("plan")
@@ -1572,26 +1603,26 @@ def tui_task_panel(workspace: Workspace, task_id: str, width: int) -> list[str]:
         progress = plan.get("milestones", [])
         completed = sum(1 for item in progress if item.get("status") == "completed")
         active = next((item for item in progress if item.get("status") == "active"), None)
-        rows.append(f"plan:   {completed}/{len(progress)} done")
+        rows.append(tui_kv("plan", f"{completed}/{len(progress)} done", width))
         if active:
-            rows.append(f"active: {active.get('id')} {truncate_line(str(active.get('title', '')), max(8, width - 13))}")
+            rows.append(tui_kv("active", f"{active.get('id')} {active.get('title', '')}", width))
     rows.append("")
     return rows
 
 
 def tui_last_run_panel(report: dict[str, Any], width: int) -> list[str]:
-    rows = tui_section("Last Run Timeline", width)
+    rows = tui_section("Last Run", width)
     rows.extend(
         [
-            f"id:     {report.get('id')}",
-            f"status: {report.get('status')}",
-            f"tokens: {report.get('totals', {}).get('total_tokens', 0)}",
+            tui_kv("id", report.get("id"), width),
+            tui_kv("status", report.get("status"), width),
+            tui_kv("tokens", report.get("totals", {}).get("total_tokens", 0), width),
         ]
     )
     steps = report.get("steps", [])
     if steps:
         compact_actions = " -> ".join(str((step.get("action") or {}).get("action") or "none") for step in steps)
-        rows.append(f"actions: {truncate_line(compact_actions, max(10, width - 9))}")
+        rows.append(tui_kv("actions", compact_actions, width))
         for step in steps[:4]:
             action = str((step.get("action") or {}).get("action") or "none")
             ok = "ok" if step.get("verifier_ok", True) else "check"
@@ -1599,6 +1630,18 @@ def tui_last_run_panel(report: dict[str, Any], width: int) -> list[str]:
         if len(steps) > 4:
             rows.append(f"  ... +{len(steps) - 4} more")
     return rows
+
+
+def slice_tui_body(lines: list[str], height: int, scroll_offset: int, width: int) -> list[str]:
+    if len(lines) <= height:
+        return lines
+    offset = max(0, min(scroll_offset, len(lines) - height))
+    end = len(lines) - offset
+    start = max(0, end - height)
+    window = lines[start:end]
+    if offset:
+        window = [truncate_line(f"History view: {offset} line(s) above latest. Use /down or /latest.", width)] + window[1:]
+    return window
 
 
 def format_tui_report(report: dict[str, Any]) -> str:
@@ -1635,7 +1678,34 @@ def wrap_plain(text: str, *, width: int) -> str:
 
 def truncate_line(text: str, width: int) -> str:
     value = str(text)
-    return value if len(value) <= width else value[: max(0, width - 3)] + "..."
+    if display_width(value) <= width:
+        return value
+    if width <= 3:
+        return "." * max(0, width)
+    result = ""
+    used = 0
+    for char in value:
+        char_width = char_display_width(char)
+        if used + char_width > width - 3:
+            break
+        result += char
+        used += char_width
+    return result + "..."
+
+
+def pad_display(text: str, width: int) -> str:
+    value = truncate_line(text, width)
+    return value + " " * max(0, width - display_width(value))
+
+
+def display_width(text: str) -> int:
+    return sum(char_display_width(char) for char in str(text))
+
+
+def char_display_width(char: str) -> int:
+    if unicodedata.combining(char):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
 
 
 def print_chat_turn_start(request: str, args: argparse.Namespace) -> None:
@@ -1692,11 +1762,14 @@ def print_chat_help() -> None:
             ("/config", "show setup and environment guidance"),
             ("/compact", "show the compact task brief used for resume context"),
             ("/paste", "enter a multi-line task; finish with /end"),
-            ("@path", "attach a workspace file to the next task"),
+            ("@query", "search workspace files; use @1, @2... to attach a listed match"),
             ("!command", "run a policy-checked command and attach its summary"),
             ("/task", "print the current task session JSON"),
             ("/runs", "list recent agent runs"),
             ("/cost", "print the last agent run cost report"),
+            ("/up", "show older transcript lines in the TUI viewport"),
+            ("/down", "move the TUI viewport back toward latest messages"),
+            ("/latest", "jump the TUI viewport to the latest messages"),
             ("/clear", "clear and redraw the session header"),
             ("/exit", "leave the interactive session"),
         ],
@@ -1721,6 +1794,101 @@ def print_recent_agent_runs(workspace: Workspace, *, limit: int) -> None:
             f"tokens={report.get('totals', {}).get('total_tokens', 0):<5}  "
             f"{request}"
         )
+
+
+IGNORED_FILE_FINDER_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".akernel",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    "dist",
+    "build",
+}
+
+
+def attach_chat_file_command(
+    workspace: Workspace,
+    tasks: TaskStore,
+    task_id: str,
+    query: str,
+    pending_context: list[str],
+    state: dict[str, Any] | None = None,
+) -> None:
+    state = state if state is not None else {}
+    query = query.strip().strip('"').strip("'")
+    if query.isdigit() and state.get("file_matches"):
+        matches = list(state.get("file_matches") or [])
+        index = int(query) - 1
+        if 0 <= index < len(matches):
+            attach_chat_file(workspace, tasks, task_id, str(matches[index]), pending_context)
+            return
+        chat_notice("File Search", f"No cached match @{query}. Use @ to list files again.")
+        return
+
+    if query and (workspace.root / query).is_file():
+        attach_chat_file(workspace, tasks, task_id, query, pending_context)
+        return
+
+    matches = find_workspace_files(workspace.root, query, limit=12)
+    state["file_matches"] = matches
+    if not matches:
+        hint = "Try @readme, @pyproject, or a filename fragment."
+        chat_notice("File Search", f"No files matched `{query or '*'}`. {hint}")
+        return
+    if query and len(matches) == 1:
+        attach_chat_file(workspace, tasks, task_id, matches[0], pending_context)
+        return
+
+    print("")
+    print(chat_color("[ File Search ]", "cyan", bold=True))
+    print(wrap_chat_text("Type @1, @2, ... to attach a result, or keep typing a narrower @query.", indent="  "))
+    for index, path in enumerate(matches, start=1):
+        print(f"  @{index:<2} {path}")
+
+
+def find_workspace_files(root: Path, query: str, *, limit: int = 12, max_scan: int = 2500) -> list[str]:
+    normalized_query = query.casefold().replace("\\", "/")
+    candidates: list[tuple[int, str]] = []
+    scanned = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in IGNORED_FILE_FINDER_DIRS and not name.startswith(".mypy_cache")
+        ]
+        for filename in filenames:
+            scanned += 1
+            if scanned > max_scan:
+                break
+            path = Path(dirpath) / filename
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            haystack = relative.casefold()
+            name = filename.casefold()
+            if normalized_query and normalized_query not in haystack:
+                continue
+            score = 0
+            if normalized_query:
+                if name == normalized_query:
+                    score -= 40
+                elif name.startswith(normalized_query):
+                    score -= 25
+                elif haystack.startswith(normalized_query):
+                    score -= 15
+                score += haystack.find(normalized_query)
+            score += relative.count("/") * 2
+            score += len(relative) // 20
+            candidates.append((score, relative))
+        if scanned > max_scan:
+            break
+    return [path for _, path in sorted(candidates, key=lambda item: (item[0], item[1]))[:limit]]
 
 
 def attach_chat_file(

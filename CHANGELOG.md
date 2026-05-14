@@ -8,6 +8,19 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.6 - 2026-05-14
+
+### Added
+
+- Added TUI history viewport controls with `/up`, `/down`, and `/latest`.
+- Added `@` file search for the current workspace, including numbered follow-up attachment commands such as `@1`.
+
+### Changed
+
+- Redesigned the interactive TUI into a cleaner, lower-density terminal workspace.
+- Made the default TUI scrollback-friendly by avoiding alt-screen takeover unless `AKERNEL_ALT_SCREEN=1` is set.
+- Improved CJK/wide-character alignment in TUI rows and truncation.
+
 ## 0.1.5 - 2026-05-12
 
 ### Fixed
