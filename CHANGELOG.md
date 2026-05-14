@@ -8,6 +8,17 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.15 - 2026-05-14
+
+### Added
+
+- Added chat-first extension discovery commands: `/extensions`, `/mcp`, and `/skills`.
+- Added extension availability to TUI session status and command completions.
+
+### Changed
+
+- Reordered TUI last-run details so recent actions stay visible even when the sidebar is crowded.
+
 ## 0.1.14 - 2026-05-14
 
 ### Added

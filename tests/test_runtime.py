@@ -1497,6 +1497,29 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("Paste mode", output)
             self.assertIn("Mock agent response", output)
 
+    def test_chat_extensions_panel_surfaces_mcp_and_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            SkillRegistry(workspace).register(ROOT / "examples" / "skills" / "edit_file.json")
+            add_mcp_server(
+                workspace,
+                "filesystem",
+                command="python -m mcp_server_filesystem .",
+                tools=["read_file:Read workspace files"],
+            )
+
+            with patch("builtins.input", side_effect=["/extensions", "/mcp", "/skills", "/exit"]):
+                with patch("sys.stdout", new=io.StringIO()) as stdout:
+                    main(["--workspace", str(workspace.root), "chat", "--provider", "mock"])
+
+            output = stdout.getvalue()
+
+            self.assertIn("Extensions", output)
+            self.assertIn("filesystem", output)
+            self.assertIn("read_file", output)
+            self.assertIn("edit_file", output)
+
     def test_tui_screen_renders_session_and_last_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))
@@ -1535,6 +1558,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("provider  mock", screen)
             self.assertIn("Last Run", screen)
             self.assertIn("actions   respond", screen)
+            self.assertIn("/extensions", screen)
 
     def test_tui_chat_runs_agent_loop_after_user_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1636,10 +1660,12 @@ class RuntimeTests(unittest.TestCase):
             (root / "src" / "runtime.py").write_text("print('ok')", encoding="utf-8")
 
             command_items = chat_completion_items(root, "/mo")
+            extension_items = chat_completion_items(root, "/ext")
             file_items = chat_completion_items(root, "@run")
             inline_file_items = chat_completion_items(root, "please inspect @REA")
 
             self.assertIn(("/model", "show primary and auxiliary model roles"), command_items)
+            self.assertIn(("/extensions", "show MCP servers and registered skills"), extension_items)
             self.assertIn(("@src/runtime.py", "attach file"), file_items)
             self.assertIn(("@README.md", "attach file"), inline_file_items)
 

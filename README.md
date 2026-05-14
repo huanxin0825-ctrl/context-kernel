@@ -216,7 +216,7 @@ akernel agent run "Patch notes/plan.txt and run tests" --provider openai --max-s
 akernel agent cost <agent-run-id>
 ```
 
-Inside `akernel`, type a natural-language task and press Enter. Use `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave.
+Inside `akernel`, type a natural-language task and press Enter. Use `/extensions` to inspect MCP servers and registered skills, `/mcp` or `/skills` for focused extension panels, `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave.
 
 MCP v1 stores local stdio server configuration in `.akernel/mcp.json`. Enabled MCP servers enter the context packet as compact summaries only: server name, transport, command root, and curated tool summaries. `akernel mcp refresh <name>` starts a stdio MCP server, runs `initialize` and `tools/list`, and stores the discovered tool summaries. `akernel mcp call <name> <tool>` manually invokes a discovered MCP tool and records the result as a tool trace. Agent runs can also choose `mcp_call` automatically, but only for enabled servers and discovered tools listed in the current context packet.
 

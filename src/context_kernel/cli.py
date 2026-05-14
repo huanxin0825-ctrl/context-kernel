@@ -58,6 +58,9 @@ CHAT_COMMANDS: list[tuple[str, str]] = [
     ("/status", "show workspace and runtime status"),
     ("/model", "show primary and auxiliary model roles"),
     ("/config", "show setup and environment guidance"),
+    ("/extensions", "show MCP servers and registered skills"),
+    ("/mcp", "show MCP server/tool availability"),
+    ("/skills", "show registered skills"),
     ("/compact", "show compact task brief"),
     ("/commands", "list project and user slash commands"),
     ("/paste", "enter a multi-line task"),
@@ -1267,6 +1270,15 @@ def cmd_chat(args: argparse.Namespace) -> None:
         if lowered == "/commands":
             print_custom_commands_panel(workspace.root)
             continue
+        if lowered in {"/extensions", "/ext"}:
+            print_extensions_panel(workspace)
+            continue
+        if lowered == "/mcp":
+            print_mcp_panel(workspace)
+            continue
+        if lowered == "/skills":
+            print_skills_panel(workspace)
+            continue
         if lowered == "/paste":
             pasted = read_paste_block()
             if not pasted:
@@ -1348,6 +1360,7 @@ def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespa
             ("type", "Describe a task in natural language and press Enter."),
             ("include", "@path attaches a workspace file; !cmd runs a policy-checked command."),
             ("compose", "/paste captures a multi-line task; /compact shows the task brief."),
+            ("extend", "/extensions shows MCP servers, tools, and skills."),
             ("inspect", "/status, /model, /task, /runs, /cost"),
             ("control", "/help, /config, /clear, /exit"),
         ],
@@ -1489,6 +1502,15 @@ def handle_tui_command(
         return True
     if lowered == "/commands":
         transcript.append({"role": "system", "title": "Slash Commands", "text": capture_chat_output(lambda: print_custom_commands_panel(workspace.root))})
+        return True
+    if lowered in {"/extensions", "/ext"}:
+        transcript.append({"role": "system", "title": "Extensions", "text": capture_chat_output(lambda: print_extensions_panel(workspace))})
+        return True
+    if lowered == "/mcp":
+        transcript.append({"role": "system", "title": "MCP", "text": capture_chat_output(lambda: print_mcp_panel(workspace))})
+        return True
+    if lowered == "/skills":
+        transcript.append({"role": "system", "title": "Skills", "text": capture_chat_output(lambda: print_skills_panel(workspace))})
         return True
     if lowered == "/status":
         transcript.append({"role": "system", "title": "Status", "text": capture_chat_output(lambda: print_status_panel(workspace, task_id, args))})
@@ -1785,7 +1807,7 @@ def tui_compact_start_lines(
         truncate_line(f"session  task {task_short} | provider {args.provider} | profile {args.profile} | tokens {tokens} | status {status}", width),
         truncate_line(f"context  attached {len(pending_context)} | type @ to search files, or mention @path inside a task", width),
         "",
-        chat_color(truncate_line("shortcuts /help /status /model /commands /compact /runs /cost /clear /exit", width), "dim"),
+        chat_color(truncate_line("shortcuts /help /status /model /commands /extensions /compact /runs /cost /clear /exit", width), "dim"),
         chat_color(truncate_line("input     ask one concrete task; use !command for checked shell context", width), "dim"),
     ]
 
@@ -1822,7 +1844,7 @@ def tui_footer_lines(width: int) -> list[str]:
 
 
 def tui_command_strip(width: int) -> str:
-    commands = " /help  /status  /model  /compact  /runs  /cost  /up  /down  @file  !cmd "
+    commands = " /help  /status  /model  /extensions  /compact  /runs  /cost  /up  /down  @file  !cmd "
     return chat_color(truncate_line(commands.center(width, "-"), width), "dim")
 
 
@@ -1872,6 +1894,7 @@ def tui_sidebar_lines(
             tui_kv("routing", getattr(args, "model_routing", "auto"), width),
             tui_kv("steps", getattr(args, "max_steps", "?"), width),
             tui_kv("attached", len(pending_context), width),
+            tui_kv("extend", compact_extension_label(workspace), width),
             "",
         ]
     )
@@ -1897,6 +1920,11 @@ def tui_sidebar_lines(
     rows.extend(tui_section("Workspace", width))
     rows.extend(wrap_plain(workspace_state_summary(workspace), width=max(20, width)).splitlines())
     return [truncate_line(line, width) for line in rows]
+
+
+def compact_extension_label(workspace: Workspace) -> str:
+    summary = extension_summary(workspace)
+    return f"{summary['skills']} skills | {summary['mcp_enabled']}/{summary['mcp_total']} mcp | /extensions"
 
 
 def tui_section(title: str, width: int) -> list[str]:
@@ -1936,6 +1964,10 @@ def tui_task_panel(workspace: Workspace, task_id: str, width: int) -> list[str]:
 
 def tui_last_run_panel(report: dict[str, Any], width: int) -> list[str]:
     rows = tui_section("Last Run", width)
+    steps = report.get("steps", [])
+    if steps:
+        compact_actions = " -> ".join(str((step.get("action") or {}).get("action") or "none") for step in steps)
+        rows.append(tui_kv("actions", compact_actions, width))
     rows.extend(
         [
             tui_kv("id", report.get("id"), width),
@@ -1943,10 +1975,7 @@ def tui_last_run_panel(report: dict[str, Any], width: int) -> list[str]:
             tui_kv("tokens", report.get("totals", {}).get("total_tokens", 0), width),
         ]
     )
-    steps = report.get("steps", [])
     if steps:
-        compact_actions = " -> ".join(str((step.get("action") or {}).get("action") or "none") for step in steps)
-        rows.append(tui_kv("actions", compact_actions, width))
         for step in steps[:4]:
             action = str((step.get("action") or {}).get("action") or "none")
             ok = "ok" if step.get("verifier_ok", True) else "check"
@@ -2080,6 +2109,9 @@ def print_chat_help() -> None:
             ("/status", "show workspace and runtime status"),
             ("/model", "show primary and auxiliary model roles"),
             ("/config", "show setup and environment guidance"),
+            ("/extensions", "show MCP servers and registered skills"),
+            ("/mcp", "show MCP server/tool availability"),
+            ("/skills", "show registered skills"),
             ("/compact", "show the compact task brief used for resume context"),
             ("/commands", "list saved project and user slash commands"),
             ("/paste", "enter a multi-line task; finish with /end"),
@@ -2482,6 +2514,80 @@ def print_config_panel() -> None:
     )
 
 
+def print_extensions_panel(workspace: Workspace) -> None:
+    summary = extension_summary(workspace)
+    chat_panel(
+        "Extensions",
+        [
+            ("skills", f"{summary['skills']} registered"),
+            ("mcp", f"{summary['mcp_enabled']}/{summary['mcp_total']} enabled servers"),
+            ("mcp_tools", f"{summary['mcp_tools']} discovered tools"),
+            ("manage", "akernel skill list | akernel mcp list | akernel mcp refresh <name>"),
+        ],
+    )
+    print_skills_panel(workspace, limit=6)
+    print_mcp_panel(workspace, limit=6)
+
+
+def print_skills_panel(workspace: Workspace, *, limit: int = 10) -> None:
+    skills = safe_registered_skills(workspace)
+    if not skills:
+        chat_notice("Skills", "No skills registered yet. Use `akernel skill register <skill.json>` or `akernel skill market-list`.")
+        return
+    print("")
+    print(chat_color("[ Skills ]", "cyan", bold=True))
+    for skill in skills[:limit]:
+        line = f"  {skill.id:<22} {skill.name} - {skill.summary}"
+        print(truncate_line(line, chat_width()))
+    if len(skills) > limit:
+        print(chat_color(f"  ... +{len(skills) - limit} more", "dim"))
+
+
+def print_mcp_panel(workspace: Workspace, *, limit: int = 10) -> None:
+    servers = safe_mcp_servers(workspace)
+    if not servers:
+        chat_notice("MCP", "No MCP servers configured. Add one with `akernel mcp add <name> --command ...`, then run `akernel mcp refresh <name>`.")
+        return
+    print("")
+    print(chat_color("[ MCP ]", "cyan", bold=True))
+    for server in servers[:limit]:
+        enabled = "enabled" if server.get("enabled", True) else "disabled"
+        tools = server.get("tools", [])
+        tool_names = ", ".join(str(tool.get("name", "")) for tool in tools[:4] if isinstance(tool, dict) and tool.get("name"))
+        suffix = f" tools={len(tools)}"
+        if tool_names:
+            suffix += f" [{tool_names}]"
+        elif server.get("enabled", True):
+            suffix += " [run refresh]"
+        print(truncate_line(f"  {server.get('name', ''):<18} {enabled:<8} root={server.get('command_root', '')}{suffix}", chat_width()))
+    if len(servers) > limit:
+        print(chat_color(f"  ... +{len(servers) - limit} more", "dim"))
+
+
+def extension_summary(workspace: Workspace) -> dict[str, int]:
+    servers = safe_mcp_servers(workspace)
+    return {
+        "skills": len(safe_registered_skills(workspace)),
+        "mcp_total": len(servers),
+        "mcp_enabled": sum(1 for server in servers if server.get("enabled", True)),
+        "mcp_tools": sum(len(server.get("tools", [])) for server in servers if server.get("enabled", True)),
+    }
+
+
+def safe_registered_skills(workspace: Workspace) -> list[Any]:
+    try:
+        return SkillRegistry(workspace).all()
+    except Exception:
+        return []
+
+
+def safe_mcp_servers(workspace: Workspace) -> list[dict[str, Any]]:
+    try:
+        return list_mcp_servers(workspace, include_disabled=True)
+    except Exception:
+        return []
+
+
 def chat_prompt(args: argparse.Namespace) -> str:
     model = primary_model(args)
     return "\n" + chat_color("akernel", "cyan", bold=True) + chat_color(f" [{model}]", "dim") + "> "
@@ -2622,11 +2728,15 @@ def workspace_state_summary(workspace: Workspace) -> str:
     skills = len(list(workspace.skills_dir.glob("*.json"))) if workspace.skills_dir.exists() else 0
     runs = len(list(workspace.agent_runs_dir.glob("*.json"))) if workspace.agent_runs_dir.exists() else 0
     project = 1 if workspace.project_file.exists() else 0
+    extensions = extension_summary(workspace)
     try:
         memories = len(MemoryStore(workspace).all())
     except Exception:
         memories = 0
-    return f"{skills} skills, {memories} memories, {runs} runs, {project} project profiles"
+    return (
+        f"{skills} skills, {extensions['mcp_enabled']}/{extensions['mcp_total']} mcp, "
+        f"{memories} memories, {runs} runs, {project} project profiles"
+    )
 
 
 def print_project_scan_summary(profile: dict[str, Any], *, config_updated: bool) -> None:
