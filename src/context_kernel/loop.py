@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from .memory import MemoryStore
+from .mcp import call_mcp_tool
 from .models import utc_now
 from .planner import ExecutionPlanner
 from .providers import env_value, extract_anchor_patch_instruction, extract_patch_instruction, extract_write_instruction
@@ -17,7 +18,7 @@ from .tasks import TaskStore
 from .tools import MAX_CAPTURE_CHARS, ToolExecutor
 
 
-TOOL_ACTIONS = {"read_file", "write_file", "patch_file", "batch_patch", "run_command"}
+TOOL_ACTIONS = {"read_file", "write_file", "patch_file", "batch_patch", "run_command", "mcp_call"}
 ALLOWED_ACTIONS = TOOL_ACTIONS | {"respond"}
 DEFAULT_PRIMARY_MODEL = "gpt-5.5"
 DEFAULT_AUXILIARY_MODEL = "gpt-5.3-codex"
@@ -466,6 +467,7 @@ def build_agent_packet(
         "If a patch or verification step fails, check any recovery read summaries before deciding the next action.",
         "When the user describes a block between markers, use patch_file with start_anchor and end_anchor instead of rewriting the whole file.",
         "When the user asks for multiple file edits, prefer one batch_patch action with an edits array.",
+        "Use mcp_call only for enabled MCP servers and discovered tools listed in runtime.mcp.servers; never invent server or tool names.",
     ]
     if is_patch_verify_request(request):
         rules.append("When the request asks for a patch and a verification command, patch first, then run the command, then respond.")
@@ -547,6 +549,18 @@ def build_agent_packet(
                         "action": "run_command",
                         "command": "command string",
                         "timeout_seconds": "optional integer between 1 and 300",
+                        "reason": "string optional",
+                    },
+                },
+                {
+                    "name": "mcp_call",
+                    "description": "Call one discovered MCP tool through the configured stdio MCP bridge.",
+                    "schema": {
+                        "action": "mcp_call",
+                        "server": "MCP server name from runtime.mcp.servers",
+                        "tool": "tool name from that server's discovered tools",
+                        "arguments": "JSON object passed to the MCP tool",
+                        "timeout_seconds": "optional integer between 1 and 60",
                         "reason": "string optional",
                     },
                 },
@@ -641,6 +655,26 @@ def parse_agent_action(text: str, *, expect_json: bool = False) -> dict[str, Any
             "edits": [parse_patch_edit(edit) for edit in edits],
             "reason": compact(str(action.get("reason", "")), limit=240),
         }
+    if action_name == "mcp_call":
+        server = require_non_empty_string(action, "server")
+        tool = require_non_empty_string(action, "tool")
+        arguments = action.get("arguments", action.get("tool_arguments", {}))
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            parsed_arguments = parse_arguments_object(arguments)
+            if not parsed_arguments and arguments not in ("", None):
+                raise ValueError("mcp_call arguments must be a JSON object")
+            arguments = parsed_arguments
+        timeout_seconds = clamp_int(action.get("timeout_seconds", 10), default=10, minimum=1, maximum=60)
+        return {
+            "action": "mcp_call",
+            "server": server,
+            "tool": tool,
+            "arguments": arguments,
+            "timeout_seconds": timeout_seconds,
+            "reason": compact(str(action.get("reason", "")), limit=240),
+        }
     command = require_non_empty_string(action, "command")
     timeout_seconds = clamp_int(action.get("timeout_seconds", 30), default=30, minimum=1, maximum=300)
     return {
@@ -659,23 +693,36 @@ def normalize_agent_action_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(action, dict):
         raise ValueError("Agent action payload must be a JSON object")
 
-    nested_args = first_dict(action, "arguments", "args", "input", "parameters")
     action_name = (
         action.get("action")
         or action.get("tool")
         or action.get("name")
         or action.get("tool_name")
     )
+    normalized_action_name = normalize_action_name(str(action_name)) if action_name is not None and not isinstance(action_name, dict) else None
+    raw_arguments = parse_arguments_object(action.get("arguments"))
+    mcp_arguments_are_action_args = (
+        normalized_action_name == "mcp_call"
+        and ("server" not in action or "tool" not in action)
+        and {"server", "tool"}.issubset(raw_arguments.keys())
+    )
+    if mcp_arguments_are_action_args:
+        nested_args = raw_arguments
+    else:
+        nested_arg_keys = ("args", "input", "parameters") if normalized_action_name == "mcp_call" else ("arguments", "args", "input", "parameters")
+        nested_args = first_dict(action, *nested_arg_keys)
     if isinstance(action_name, dict):
         nested_args = nested_args or first_dict(action_name, "arguments", "args", "input", "parameters")
         action_name = action_name.get("name") or action_name.get("action") or action_name.get("tool")
+        normalized_action_name = normalize_action_name(str(action_name)) if action_name is not None else None
 
     normalized: dict[str, Any] = {}
     if nested_args:
         normalized.update(nested_args)
-    normalized.update({key: value for key, value in action.items() if key not in {"arguments", "args", "input", "parameters"}})
-    if action_name is not None:
-        normalized["action"] = normalize_action_name(str(action_name))
+    omitted = {"arguments", "args", "input", "parameters"} if mcp_arguments_are_action_args else {"args", "input", "parameters"} if normalized_action_name == "mcp_call" else {"arguments", "args", "input", "parameters"}
+    normalized.update({key: value for key, value in action.items() if key not in omitted})
+    if normalized_action_name is not None:
+        normalized["action"] = normalized_action_name
     return normalized
 
 
@@ -743,6 +790,9 @@ def normalize_action_name(name: str) -> str:
         "exec": "run_command",
         "execute": "run_command",
         "command": "run_command",
+        "mcp": "mcp_call",
+        "mcp_tool": "mcp_call",
+        "tool_call_mcp": "mcp_call",
         "final": "respond",
         "final_answer": "respond",
         "answer": "respond",
@@ -809,6 +859,29 @@ def execute_agent_action(executor: ToolExecutor, action: dict[str, Any]) -> dict
         return executor.batch_patch(action["edits"])
     if action["action"] == "run_command":
         return executor.run_command(action["command"], timeout_seconds=action["timeout_seconds"])
+    if action["action"] == "mcp_call":
+        subject = f"{action['server']}.{action['tool']}"
+        try:
+            call = call_mcp_tool(
+                executor.workspace,
+                action["server"],
+                action["tool"],
+                action.get("arguments", {}),
+                timeout_seconds=action.get("timeout_seconds", 10),
+            )
+        except Exception as exc:
+            return executor.record_external_tool(
+                "mcp_call",
+                subject=subject,
+                output={
+                    "server": action["server"],
+                    "tool": action["tool"],
+                    "arguments": action.get("arguments", {}),
+                },
+                ok=False,
+                error=str(exc),
+            )
+        return executor.record_external_tool("mcp_call", subject=subject, output=call, ok=True)
     raise ValueError(f"Unsupported tool action: {action['action']}")
 
 
@@ -923,6 +996,12 @@ def diagnose_tool_result(tool_result: dict[str, Any]) -> dict[str, str]:
             "category": "command_failed",
             "message": summary,
             "suggestion": "Inspect stdout/stderr in the linked tool trace, fix the underlying issue, then rerun the task.",
+        }
+    if tool == "mcp_call":
+        return {
+            "category": "mcp_call_failed",
+            "message": summary,
+            "suggestion": "Run `akernel mcp list` and `akernel mcp refresh <name>`, then retry with an enabled discovered tool.",
         }
     return {
         "category": "tool_failed",
@@ -1409,6 +1488,10 @@ def summarize_action(action: dict[str, Any] | None) -> dict[str, Any] | None:
             compact(str(edit.get("path", "")), limit=80)
             for edit in action.get("edits", [])[:5]
         ]
+    if action["action"] == "mcp_call":
+        summary["server"] = compact(str(action.get("server", "")), limit=80)
+        summary["tool"] = compact(str(action.get("tool", "")), limit=80)
+        summary["argument_keys"] = sorted(str(key) for key in action.get("arguments", {}).keys())[:12]
     if action["action"] == "respond":
         summary["message"] = compact(str(action.get("message", "")), limit=240)
     return summary
@@ -1446,6 +1529,19 @@ def summarize_tool_result(result: dict[str, Any]) -> str:
         if stderr:
             return f"exit_code={exit_code}; stderr={stderr}"
         return f"exit_code={exit_code}"
+    if result["tool"] == "mcp_call":
+        server = output.get("server", "")
+        tool = output.get("tool", "")
+        mcp_result = output.get("result", {})
+        text_parts = [
+            str(item.get("text", ""))
+            for item in mcp_result.get("content", [])
+            if isinstance(item, dict) and item.get("text")
+        ] if isinstance(mcp_result, dict) else []
+        text = compact(" ".join(text_parts), limit=180)
+        if text:
+            return f"{server}.{tool}: {text}"
+        return f"{server}.{tool}: call completed"
     return compact(str(output), limit=240)
 
 

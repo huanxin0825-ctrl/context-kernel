@@ -287,6 +287,50 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(trace["policy"]["subject"], "fake.echo")
             self.assertEqual(trace["output"]["result"]["content"][0]["text"], "echo:hello")
 
+    def test_agent_loop_can_call_mcp_tool_then_respond(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server_path = root / "fake_agent_mcp_server.py"
+            server_path.write_text(
+                "\n".join(
+                    [
+                        "import json, sys",
+                        "for line in sys.stdin:",
+                        "    msg = json.loads(line)",
+                        "    method = msg.get('method')",
+                        "    if method == 'initialize':",
+                        "        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'protocolVersion':'2024-11-05','serverInfo':{'name':'agent-mcp'}}}), flush=True)",
+                        "    elif method == 'tools/list':",
+                        "        tools = [{'name':'echo','description':'Echo text'}]",
+                        "        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'tools':tools}}), flush=True)",
+                        "    elif method == 'tools/call':",
+                        "        text = msg.get('params', {}).get('arguments', {}).get('text', '')",
+                        "        result = {'content':[{'type':'text','text':'agent-echo:' + text}]}",
+                        "        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':result}), flush=True)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            workspace = Workspace(root)
+            workspace.init()
+            add_mcp_server(workspace, "fake", command=f'"{sys.executable}" "{server_path}"')
+            with patch("sys.stdout", new=io.StringIO()):
+                main(["--workspace", str(workspace.root), "mcp", "refresh", "fake"])
+
+            report = AgentLoop(workspace).run(
+                "Use MCP to echo hello.",
+                provider_name="mock",
+                budget=1800,
+                max_steps=2,
+                remember=False,
+            )
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual([step["action"]["action"] for step in report["steps"]], ["mcp_call", "respond"])
+            self.assertIn("agent-echo:Use MCP to echo hello.", report["final_response"])
+            traces = ToolExecutor(workspace).list_traces()
+            self.assertEqual(ToolExecutor(workspace).get_trace(traces[0]["id"])["tool"], "mcp_call")
+
     def test_project_scan_cli_outputs_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1729,6 +1773,12 @@ class RuntimeTests(unittest.TestCase):
         command_action = parse_agent_action(
             '{"tool_calls":[{"function":{"name":"run-command","arguments":"{\\"command\\":\\"python -V\\",\\"timeout_seconds\\":5}"}}]}'
         )
+        mcp_action = parse_agent_action(
+            '{"action":"mcp_call","server":"fake","tool":"echo","arguments":{"text":"hi"},"timeout_seconds":3}'
+        )
+        mcp_tool_shape = parse_agent_action(
+            '{"tool":"mcp_call","arguments":{"server":"fake","tool":"echo","arguments":{"text":"nested"}}}'
+        )
         response_action = parse_agent_action(
             '{"actions":[{"name":"final_answer","arguments":{"message":"ready","reason":"done"}}]}'
         )
@@ -1738,6 +1788,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(command_action["action"], "run_command")
         self.assertEqual(command_action["command"], "python -V")
         self.assertEqual(command_action["timeout_seconds"], 5)
+        self.assertEqual(mcp_action["action"], "mcp_call")
+        self.assertEqual(mcp_action["server"], "fake")
+        self.assertEqual(mcp_action["tool"], "echo")
+        self.assertEqual(mcp_action["arguments"], {"text": "hi"})
+        self.assertEqual(mcp_action["timeout_seconds"], 3)
+        self.assertEqual(mcp_tool_shape["action"], "mcp_call")
+        self.assertEqual(mcp_tool_shape["arguments"], {"text": "nested"})
         self.assertEqual(response_action["action"], "respond")
         self.assertEqual(response_action["message"], "ready")
 

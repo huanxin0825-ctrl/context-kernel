@@ -8,6 +8,17 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.14 - 2026-05-14
+
+### Added
+
+- Added `mcp_call` to the agent action contract so the agent loop can call discovered MCP tools automatically.
+- Added MCP call summaries, diagnostics, and saved action metadata for agent-driven MCP traces.
+
+### Changed
+
+- Updated the mock planning provider to exercise MCP calls in tests when enabled MCP tools are present.
+
 ## 0.1.13 - 2026-05-14
 
 ### Added

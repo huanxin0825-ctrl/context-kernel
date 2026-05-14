@@ -87,11 +87,13 @@ class MockProvider:
         linked_tools = packet.get("task", {}).get("brief", {}).get("linked_tool_traces", [])
         allowed_roots = set(packet.get("runtime", {}).get("command_policy", {}).get("allowed_roots", []))
         project = packet.get("runtime", {}).get("project")
+        mcp = packet.get("runtime", {}).get("mcp")
         project_commands = project.get("commands", {}) if isinstance(project, dict) else {}
         payload = (
             self._mock_batch_patch_verify_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_patch_verify_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_write_verify_action(request, linked_tools, allowed_roots, project_commands)
+            or self._mock_mcp_call_action(request, linked_tools, mcp if isinstance(mcp, dict) else {})
             or self._mock_read_file_action(request, linked_tools)
             or self._mock_fix_failing_tests_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_run_command_action(request, linked_tools, allowed_roots, project_commands)
@@ -481,6 +483,54 @@ class MockProvider:
             allowed_roots,
             reason="Need command output before responding.",
         )
+
+    def _mock_mcp_call_action(
+        self,
+        request: str,
+        linked_tools: list[dict[str, Any]],
+        mcp: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        lower = request.casefold()
+        if "mcp" not in lower and "tool" not in lower:
+            return None
+        for server in mcp.get("servers", []):
+            if not isinstance(server, dict):
+                continue
+            server_name = str(server.get("name", "")).strip()
+            tools = server.get("tools", [])
+            if not server_name or not isinstance(tools, list) or not tools:
+                continue
+            tool = next((item for item in tools if isinstance(item, dict) and item.get("name")), None)
+            if not tool:
+                continue
+            tool_name = str(tool["name"]).strip()
+            subject = f"{server_name}.{tool_name}"
+            prior = find_tool_trace(linked_tools, "mcp_call", subject)
+            if not prior:
+                arguments: dict[str, Any] = {}
+                if tool_name.casefold() == "echo":
+                    arguments["text"] = request
+                return {
+                    "action": "mcp_call",
+                    "server": server_name,
+                    "tool": tool_name,
+                    "arguments": arguments,
+                    "timeout_seconds": 10,
+                    "reason": "Use the discovered MCP tool requested by the user.",
+                }
+            summary = prior.get("output_summary") or "MCP call completed"
+            if prior.get("blocked") or not prior.get("ok", False):
+                return {
+                    "action": "respond",
+                    "message": f"MCP tool {subject} failed: {summary}",
+                    "reason": "Stop because the MCP call did not succeed.",
+                }
+            return {
+                "action": "respond",
+                "message": f"MCP tool {subject} result: {summary}",
+                "reason": "The MCP tool result is already available in task state.",
+            }
+        return None
 
     def _mock_fix_failing_tests_action(
         self,

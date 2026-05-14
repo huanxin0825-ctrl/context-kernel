@@ -38,7 +38,7 @@ Context Kernel is an experiment in moving those responsibilities into a runtime 
 - Progressive skill contracts: load only the level of a skill that the task needs.
 - Token budgets: estimate and report context pressure before provider calls.
 - Resumable task planning: keep long work in structured milestones and compact checkpoints instead of replaying chat history.
-- Bounded agent loop: support `read_file`, `write_file`, `patch_file`, `batch_patch`, `run_command`, and `respond` actions.
+- Bounded agent loop: support `read_file`, `write_file`, `patch_file`, `batch_patch`, `run_command`, `mcp_call`, and `respond` actions.
 - Policy-gated tools: keep file and command execution behind explicit runtime checks.
 - Traceability: write run traces, tool traces, compact agent reports, and token cost reports.
 - Regression gates: compare evals and benchmarks, including behavior and token cost regressions.
@@ -218,7 +218,7 @@ akernel agent cost <agent-run-id>
 
 Inside `akernel`, type a natural-language task and press Enter. Use `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave.
 
-MCP v1 stores local stdio server configuration in `.akernel/mcp.json`. Enabled MCP servers enter the context packet as compact summaries only: server name, transport, command root, and curated tool summaries. `akernel mcp refresh <name>` starts a stdio MCP server, runs `initialize` and `tools/list`, and stores the discovered tool summaries. `akernel mcp call <name> <tool>` manually invokes a discovered MCP tool and records the result as a tool trace. Automatic agent-side MCP calls remain gated until the policy bridge is complete.
+MCP v1 stores local stdio server configuration in `.akernel/mcp.json`. Enabled MCP servers enter the context packet as compact summaries only: server name, transport, command root, and curated tool summaries. `akernel mcp refresh <name>` starts a stdio MCP server, runs `initialize` and `tools/list`, and stores the discovered tool summaries. `akernel mcp call <name> <tool>` manually invokes a discovered MCP tool and records the result as a tool trace. Agent runs can also choose `mcp_call` automatically, but only for enabled servers and discovered tools listed in the current context packet.
 
 When an agent run cannot continue, the CLI prints a compact diagnostic with a category, reason, and suggested next step. Common categories include provider configuration, provider auth/network/protocol errors, context budget blocks, policy blocks, command failures, malformed provider actions, and loop guards.
 
