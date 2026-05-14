@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "akernel-runtime"
-version = "0.1.6"
+version = "0.1.7"
 description = "Agent Kernel: a CLI-first context-native agent runtime prototype."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["prompt_toolkit>=3.0.43"]
 keywords = ["agent", "cli", "context", "llm", "token-budget"]
 authors = [
   { name = "Context Kernel contributors" },

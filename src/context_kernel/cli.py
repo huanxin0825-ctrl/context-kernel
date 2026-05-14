@@ -43,6 +43,22 @@ from .verifier import verify_trace
 
 DEFAULT_PRIMARY_MODEL = "gpt-5.5"
 DEFAULT_AUXILIARY_MODEL = "gpt-5.3-codex"
+CHAT_COMMANDS: list[tuple[str, str]] = [
+    ("/help", "show command palette"),
+    ("/status", "show workspace and runtime status"),
+    ("/model", "show primary and auxiliary model roles"),
+    ("/config", "show setup and environment guidance"),
+    ("/compact", "show compact task brief"),
+    ("/paste", "enter a multi-line task"),
+    ("/task", "print current task session JSON"),
+    ("/runs", "list recent agent runs"),
+    ("/cost", "print last run cost report"),
+    ("/up", "show older transcript lines"),
+    ("/down", "move back toward latest messages"),
+    ("/latest", "jump to latest messages"),
+    ("/clear", "clear transcript"),
+    ("/exit", "leave interactive session"),
+]
 OPENAI_ENV_KEYS = {
     "api_key": "AKERNEL_OPENAI_API_KEY",
     "base_url": "AKERNEL_OPENAI_BASE_URL",
@@ -1075,7 +1091,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
     print_chat_header(workspace, task_id, args)
     while True:
         try:
-            request = input(chat_prompt(args)).strip()
+            request = read_chat_input(chat_prompt(args), workspace).strip()
         except EOFError:
             print("")
             break
@@ -1236,7 +1252,7 @@ def run_chat_loop_tui(
         render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status="ready", state=state, clear=use_alt_screen)
         while True:
             try:
-                request = input(tui_prompt(args)).strip()
+                request = read_chat_input(tui_prompt(args), workspace).strip()
             except EOFError:
                 break
             except KeyboardInterrupt:
@@ -1392,25 +1408,60 @@ def capture_chat_output(func: Any) -> str:
 
 def format_chat_help_text() -> str:
     rows = [
-        ("/help", "show this command palette"),
-        ("/status", "show workspace and runtime status"),
-        ("/model", "show primary and auxiliary model roles"),
-        ("/config", "show setup and environment guidance"),
-        ("/compact", "show the compact task brief used for resume context"),
-        ("/paste", "enter a multi-line task; finish with /end"),
-        ("@path", "attach a workspace file to the next task"),
-        ("!command", "run a policy-checked command and attach its summary"),
-        ("/task", "print the current task session JSON"),
-        ("/runs", "list recent agent runs"),
-        ("/cost", "print the last agent run cost report"),
-        ("/up", "show older transcript lines in the viewport"),
-        ("/down", "move the viewport back toward latest messages"),
-        ("/latest", "jump to the newest transcript lines"),
-        ("/clear", "clear the transcript"),
-        ("/exit", "leave the interactive session"),
+        *CHAT_COMMANDS,
         ("@query", "search current workspace files; use @1, @2... to attach a listed match"),
+        ("!command", "run a policy-checked command and attach its summary"),
     ]
     return "\n".join(f"{name:<10} {description}" for name, description in rows)
+
+
+def read_chat_input(prompt: str, workspace: Workspace) -> str:
+    if not should_use_prompt_toolkit():
+        return input(prompt)
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.completion import Completer, Completion
+        from prompt_toolkit.formatted_text import ANSI
+        from prompt_toolkit.shortcuts import CompleteStyle
+    except ImportError:
+        return input(prompt)
+
+    class ChatCompleter(Completer):
+        def get_completions(self, document: Any, complete_event: Any) -> Any:
+            text = document.text_before_cursor
+            for value, description in chat_completion_items(workspace.root, text):
+                yield Completion(value, start_position=-len(text), display=value, display_meta=description)
+
+    session = PromptSession(
+        completer=ChatCompleter(),
+        complete_while_typing=True,
+        complete_in_thread=True,
+        complete_style=CompleteStyle.MULTI_COLUMN,
+        reserve_space_for_menu=6,
+    )
+    return session.prompt(ANSI(prompt))
+
+
+def should_use_prompt_toolkit() -> bool:
+    if os.environ.get("AKERNEL_NO_COMPLETION"):
+        return False
+    return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def chat_completion_items(root: Path, text: str, *, limit: int = 12) -> list[tuple[str, str]]:
+    value = text.strip()
+    if value.startswith("/"):
+        query = value.casefold()
+        return [
+            (command, description)
+            for command, description in CHAT_COMMANDS
+            if command.casefold().startswith(query)
+        ][:limit]
+    if value.startswith("@"):
+        query = value[1:].strip()
+        matches = find_workspace_files(root, query, limit=limit)
+        return [(f"@{path}", "attach file") for path in matches]
+    return []
 
 
 def tui_prompt(args: argparse.Namespace) -> str:

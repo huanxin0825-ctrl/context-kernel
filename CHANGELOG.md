@@ -8,6 +8,16 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.7 - 2026-05-14
+
+### Added
+
+- Added real-time chat input completions for slash commands and `@` workspace file search.
+
+### Changed
+
+- Added `prompt_toolkit` as the interactive input dependency, with automatic fallback to native `input()` in non-interactive terminals.
+
 ## 0.1.6 - 2026-05-14
 
 ### Added
