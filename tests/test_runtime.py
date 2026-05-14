@@ -14,6 +14,7 @@ from context_kernel.cli import (
     build_chat_tui_screen,
     chat_completion_items,
     expand_custom_chat_command,
+    format_tui_report,
     load_batch_patch_specs,
     main,
     print_agent_report,
@@ -1362,8 +1363,9 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(reports), 1)
             self.assertIn("AKERNEL", output)
             self.assertIn("shortcuts /help /status /model /commands", output)
-            self.assertIn("Assistant", output)
+            self.assertIn("AKERNEL", output)
             self.assertIn("Mock agent response", output)
+            self.assertNotIn("AKERNEL: Assistant", output)
             self.assertIn("bye", output)
             self.assertEqual(output.count("shortcuts /help /status /model /commands"), 1)
 
@@ -1440,6 +1442,22 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn(("/model", "show primary and auxiliary model roles"), command_items)
             self.assertIn(("@src/runtime.py", "attach file"), file_items)
             self.assertIn(("@README.md", "attach file"), inline_file_items)
+
+    def test_tui_report_defaults_to_clean_assistant_response(self) -> None:
+        report = {
+            "id": "run123",
+            "status": "responded",
+            "max_steps": 5,
+            "totals": {"total_tokens": 123},
+            "steps": [{"action": {"action": "respond"}}],
+            "final_response": "你好！很高兴见到你。",
+        }
+
+        text = format_tui_report(report)
+
+        self.assertEqual(text, "你好！很高兴见到你。")
+        self.assertNotIn("status:", text)
+        self.assertNotIn("agent_run:", text)
 
     def test_chat_inline_file_reference_attaches_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

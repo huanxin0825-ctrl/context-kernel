@@ -1424,6 +1424,7 @@ def read_chat_input(prompt: str, workspace: Workspace) -> str:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.completion import Completer, Completion
         from prompt_toolkit.formatted_text import ANSI
+        from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.shortcuts import CompleteStyle
         from prompt_toolkit.styles import Style
     except ImportError:
@@ -1438,12 +1439,27 @@ def read_chat_input(prompt: str, workspace: Workspace) -> str:
             for value, description in chat_completion_items(workspace.root, text):
                 yield Completion(value, start_position=-len(fragment), display=value, display_meta=description)
 
+    key_bindings = KeyBindings()
+
+    @key_bindings.add("/")
+    def _(event: Any) -> None:
+        event.current_buffer.insert_text("/")
+        if chat_completion_fragment(event.current_buffer.document.text_before_cursor):
+            event.current_buffer.start_completion(select_first=False)
+
+    @key_bindings.add("@")
+    def _(event: Any) -> None:
+        event.current_buffer.insert_text("@")
+        if chat_completion_fragment(event.current_buffer.document.text_before_cursor):
+            event.current_buffer.start_completion(select_first=False)
+
     session = PromptSession(
         completer=ChatCompleter(),
         complete_while_typing=True,
         complete_in_thread=True,
-        complete_style=CompleteStyle.MULTI_COLUMN,
+        complete_style=CompleteStyle.READLINE_LIKE,
         bottom_toolbar=" / opens commands   @ finds files   Tab accepts   Ctrl-C interrupts ",
+        key_bindings=key_bindings,
         reserve_space_for_menu=6,
         style=Style.from_dict({"bottom-toolbar": "reverse ansiblack ansibrightcyan"}),
     )
@@ -1548,8 +1564,17 @@ def render_chat_tui_status(
     *,
     last_report: dict[str, Any] | None = None,
 ) -> None:
-    tokens = 0 if not last_report else last_report.get("totals", {}).get("total_tokens", 0)
-    summary = f"{status} | provider {args.provider} | primary {primary_model(args)} | attached {len(pending_context)} | tokens {tokens}"
+    if last_report:
+        tokens = last_report.get("totals", {}).get("total_tokens", 0)
+        run_id = str(last_report.get("id", ""))[:12]
+        run_status = str(last_report.get("status", status))
+        summary = f"{run_status} | {tokens} tokens | run {run_id} | /cost"
+    elif status == "running":
+        attached = f" | ctx {len(pending_context)}" if pending_context else ""
+        summary = f"thinking | {primary_model(args)}{attached}"
+    else:
+        attached = f" | ctx {len(pending_context)}" if pending_context else ""
+        summary = f"{status} | {primary_model(args)}{attached} | / commands | @ files"
     print(chat_color(truncate_line(summary, chat_width()), "dim"))
 
 
@@ -1676,6 +1701,8 @@ def tui_role_label(role: str, title: str) -> str:
         "system": "SYSTEM",
     }
     base = labels.get(role, role.upper())
+    if role == "assistant" and title.casefold() in {"assistant", "akernel"}:
+        return base
     return f"{base}: {title}" if title and title.casefold() != base.casefold() else base
 
 
@@ -1792,23 +1819,19 @@ def slice_tui_body(lines: list[str], height: int, scroll_offset: int, width: int
 
 
 def format_tui_report(report: dict[str, Any]) -> str:
-    actions = " -> ".join(str((step.get("action") or {}).get("action") or "none") for step in report.get("steps", []))
-    parts = [
-        f"status: {report.get('status')}",
-        f"agent_run: {report.get('id')}",
-        f"steps: {len(report.get('steps', []))}/{report.get('max_steps')}",
-        f"tokens: {report.get('totals', {}).get('total_tokens', 0)}",
-    ]
-    if actions:
-        parts.append(f"actions: {actions}")
+    final_response = str(report.get("final_response") or "").strip()
+    if final_response:
+        return final_response
+
     diagnostic = report.get("diagnostic")
     if isinstance(diagnostic, dict) and diagnostic:
-        parts.append(f"diagnostic: {diagnostic.get('category')}")
-        parts.append(f"next: {diagnostic.get('suggestion')}")
-    if report.get("final_response"):
-        parts.append("")
-        parts.append(str(report["final_response"]))
-    return "\n".join(parts)
+        category = diagnostic.get("category") or "unknown"
+        suggestion = diagnostic.get("suggestion") or "Use /runs for details."
+        return f"Run failed: {category}\nNext: {suggestion}"
+
+    status = report.get("status", "finished")
+    run_id = report.get("id", "")
+    return f"Run {status}. Use /runs for details. run={run_id}"
 
 
 def tui_rule(title: str, width: int) -> str:

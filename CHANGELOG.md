@@ -8,6 +8,13 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.10 - 2026-05-14
+
+### Changed
+
+- Made default TUI assistant turns display only the assistant answer, moving run metadata into the compact status line.
+- Switched prompt completions to a more visible readline-style menu and explicitly opens suggestions when `/` or `@` is typed.
+
 ## 0.1.9 - 2026-05-14
 
 ### Added
