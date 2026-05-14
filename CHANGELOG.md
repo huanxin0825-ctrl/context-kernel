@@ -8,6 +8,18 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.9 - 2026-05-14
+
+### Added
+
+- Added inline `@path` attachment inside normal chat tasks, so exact workspace files can be referenced without a separate attach command.
+- Added project and user Markdown slash commands under `.akernel/commands` and `~/.akernel/commands`, with `/commands` discovery and completion.
+
+### Changed
+
+- Reworked the default TUI startup into a quieter chat-first header while keeping the full cockpit dashboard available with `AKERNEL_ALT_SCREEN=1`.
+- Improved command and file completion so `/` and `@` work on the current cursor token, including inline text such as `inspect @README`.
+
 ## 0.1.8 - 2026-05-14
 
 ### Changed

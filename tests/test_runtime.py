@@ -10,7 +10,14 @@ from unittest.mock import patch
 from context_kernel.agent_reports import build_agent_cost_report, render_agent_cost_report
 from context_kernel.benchmarks import BenchmarkRunner, render_benchmark_evidence_markdown, render_benchmark_markdown
 from context_kernel.budget import allocate_budget
-from context_kernel.cli import build_chat_tui_screen, chat_completion_items, load_batch_patch_specs, main, print_agent_report
+from context_kernel.cli import (
+    build_chat_tui_screen,
+    chat_completion_items,
+    expand_custom_chat_command,
+    load_batch_patch_specs,
+    main,
+    print_agent_report,
+)
 from context_kernel.context import ContextBuilder
 from context_kernel.evals import EvalRunner
 from context_kernel.global_memory import pull_global_memories, push_global_memories
@@ -1353,11 +1360,12 @@ class RuntimeTests(unittest.TestCase):
             reports = list(workspace.agent_runs_dir.glob("*.json"))
 
             self.assertEqual(len(reports), 1)
-            self.assertIn("AKERNEL // READY", output)
+            self.assertIn("AKERNEL", output)
+            self.assertIn("shortcuts /help /status /model /commands", output)
             self.assertIn("Assistant", output)
             self.assertIn("Mock agent response", output)
             self.assertIn("bye", output)
-            self.assertEqual(output.count("AKERNEL // READY"), 1)
+            self.assertEqual(output.count("shortcuts /help /status /model /commands"), 1)
 
     def test_tui_screen_can_render_older_history_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1427,9 +1435,48 @@ class RuntimeTests(unittest.TestCase):
 
             command_items = chat_completion_items(root, "/mo")
             file_items = chat_completion_items(root, "@run")
+            inline_file_items = chat_completion_items(root, "please inspect @REA")
 
             self.assertIn(("/model", "show primary and auxiliary model roles"), command_items)
             self.assertIn(("@src/runtime.py", "attach file"), file_items)
+            self.assertIn(("@README.md", "attach file"), inline_file_items)
+
+    def test_chat_inline_file_reference_attaches_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "notes.md").write_text("inline context works", encoding="utf-8")
+            workspace = Workspace(root)
+            workspace.init()
+
+            with patch("builtins.input", side_effect=["Summarize @notes.md", "/exit"]):
+                with patch("sys.stdout", new=io.StringIO()):
+                    main(["--workspace", str(workspace.root), "chat", "--provider", "mock", "--max-steps", "1"])
+
+            reports = list(workspace.agent_runs_dir.glob("*.json"))
+            tool_traces = list(workspace.tool_traces_dir.glob("*.json"))
+            saved = Workspace.read_json(reports[0])
+
+            self.assertEqual(len(reports), 1)
+            self.assertGreaterEqual(len(tool_traces), 1)
+            self.assertIn("inline context works", saved["request"])
+
+    def test_custom_slash_command_expands_saved_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            command_dir = root / ".akernel" / "commands"
+            command_dir.mkdir(parents=True)
+            (command_dir / "review.md").write_text(
+                "---\ndescription: Review the current change\n---\nReview this change: {{args}}",
+                encoding="utf-8",
+            )
+            workspace = Workspace(root)
+            workspace.init()
+
+            items = chat_completion_items(root, "/rev")
+            expanded = expand_custom_chat_command(root, "/review cli polish")
+
+            self.assertIn(("/review", "project command: Review the current change"), items)
+            self.assertEqual(expanded, "Review this change: cli polish")
 
     def test_tui_screen_surfaces_task_plan_and_command_strip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

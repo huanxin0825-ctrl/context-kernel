@@ -3,7 +3,10 @@
 .env.*
 !.env.example
 .sandbox/
-.akernel/
+.sandbox-scale/
+.akernel/*
+!.akernel/commands/
+!.akernel/commands/**
 __pycache__/
 *.py[cod]
 .pytest_cache/

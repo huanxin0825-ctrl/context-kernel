@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import unicodedata
@@ -49,6 +50,7 @@ CHAT_COMMANDS: list[tuple[str, str]] = [
     ("/model", "show primary and auxiliary model roles"),
     ("/config", "show setup and environment guidance"),
     ("/compact", "show compact task brief"),
+    ("/commands", "list project and user slash commands"),
     ("/paste", "enter a multi-line task"),
     ("/task", "print current task session JSON"),
     ("/runs", "list recent agent runs"),
@@ -59,6 +61,7 @@ CHAT_COMMANDS: list[tuple[str, str]] = [
     ("/clear", "clear transcript"),
     ("/exit", "leave interactive session"),
 ]
+INLINE_FILE_REF_RE = re.compile(r"(?<![\w@])@([^\s,;:]+)")
 OPENAI_ENV_KEYS = {
     "api_key": "AKERNEL_OPENAI_API_KEY",
     "base_url": "AKERNEL_OPENAI_BASE_URL",
@@ -1111,6 +1114,9 @@ def cmd_chat(args: argparse.Namespace) -> None:
         if lowered == "/compact":
             print_task_brief_panel(tasks, task_id)
             continue
+        if lowered == "/commands":
+            print_custom_commands_panel(workspace.root)
+            continue
         if lowered == "/paste":
             pasted = read_paste_block()
             if not pasted:
@@ -1149,25 +1155,14 @@ def cmd_chat(args: argparse.Namespace) -> None:
                 print(render_agent_cost_report(build_agent_cost_report(last_report)))
             continue
 
+        attach_inline_file_references(workspace, tasks, task_id, request, pending_context)
+        custom_prompt = expand_custom_chat_command(workspace.root, request)
+        if custom_prompt is not None:
+            request = custom_prompt
         request_for_agent = merge_pending_context(request, pending_context)
         pending_context.clear()
         print_chat_turn_start(request_for_agent, args)
-        last_report = AgentLoop(workspace).run(
-            request_for_agent,
-            provider_name=args.provider,
-            budget=args.budget,
-            profile=args.profile,
-            model=args.model,
-            aux_model=args.aux_model,
-            model_routing=args.model_routing,
-            aux_review=args.aux_review,
-            base_url=args.base_url,
-            task_id=task_id,
-            max_steps=args.max_steps,
-            remember=not args.no_remember,
-            allow_over_budget=args.allow_over_budget,
-            expect_json=args.expect_json,
-        )
+        last_report = run_chat_agent(workspace, task_id, args, request_for_agent)
         print_chat_report(last_report)
 
 
@@ -1286,30 +1281,27 @@ def run_chat_loop_tui(
                 render_chat_tui_update(workspace, task_id, args, transcript, last_report, pending_context, status="ready", state=state, clear=use_alt_screen)
                 continue
 
+            state["scroll_offset"] = 0
+            attach_notice = capture_chat_output(
+                lambda: attach_inline_file_references(workspace, tasks, task_id, request, pending_context)
+            )
+            if attach_notice:
+                transcript.append({"role": "system", "title": "Attached Context", "text": attach_notice})
+                render_chat_tui_message(transcript[-1])
+                state["rendered_count"] = len(transcript)
+            custom_prompt = expand_custom_chat_command(workspace.root, request)
+            if custom_prompt is not None:
+                request = custom_prompt
             request_for_agent = merge_pending_context(request, pending_context)
             pending_context.clear()
-            state["scroll_offset"] = 0
             transcript.append({"role": "user", "title": "You", "text": request_for_agent})
             render_chat_tui_message({"role": "user", "title": "You", "text": request_for_agent})
+            state["rendered_count"] = len(transcript)
             render_chat_tui_status("running", args, pending_context)
-            last_report = AgentLoop(workspace).run(
-                request_for_agent,
-                provider_name=args.provider,
-                budget=args.budget,
-                profile=args.profile,
-                model=args.model,
-                aux_model=args.aux_model,
-                model_routing=args.model_routing,
-                aux_review=args.aux_review,
-                base_url=args.base_url,
-                task_id=task_id,
-                max_steps=args.max_steps,
-                remember=not args.no_remember,
-                allow_over_budget=args.allow_over_budget,
-                expect_json=args.expect_json,
-            )
+            last_report = run_chat_agent(workspace, task_id, args, request_for_agent)
             transcript.append({"role": "assistant", "title": "Assistant", "text": format_tui_report(last_report)})
             render_chat_tui_message({"role": "assistant", "title": "Assistant", "text": format_tui_report(last_report)})
+            state["rendered_count"] = len(transcript)
             render_chat_tui_status("ready", args, pending_context, last_report=last_report)
     finally:
         if use_alt_screen:
@@ -1345,6 +1337,9 @@ def handle_tui_command(
     if lowered == "/compact":
         transcript.append({"role": "system", "title": "Compact Brief", "text": capture_chat_output(lambda: print_task_brief_panel(tasks, task_id))})
         return True
+    if lowered == "/commands":
+        transcript.append({"role": "system", "title": "Slash Commands", "text": capture_chat_output(lambda: print_custom_commands_panel(workspace.root))})
+        return True
     if lowered == "/status":
         transcript.append({"role": "system", "title": "Status", "text": capture_chat_output(lambda: print_status_panel(workspace, task_id, args))})
         return True
@@ -1371,22 +1366,7 @@ def handle_tui_command(
             transcript.append({"role": "user", "title": "Pasted Task", "text": pasted})
             request_for_agent = merge_pending_context(pasted, pending_context)
             pending_context.clear()
-            report = AgentLoop(workspace).run(
-                request_for_agent,
-                provider_name=args.provider,
-                budget=args.budget,
-                profile=args.profile,
-                model=args.model,
-                aux_model=args.aux_model,
-                model_routing=args.model_routing,
-                aux_review=args.aux_review,
-                base_url=args.base_url,
-                task_id=task_id,
-                max_steps=args.max_steps,
-                remember=not args.no_remember,
-                allow_over_budget=args.allow_over_budget,
-                expect_json=args.expect_json,
-            )
+            report = run_chat_agent(workspace, task_id, args, request_for_agent)
             state["last_report"] = report
             transcript.append({"role": "assistant", "title": "Assistant", "text": format_tui_report(report)})
         return True
@@ -1408,10 +1388,30 @@ def capture_chat_output(func: Any) -> str:
     return buffer.getvalue().strip()
 
 
+def run_chat_agent(workspace: Workspace, task_id: str, args: argparse.Namespace, request: str) -> dict[str, Any]:
+    return AgentLoop(workspace).run(
+        request,
+        provider_name=args.provider,
+        budget=args.budget,
+        profile=args.profile,
+        model=args.model,
+        aux_model=args.aux_model,
+        model_routing=args.model_routing,
+        aux_review=args.aux_review,
+        base_url=args.base_url,
+        task_id=task_id,
+        max_steps=args.max_steps,
+        remember=not args.no_remember,
+        allow_over_budget=args.allow_over_budget,
+        expect_json=args.expect_json,
+    )
+
+
 def format_chat_help_text() -> str:
     rows = [
         *CHAT_COMMANDS,
         ("@query", "search current workspace files; use @1, @2... to attach a listed match"),
+        ("@path", "mention an exact file path inside a task to attach it automatically"),
         ("!command", "run a policy-checked command and attach its summary"),
     ]
     return "\n".join(f"{name:<10} {description}" for name, description in rows)
@@ -1425,21 +1425,27 @@ def read_chat_input(prompt: str, workspace: Workspace) -> str:
         from prompt_toolkit.completion import Completer, Completion
         from prompt_toolkit.formatted_text import ANSI
         from prompt_toolkit.shortcuts import CompleteStyle
+        from prompt_toolkit.styles import Style
     except ImportError:
         return input(prompt)
 
     class ChatCompleter(Completer):
         def get_completions(self, document: Any, complete_event: Any) -> Any:
             text = document.text_before_cursor
+            fragment = chat_completion_fragment(text)
+            if not fragment:
+                return
             for value, description in chat_completion_items(workspace.root, text):
-                yield Completion(value, start_position=-len(text), display=value, display_meta=description)
+                yield Completion(value, start_position=-len(fragment), display=value, display_meta=description)
 
     session = PromptSession(
         completer=ChatCompleter(),
         complete_while_typing=True,
         complete_in_thread=True,
         complete_style=CompleteStyle.MULTI_COLUMN,
+        bottom_toolbar=" / opens commands   @ finds files   Tab accepts   Ctrl-C interrupts ",
         reserve_space_for_menu=6,
+        style=Style.from_dict({"bottom-toolbar": "reverse ansiblack ansibrightcyan"}),
     )
     return session.prompt(ANSI(prompt))
 
@@ -1450,15 +1456,26 @@ def should_use_prompt_toolkit() -> bool:
     return bool(sys.stdin.isatty() and sys.stdout.isatty())
 
 
+def chat_completion_fragment(text: str) -> str:
+    match = re.search(r"(^|\s)([/@][^\s]*)$", text)
+    return match.group(2) if match else ""
+
+
 def chat_completion_items(root: Path, text: str, *, limit: int = 12) -> list[tuple[str, str]]:
-    value = text.strip()
+    value = chat_completion_fragment(text) or text.strip()
     if value.startswith("/"):
         query = value.casefold()
-        return [
+        builtins = [
             (command, description)
             for command, description in CHAT_COMMANDS
             if command.casefold().startswith(query)
-        ][:limit]
+        ]
+        custom = [
+            (command, f"{spec['scope']} command: {spec['description']}")
+            for command, spec in load_custom_chat_commands(root).items()
+            if command.casefold().startswith(query)
+        ]
+        return (builtins + custom)[:limit]
     if value.startswith("@"):
         query = value[1:].strip()
         matches = find_workspace_files(root, query, limit=limit)
@@ -1485,6 +1502,8 @@ def render_chat_tui_screen(
     screen = build_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status=status, state=state)
     prefix = "\033[2J\033[H" if clear else "\n"
     print(prefix + screen + ("\n" if not clear else ""), end="")
+    if state is not None:
+        state["rendered_count"] = len(transcript)
 
 
 def render_chat_tui_update(
@@ -1502,8 +1521,11 @@ def render_chat_tui_update(
     if clear:
         render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status=status, state=state, clear=True)
         return
-    if transcript:
-        render_chat_tui_message(transcript[-1])
+    start = int((state or {}).get("rendered_count", max(0, len(transcript) - 1)))
+    for item in transcript[start:]:
+        render_chat_tui_message(item)
+    if state is not None:
+        state["rendered_count"] = len(transcript)
     render_chat_tui_status(status, args, pending_context, last_report=last_report)
 
 
@@ -1543,9 +1565,9 @@ def build_chat_tui_screen(
     state: dict[str, Any] | None = None,
 ) -> str:
     width = chat_width()
-    height = max(24, shutil.get_terminal_size((width, 32)).lines)
     if (state or {}).get("scrollback_mode"):
-        height = min(height, 22)
+        return "\n".join(tui_compact_start_lines(workspace, task_id, args, last_report, pending_context, status=status, width=width))
+    height = max(24, shutil.get_terminal_size((width, 32)).lines)
     right_width = min(40, max(32, width // 3))
     left_width = max(46, width - right_width - 3)
     header = tui_header_lines(workspace, args, last_report, status=status, width=width)
@@ -1563,6 +1585,34 @@ def build_chat_tui_screen(
         lines.append(f"{pad_display(left, left_width)} {chat_color('|', 'dim')} {pad_display(right, right_width)}")
     lines.extend(footer)
     return "\n".join(lines)
+
+
+def tui_compact_start_lines(
+    workspace: Workspace,
+    task_id: str,
+    args: argparse.Namespace,
+    last_report: dict[str, Any] | None,
+    pending_context: list[str],
+    *,
+    status: str,
+    width: int,
+) -> list[str]:
+    tokens = 0 if not last_report else last_report.get("totals", {}).get("total_tokens", 0)
+    task_short = task_id[:12]
+    return [
+        "",
+        chat_color(truncate_line("AKERNEL", width), "cyan", bold=True),
+        chat_color(truncate_line("Token-frugal agent workspace. Focused chat, explicit context, durable memory.", width), "dim"),
+        "",
+        truncate_line(f"cwd      {compact_path(Path.cwd())}", width),
+        truncate_line(f"work     {compact_path(workspace.root)}", width),
+        truncate_line(f"models   primary {primary_model(args)} | aux {auxiliary_model(args)} | routing {args.model_routing}", width),
+        truncate_line(f"session  task {task_short} | provider {args.provider} | profile {args.profile} | tokens {tokens} | status {status}", width),
+        truncate_line(f"context  attached {len(pending_context)} | type @ to search files, or mention @path inside a task", width),
+        "",
+        chat_color(truncate_line("shortcuts /help /status /model /commands /compact /runs /cost /clear /exit", width), "dim"),
+        chat_color(truncate_line("input     ask one concrete task; use !command for checked shell context", width), "dim"),
+    ]
 
 
 def tui_header_lines(
@@ -1858,8 +1908,10 @@ def print_chat_help() -> None:
             ("/model", "show primary and auxiliary model roles"),
             ("/config", "show setup and environment guidance"),
             ("/compact", "show the compact task brief used for resume context"),
+            ("/commands", "list saved project and user slash commands"),
             ("/paste", "enter a multi-line task; finish with /end"),
             ("@query", "search workspace files; use @1, @2... to attach a listed match"),
+            ("@path", "mention an exact file path inside a task to attach it automatically"),
             ("!command", "run a policy-checked command and attach its summary"),
             ("/task", "print the current task session JSON"),
             ("/runs", "list recent agent runs"),
@@ -1893,6 +1945,100 @@ def print_recent_agent_runs(workspace: Workspace, *, limit: int) -> None:
         )
 
 
+def load_custom_chat_commands(root: Path) -> dict[str, dict[str, str]]:
+    commands: dict[str, dict[str, str]] = {}
+    for directory, scope in custom_command_directories(root):
+        if not directory.exists():
+            continue
+        for path in sorted(directory.rglob("*.md"))[:80]:
+            try:
+                relative = path.relative_to(directory).with_suffix("").as_posix()
+                body = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            name = "/" + relative.strip("/")
+            if not re.fullmatch(r"/[A-Za-z0-9][A-Za-z0-9_\-/]*", name):
+                continue
+            description, prompt = parse_custom_command(body)
+            commands.setdefault(
+                name,
+                {
+                    "description": description or first_non_empty_line(prompt) or "run saved prompt",
+                    "path": str(path),
+                    "prompt": prompt,
+                    "scope": scope,
+                },
+            )
+    return commands
+
+
+def custom_command_directories(root: Path) -> list[tuple[Path, str]]:
+    return [
+        (root / ".akernel" / "commands", "project"),
+        (Path.home() / ".akernel" / "commands", "user"),
+    ]
+
+
+def parse_custom_command(text: str) -> tuple[str, str]:
+    description = ""
+    body = text.strip()
+    if body.startswith("---"):
+        parts = body.split("---", 2)
+        if len(parts) == 3:
+            meta = parts[1]
+            body = parts[2].strip()
+            for line in meta.splitlines():
+                key, _, value = line.partition(":")
+                if key.strip().casefold() == "description":
+                    description = value.strip().strip('"').strip("'")
+                    break
+    return description, body
+
+
+def first_non_empty_line(text: str) -> str:
+    for line in text.splitlines():
+        value = line.strip().lstrip("#").strip()
+        if value:
+            return value[:80]
+    return ""
+
+
+def print_custom_commands_panel(root: Path) -> None:
+    commands = load_custom_chat_commands(root)
+    if not commands:
+        chat_notice(
+            "Slash Commands",
+            "No custom commands yet. Add Markdown prompts under .akernel/commands or ~/.akernel/commands.",
+        )
+        return
+    chat_panel(
+        "Slash Commands",
+        [
+            (name, f"{spec['description']} ({spec['scope']})")
+            for name, spec in sorted(commands.items())
+        ],
+    )
+
+
+def expand_custom_chat_command(root: Path, request: str) -> str | None:
+    command, _, arguments = request.strip().partition(" ")
+    if not command.startswith("/"):
+        return None
+    spec = load_custom_chat_commands(root).get(command)
+    if not spec:
+        return None
+    prompt = spec["prompt"]
+    if not prompt:
+        return arguments.strip() or f"Run custom command {command}."
+    arguments = arguments.strip()
+    return (
+        prompt.replace("{{args}}", arguments)
+        .replace("{{arguments}}", arguments)
+        .replace("$ARGUMENTS", arguments)
+        .strip()
+    )
+
+
 IGNORED_FILE_FINDER_DIRS = {
     ".git",
     ".hg",
@@ -1906,6 +2052,26 @@ IGNORED_FILE_FINDER_DIRS = {
     "dist",
     "build",
 }
+
+
+def attach_inline_file_references(
+    workspace: Workspace,
+    tasks: TaskStore,
+    task_id: str,
+    request: str,
+    pending_context: list[str],
+) -> int:
+    attached = 0
+    seen: set[str] = set()
+    for match in INLINE_FILE_REF_RE.finditer(request):
+        path = match.group(1).strip("`'\".,;:!?)]}")
+        if not path or path.isdigit() or path in seen:
+            continue
+        seen.add(path)
+        if (workspace.root / path).is_file():
+            attach_chat_file(workspace, tasks, task_id, path, pending_context)
+            attached += 1
+    return attached
 
 
 def attach_chat_file_command(
