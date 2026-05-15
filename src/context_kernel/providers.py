@@ -19,6 +19,9 @@ ENV_ALIASES = {
     "AKERNEL_OPENAI_BASE_URL": "CONTEXT_KERNEL_OPENAI_BASE_URL",
     "AKERNEL_OPENAI_MODEL": "CONTEXT_KERNEL_OPENAI_MODEL",
     "AKERNEL_OPENAI_AUX_MODEL": "CONTEXT_KERNEL_OPENAI_AUX_MODEL",
+    "AKERNEL_OPENAI_TIMEOUT_SECONDS": "CONTEXT_KERNEL_OPENAI_TIMEOUT_SECONDS",
+    "AKERNEL_OPENAI_MAX_RETRIES": "CONTEXT_KERNEL_OPENAI_MAX_RETRIES",
+    "AKERNEL_OPENAI_RETRY_BACKOFF_SECONDS": "CONTEXT_KERNEL_OPENAI_RETRY_BACKOFF_SECONDS",
     "AKERNEL_PROJECT_ROOT": "CONTEXT_KERNEL_PROJECT_ROOT",
 }
 
@@ -747,12 +750,21 @@ class OpenAICompatibleProvider:
         model: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout_seconds: int = 120,
+        timeout_seconds: int | None = None,
+        max_retries: int | None = None,
+        retry_backoff_seconds: float | None = None,
     ):
         self.model = model or env_value("AKERNEL_OPENAI_MODEL") or "gpt-5.5"
         self.base_url = normalize_openai_base_url(base_url or env_value("AKERNEL_OPENAI_BASE_URL") or "")
         self.api_key = api_key or env_value("AKERNEL_OPENAI_API_KEY")
-        self.timeout_seconds = timeout_seconds
+        self.timeout_seconds = timeout_seconds if timeout_seconds is not None else env_int("AKERNEL_OPENAI_TIMEOUT_SECONDS", 180)
+        self.max_retries = max(0, max_retries if max_retries is not None else env_int("AKERNEL_OPENAI_MAX_RETRIES", 3))
+        self.retry_backoff_seconds = max(
+            0.0,
+            retry_backoff_seconds
+            if retry_backoff_seconds is not None
+            else env_float("AKERNEL_OPENAI_RETRY_BACKOFF_SECONDS", 1.5),
+        )
         if not self.base_url:
             raise ValueError("Missing AKERNEL_OPENAI_BASE_URL for OpenAI-compatible provider.")
         if not self.api_key:
@@ -810,7 +822,8 @@ class OpenAICompatibleProvider:
 
     def _open_json(self, request: urllib.request.Request) -> dict[str, Any]:
         last_error: urllib.error.URLError | TimeoutError | None = None
-        for attempt in range(2):
+        attempts = self.max_retries + 1
+        for attempt in range(attempts):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                     body = response.read().decode("utf-8")
@@ -824,12 +837,13 @@ class OpenAICompatibleProvider:
                 raise RuntimeError(f"Provider HTTP {exc.code}: {body}") from exc
             except (urllib.error.URLError, TimeoutError) as exc:
                 last_error = exc
-                if attempt == 0:
-                    time.sleep(0.8)
+                if attempt < attempts - 1:
+                    time.sleep(retry_delay(self.retry_backoff_seconds, attempt))
                     continue
         url = getattr(request, "full_url", self.base_url)
         raise RuntimeError(
-            f"Provider network error after retry: url={url} timeout={self.timeout_seconds}s error={last_error}"
+            f"Provider network error after {attempts} attempt(s): url={url} timeout={self.timeout_seconds}s "
+            f"retries={self.max_retries} error={last_error}"
         ) from last_error
 
 
@@ -905,6 +919,32 @@ def env_value(name: str) -> str | None:
             return value
     env_file = project_env_values()
     return env_file.get(name) or (env_file.get(legacy_name) if legacy_name else None)
+
+
+def env_int(name: str, default: int) -> int:
+    value = env_value(name)
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    value = env_value(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def retry_delay(base_seconds: float, attempt: int) -> float:
+    if base_seconds <= 0:
+        return 0.0
+    return min(30.0, base_seconds * (2 ** attempt))
 
 
 def project_env_values() -> dict[str, str]:

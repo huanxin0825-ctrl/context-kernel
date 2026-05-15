@@ -102,6 +102,9 @@ Provider secrets are loaded from current process environment first, then project
 - `AKERNEL_OPENAI_BASE_URL`
 - `AKERNEL_OPENAI_MODEL`
 - `AKERNEL_OPENAI_AUX_MODEL`
+- `AKERNEL_OPENAI_TIMEOUT_SECONDS`
+- `AKERNEL_OPENAI_MAX_RETRIES`
+- `AKERNEL_OPENAI_RETRY_BACKOFF_SECONDS`
 
 OpenAI-compatible base URLs are normalized to a `/v1` API root, so both `https://host` and `https://host/v1` are accepted.
 

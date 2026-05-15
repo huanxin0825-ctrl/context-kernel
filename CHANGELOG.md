@@ -8,6 +8,17 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.22 - 2026-05-14
+
+### Added
+
+- Added configurable OpenAI-compatible network resilience via `AKERNEL_OPENAI_TIMEOUT_SECONDS`, `AKERNEL_OPENAI_MAX_RETRIES`, and `AKERNEL_OPENAI_RETRY_BACKOFF_SECONDS`.
+
+### Changed
+
+- Increased default OpenAI-compatible request timeout to 180 seconds and retries to three retries after the first attempt.
+- Provider network diagnostics now point users to retry/timeout settings when slow endpoints or VPN links time out.
+
 ## 0.1.21 - 2026-05-14
 
 ### Changed

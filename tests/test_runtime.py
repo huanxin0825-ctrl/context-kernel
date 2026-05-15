@@ -2040,8 +2040,12 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(values["AKERNEL_OPENAI_BASE_URL"], "https://example.test/v1")
             self.assertEqual(values["AKERNEL_OPENAI_MODEL"], "gpt-5.5")
             self.assertEqual(values["AKERNEL_OPENAI_AUX_MODEL"], "gpt-5.3-codex")
+            self.assertEqual(values["AKERNEL_OPENAI_TIMEOUT_SECONDS"], "180")
+            self.assertEqual(values["AKERNEL_OPENAI_MAX_RETRIES"], "3")
+            self.assertEqual(values["AKERNEL_OPENAI_RETRY_BACKOFF_SECONDS"], "1.5")
             self.assertIn("api_key: set", stdout.getvalue())
             self.assertIn("auxiliary_model: gpt-5.3-codex", stdout.getvalue())
+            self.assertIn("max_retries: 3", stdout.getvalue())
 
     def test_agent_loop_can_read_file_then_respond_with_tool_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2524,6 +2528,8 @@ class RuntimeTests(unittest.TestCase):
             base_url="https://example.test/v1",
             api_key="sk-test123456789",
             timeout_seconds=1,
+            max_retries=3,
+            retry_backoff_seconds=0,
         )
         calls = {"count": 0}
 
@@ -2539,7 +2545,7 @@ class RuntimeTests(unittest.TestCase):
 
         def fake_urlopen(_request: object, timeout: int = 0) -> FakeResponse:
             calls["count"] += 1
-            if calls["count"] == 1:
+            if calls["count"] <= 2:
                 raise urllib.error.URLError("temporary disconnect")
             self.assertEqual(timeout, 1)
             return FakeResponse()
@@ -2548,7 +2554,33 @@ class RuntimeTests(unittest.TestCase):
             response = provider.run({"request": "hello"})
 
         self.assertEqual(response.text, "ok")
-        self.assertEqual(calls["count"], 2)
+        self.assertEqual(calls["count"], 3)
+
+    def test_openai_provider_reads_network_retry_env(self) -> None:
+        previous = {
+            "AKERNEL_OPENAI_TIMEOUT_SECONDS": os.environ.get("AKERNEL_OPENAI_TIMEOUT_SECONDS"),
+            "AKERNEL_OPENAI_MAX_RETRIES": os.environ.get("AKERNEL_OPENAI_MAX_RETRIES"),
+            "AKERNEL_OPENAI_RETRY_BACKOFF_SECONDS": os.environ.get("AKERNEL_OPENAI_RETRY_BACKOFF_SECONDS"),
+        }
+        try:
+            os.environ["AKERNEL_OPENAI_TIMEOUT_SECONDS"] = "7"
+            os.environ["AKERNEL_OPENAI_MAX_RETRIES"] = "5"
+            os.environ["AKERNEL_OPENAI_RETRY_BACKOFF_SECONDS"] = "0.25"
+            provider = OpenAICompatibleProvider(
+                model="gpt-test",
+                base_url="https://example.test/v1",
+                api_key="sk-test123456789",
+            )
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual(provider.timeout_seconds, 7)
+        self.assertEqual(provider.max_retries, 5)
+        self.assertEqual(provider.retry_backoff_seconds, 0.25)
 
     def test_project_env_parser_and_base_url_normalization(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

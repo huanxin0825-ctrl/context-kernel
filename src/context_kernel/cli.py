@@ -82,12 +82,18 @@ OPENAI_ENV_KEYS = {
     "base_url": "AKERNEL_OPENAI_BASE_URL",
     "model": "AKERNEL_OPENAI_MODEL",
     "aux_model": "AKERNEL_OPENAI_AUX_MODEL",
+    "timeout_seconds": "AKERNEL_OPENAI_TIMEOUT_SECONDS",
+    "max_retries": "AKERNEL_OPENAI_MAX_RETRIES",
+    "retry_backoff_seconds": "AKERNEL_OPENAI_RETRY_BACKOFF_SECONDS",
 }
 LEGACY_OPENAI_ENV_KEYS = {
     "api_key": "CONTEXT_KERNEL_OPENAI_API_KEY",
     "base_url": "CONTEXT_KERNEL_OPENAI_BASE_URL",
     "model": "CONTEXT_KERNEL_OPENAI_MODEL",
     "aux_model": "CONTEXT_KERNEL_OPENAI_AUX_MODEL",
+    "timeout_seconds": "CONTEXT_KERNEL_OPENAI_TIMEOUT_SECONDS",
+    "max_retries": "CONTEXT_KERNEL_OPENAI_MAX_RETRIES",
+    "retry_backoff_seconds": "CONTEXT_KERNEL_OPENAI_RETRY_BACKOFF_SECONDS",
 }
 COMMAND_NAMES = {
     "agent",
@@ -188,6 +194,9 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL. `/v1` is added when missing.")
     setup_parser.add_argument("--model", default=None, help="Default model id, for example gpt-5.5.")
     setup_parser.add_argument("--aux-model", default=None, help="Auxiliary model id for planning, review, and compression.")
+    setup_parser.add_argument("--timeout-seconds", type=int, default=None, help="OpenAI-compatible request timeout. Defaults to 180.")
+    setup_parser.add_argument("--max-retries", type=int, default=None, help="Network retries after the first attempt. Defaults to 3.")
+    setup_parser.add_argument("--retry-backoff-seconds", type=float, default=None, help="Initial retry backoff in seconds. Defaults to 1.5.")
     setup_parser.add_argument("--env-file", default=None, help="Environment file path. Defaults to .env in the current project.")
     setup_parser.add_argument("--force", action="store_true", help="Rewrite an existing env file without keeping old values.")
     setup_parser.add_argument("--verify", action="store_true", help="List provider models after writing configuration.")
@@ -728,12 +737,32 @@ def cmd_setup(args: argparse.Namespace) -> None:
         default_aux_model = existing_env_value(existing, "aux_model") or DEFAULT_AUXILIARY_MODEL
         aux_model = prompt_text("Auxiliary model", default_aux_model, interactive=interactive)
 
-    write_project_env(env_path, api_key=api_key, base_url=base_url, model=model, aux_model=aux_model)
+    timeout_seconds = str(args.timeout_seconds or existing_env_value(existing, "timeout_seconds") or "180")
+    max_retries = str(args.max_retries if args.max_retries is not None else existing_env_value(existing, "max_retries") or "3")
+    retry_backoff_seconds = str(
+        args.retry_backoff_seconds
+        if args.retry_backoff_seconds is not None
+        else existing_env_value(existing, "retry_backoff_seconds") or "1.5"
+    )
+
+    write_project_env(
+        env_path,
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        aux_model=aux_model,
+        timeout_seconds=timeout_seconds,
+        max_retries=max_retries,
+        retry_backoff_seconds=retry_backoff_seconds,
+    )
     print(f"configured: {env_path}")
     print("api_key: set")
     print(f"base_url: {base_url}")
     print(f"primary_model: {model}")
     print(f"auxiliary_model: {aux_model}")
+    print(f"timeout_seconds: {timeout_seconds}")
+    print(f"max_retries: {max_retries}")
+    print(f"retry_backoff_seconds: {retry_backoff_seconds}")
     if args.verify:
         previous = {key: os.environ.get(key) for key in OPENAI_ENV_KEYS.values()}
         try:
@@ -773,13 +802,26 @@ def existing_env_value(existing: dict[str, str], key: str) -> str:
     return existing.get(OPENAI_ENV_KEYS[key]) or existing.get(LEGACY_OPENAI_ENV_KEYS[key]) or ""
 
 
-def write_project_env(path: Path, *, api_key: str, base_url: str, model: str, aux_model: str) -> None:
+def write_project_env(
+    path: Path,
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+    aux_model: str,
+    timeout_seconds: str = "180",
+    max_retries: str = "3",
+    retry_backoff_seconds: str = "1.5",
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"{OPENAI_ENV_KEYS['api_key']}={api_key}",
         f"{OPENAI_ENV_KEYS['base_url']}={base_url}",
         f"{OPENAI_ENV_KEYS['model']}={model}",
         f"{OPENAI_ENV_KEYS['aux_model']}={aux_model}",
+        f"{OPENAI_ENV_KEYS['timeout_seconds']}={timeout_seconds}",
+        f"{OPENAI_ENV_KEYS['max_retries']}={max_retries}",
+        f"{OPENAI_ENV_KEYS['retry_backoff_seconds']}={retry_backoff_seconds}",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -2641,6 +2683,7 @@ def print_config_panel() -> None:
             ("setup", "akernel setup"),
             ("env", "AKERNEL_OPENAI_API_KEY, AKERNEL_OPENAI_BASE_URL"),
             ("models", "AKERNEL_OPENAI_MODEL, AKERNEL_OPENAI_AUX_MODEL"),
+            ("network", "AKERNEL_OPENAI_TIMEOUT_SECONDS, AKERNEL_OPENAI_MAX_RETRIES"),
             ("scope", "current project .env first, installed Context Kernel .env fallback"),
         ],
     )
@@ -3128,6 +3171,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     api_key = env_value("AKERNEL_OPENAI_API_KEY")
     model = env_value("AKERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
     aux_model = env_value("AKERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
+    timeout_seconds = env_value("AKERNEL_OPENAI_TIMEOUT_SECONDS") or "180"
+    max_retries = env_value("AKERNEL_OPENAI_MAX_RETRIES") or "3"
+    retry_backoff_seconds = env_value("AKERNEL_OPENAI_RETRY_BACKOFF_SECONDS") or "1.5"
     print(f"project_root: {Path.cwd().resolve()}")
     print(f"workspace: {workspace.root}")
     print(f"workspace_initialized: {workspace.state.exists()}")
@@ -3137,6 +3183,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print(f"project_env_base_url: {normalize_openai_base_url(base_url or '') if base_url else ''}")
     print(f"project_env_primary_model: {model}")
     print(f"project_env_auxiliary_model: {aux_model}")
+    print(f"project_env_timeout_seconds: {timeout_seconds}")
+    print(f"project_env_max_retries: {max_retries}")
+    print(f"project_env_retry_backoff_seconds: {retry_backoff_seconds}")
     profile = load_project_profile(workspace)
     print(f"project_profile: {workspace.project_file if profile else ''}")
     print(f"project_summary: {profile.get('summary', '') if profile else ''}")

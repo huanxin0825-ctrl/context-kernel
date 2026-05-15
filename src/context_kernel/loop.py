@@ -1220,7 +1220,10 @@ def diagnose_agent_exception(exc: Exception) -> dict[str, str]:
         return {
             "category": "provider_network",
             "message": message,
-            "suggestion": "Check VPN/proxy connectivity and verify the base URL with `akernel models --provider openai`.",
+            "suggestion": (
+                "Retry the task; if the endpoint is slow, increase `AKERNEL_OPENAI_TIMEOUT_SECONDS` "
+                "or `AKERNEL_OPENAI_MAX_RETRIES`, then verify with `akernel models --provider openai`."
+            ),
         }
     if "provider returned invalid json" in lower:
         return {
