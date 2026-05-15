@@ -8,6 +8,17 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.23 - 2026-05-15
+
+### Added
+
+- Added Codex-style action progress events for context assembly, file writes, patches, shell commands, MCP calls, generated-code materialization, and recovery context preparation.
+- Added spinner and classic chat rendering for the new action lifecycle events.
+
+### Changed
+
+- Interactive runs now show what the agent is actively doing instead of only showing provider wait and step completion messages.
+
 ## 0.1.22 - 2026-05-14
 
 ### Added

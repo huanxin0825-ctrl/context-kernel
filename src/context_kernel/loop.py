@@ -232,6 +232,22 @@ class AgentLoop:
                 "verifier_ok": False,
             }
 
+        emit_agent_progress(
+            progress_callback,
+            {
+                "event": "context_ready",
+                "step": index,
+                "max_steps": max_steps,
+                "estimated_used": plan["budget"]["estimated_used"],
+                "budget_total": plan["budget"]["total"],
+                "memory_count": len(plan.get("selection", {}).get("memory", [])),
+                "skills": [
+                    {"id": item.get("id", ""), "level": item.get("level", "")}
+                    for item in plan.get("selection", {}).get("skills", [])[:5]
+                ],
+            },
+        )
+
         selected_role, routing_reason = select_model_role(
             model_routing=model_routing,
             plan=plan,
@@ -406,6 +422,27 @@ class AgentLoop:
 
         if action["action"] == "respond":
             response_text = render_agent_response(action)
+            emit_agent_progress(
+                progress_callback,
+                {
+                    "event": "action_start",
+                    "step": index,
+                    "max_steps": max_steps,
+                    "action": "respond",
+                    "label": "preparing final response",
+                },
+            )
+            if looks_like_code_artifact_request(request) and extract_response_code_blocks(response_text):
+                emit_agent_progress(
+                    progress_callback,
+                    {
+                        "event": "materialize_start",
+                        "step": index,
+                        "max_steps": max_steps,
+                        "action": "write_file",
+                        "label": "saving generated code to workspace files",
+                    },
+                )
             materialized = materialize_code_response_if_needed(self.tools, request, response_text)
             if materialized:
                 for trace_result in materialized["traces"]:
@@ -417,6 +454,17 @@ class AgentLoop:
                     refs={"run_traces": [trace["id"]], "tool_traces": [item["id"] for item in materialized["traces"]]},
                 )
                 response_text = materialized["message"]
+                emit_agent_progress(
+                    progress_callback,
+                    {
+                        "event": "materialize_end",
+                        "step": index,
+                        "max_steps": max_steps,
+                        "action": "write_file",
+                        "ok": True,
+                        "paths": materialized["paths"],
+                    },
+                )
             self.tasks.step(
                 task_id,
                 f"Agent response: {compact(response_text, limit=400)}",
@@ -447,15 +495,50 @@ class AgentLoop:
                 "materialized_files": materialized["paths"] if materialized else [],
             }
 
+        emit_agent_progress(
+            progress_callback,
+            {
+                "event": "action_start",
+                "step": index,
+                "max_steps": max_steps,
+                "action": action["action"],
+                "label": action_progress_label(action),
+                "target": action_progress_target(action),
+            },
+        )
         tool_result = execute_agent_action(self.tools, action)
         self.tasks.attach(task_id, "tool", tool_result["id"])
         tool_summary = summarize_tool_result(tool_result)
+        emit_agent_progress(
+            progress_callback,
+            {
+                "event": "action_end",
+                "step": index,
+                "max_steps": max_steps,
+                "action": action["action"],
+                "ok": tool_result["ok"],
+                "blocked": tool_result["blocked"],
+                "trace_id": tool_result["id"],
+                "summary": tool_summary,
+            },
+        )
         self.tasks.step(
             task_id,
             f"Agent step {index} executed {action['action']}: {tool_summary}",
             kind="agent_tool",
             refs={"run_traces": [trace["id"]], "tool_traces": [tool_result["id"]]},
         )
+        if index < max_steps and not tool_result["blocked"] and not tool_result["ok"]:
+            emit_agent_progress(
+                progress_callback,
+                {
+                    "event": "recovery_start",
+                    "step": index,
+                    "max_steps": max_steps,
+                    "action": action["action"],
+                    "label": "collecting recovery context",
+                },
+            )
         recovery_tools = auto_recovery_tools(self.tools, request, action, tool_result) if index < max_steps else []
         if recovery_tools:
             for recovery in recovery_tools:
@@ -469,6 +552,17 @@ class AgentLoop:
                 f"Agent recovery prepared after {action['action']}: {recovery_summary}",
                 kind="agent_recovery",
                 refs={"tool_traces": [item["id"] for item in recovery_tools]},
+            )
+            emit_agent_progress(
+                progress_callback,
+                {
+                    "event": "recovery_end",
+                    "step": index,
+                    "max_steps": max_steps,
+                    "action": action["action"],
+                    "count": len(recovery_tools),
+                    "summary": recovery_summary,
+                },
             )
         can_continue = index < max_steps and (tool_result["ok"] or bool(recovery_tools))
         if tool_result["blocked"]:
@@ -967,6 +1061,39 @@ def execute_agent_action(executor: ToolExecutor, action: dict[str, Any]) -> dict
             )
         return executor.record_external_tool("mcp_call", subject=subject, output=call, ok=True)
     raise ValueError(f"Unsupported tool action: {action['action']}")
+
+
+def action_progress_label(action: dict[str, Any]) -> str:
+    action_name = str(action.get("action", ""))
+    if action_name == "read_file":
+        return "reading file"
+    if action_name == "write_file":
+        return "creating or updating file"
+    if action_name == "patch_file":
+        return "applying file patch"
+    if action_name == "batch_patch":
+        return "applying multi-file patch"
+    if action_name == "run_command":
+        return "running command"
+    if action_name == "mcp_call":
+        return "calling MCP tool"
+    return action_name or "running action"
+
+
+def action_progress_target(action: dict[str, Any]) -> str:
+    action_name = str(action.get("action", ""))
+    if action_name in {"read_file", "write_file", "patch_file"}:
+        return compact(str(action.get("path", "")), limit=160)
+    if action_name == "batch_patch":
+        edits = action.get("edits", [])
+        paths = [str(item.get("path", "")) for item in edits[:3] if isinstance(item, dict)]
+        suffix = f" +{len(edits) - 3}" if isinstance(edits, list) and len(edits) > 3 else ""
+        return compact(", ".join(paths) + suffix, limit=160)
+    if action_name == "run_command":
+        return compact(str(action.get("command", "")), limit=160)
+    if action_name == "mcp_call":
+        return compact(f"{action.get('server', '')}.{action.get('tool', '')}", limit=160)
+    return ""
 
 
 def materialize_code_response_if_needed(

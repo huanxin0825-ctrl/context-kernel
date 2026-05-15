@@ -1705,6 +1705,27 @@ def spinner_message_from_event(event: dict[str, Any], args: argparse.Namespace) 
         role = event.get("model_role") or "primary"
         model = event.get("model") or primary_model(args)
         return f"step {step}/{max_steps}: waiting for {role} model {model}"
+    if name == "context_ready":
+        memory_count = event.get("memory_count", 0)
+        skill_count = len(event.get("skills", []))
+        used = event.get("estimated_used", "?")
+        total = event.get("budget_total", "?")
+        return f"step {step}/{max_steps}: context ready {used}/{total} tokens, memory {memory_count}, skills {skill_count}"
+    if name == "action_start":
+        label = event.get("label") or chat_action_label(str(event.get("action") or ""))
+        target = event.get("target")
+        suffix = f" {target}" if target else ""
+        return f"step {step}/{max_steps}: {label}{suffix}"
+    if name == "materialize_start":
+        return f"step {step}/{max_steps}: {event.get('label', 'saving files')}"
+    if name == "materialize_end":
+        paths = event.get("paths") or []
+        count = len(paths)
+        return f"step {step}/{max_steps}: saved {count} file(s)"
+    if name == "recovery_start":
+        return f"step {step}/{max_steps}: preparing recovery context"
+    if name == "recovery_end":
+        return f"step {step}/{max_steps}: recovery ready ({event.get('count', 0)} file(s))"
     if name == "step_end":
         return (
             f"step {step}/{max_steps}: {event.get('status', 'done')} "
@@ -1727,6 +1748,32 @@ def print_agent_progress_event(event: dict[str, Any]) -> None:
         suffix = f" ({reason})" if reason else ""
         print(chat_color(f"status   step {step}/{max_steps}: contacting {role} model {model}{suffix}", "dim"), flush=True)
         return
+    if name == "context_ready":
+        memory_count = event.get("memory_count", 0)
+        skill_count = len(event.get("skills", []))
+        used = event.get("estimated_used", "?")
+        total = event.get("budget_total", "?")
+        print(chat_color(f"status   step {step}/{max_steps}: context ready {used}/{total} tokens, memory={memory_count}, skills={skill_count}", "dim"), flush=True)
+        return
+    if name == "action_start":
+        label = event.get("label") or chat_action_label(str(event.get("action") or ""))
+        target = event.get("target")
+        suffix = f" {target}" if target else ""
+        print(chat_color(f"status   step {step}/{max_steps}: {label}{suffix}", "dim"), flush=True)
+        return
+    if name == "materialize_start":
+        print(chat_color(f"status   step {step}/{max_steps}: {event.get('label', 'saving files')}", "dim"), flush=True)
+        return
+    if name == "materialize_end":
+        paths = event.get("paths") or []
+        print(chat_color(f"status   step {step}/{max_steps}: saved {len(paths)} file(s)", "dim"), flush=True)
+        return
+    if name == "recovery_start":
+        print(chat_color(f"status   step {step}/{max_steps}: preparing recovery context", "dim"), flush=True)
+        return
+    if name == "recovery_end":
+        print(chat_color(f"status   step {step}/{max_steps}: recovery ready ({event.get('count', 0)} file(s))", "dim"), flush=True)
+        return
     if name == "budget_expand":
         old_budget = event.get("old_budget")
         new_budget = event.get("new_budget")
@@ -1738,6 +1785,19 @@ def print_agent_progress_event(event: dict[str, Any]) -> None:
         action = event.get("action") or "none"
         tokens = event.get("tokens", 0)
         print(chat_color(f"status   step {step}/{max_steps}: {status}, action={action}, tokens={tokens}", "dim"), flush=True)
+
+
+def chat_action_label(action: str) -> str:
+    labels = {
+        "read_file": "reading file",
+        "write_file": "creating or updating file",
+        "patch_file": "applying file patch",
+        "batch_patch": "applying multi-file patch",
+        "run_command": "running command",
+        "mcp_call": "calling MCP tool",
+        "respond": "preparing final response",
+    }
+    return labels.get(action, action or "running action")
 
 
 def format_chat_help_text() -> str:

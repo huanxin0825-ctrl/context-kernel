@@ -23,6 +23,7 @@ from context_kernel.cli import (
     main,
     print_agent_report,
     run_agent_with_spinner,
+    spinner_message_from_event,
 )
 from context_kernel.context import ContextBuilder
 from context_kernel.evals import EvalRunner
@@ -1441,6 +1442,46 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(any(event.get("event") == "budget_expand" for event in events))
             self.assertGreater(report["steps"][0]["plan"]["budget"]["total"], 1200)
 
+    def test_agent_loop_emits_context_and_tool_action_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            events: list[dict[str, object]] = []
+
+            action = {
+                "action": "write_file",
+                "path": "notes/progress.txt",
+                "text": "visible progress",
+                "reason": "exercise action progress",
+            }
+
+            class ProgressProvider:
+                name = "progress-provider"
+                model = "test"
+
+                def run(self, packet):
+                    return ProviderResponse(json.dumps(action), input_tokens=10, output_tokens=8)
+
+            with patch("context_kernel.runner.get_provider", return_value=ProgressProvider()):
+                report = AgentLoop(workspace).run(
+                    "Create notes/progress.txt with visible progress.",
+                    provider_name="openai",
+                    budget=1800,
+                    max_steps=1,
+                    remember=False,
+                    progress_callback=events.append,
+                )
+
+            self.assertEqual(report["status"], "stopped")
+            self.assertTrue((Path(tmp) / "notes" / "progress.txt").exists())
+            self.assertTrue(any(event.get("event") == "context_ready" for event in events))
+            start = next(event for event in events if event.get("event") == "action_start")
+            end = next(event for event in events if event.get("event") == "action_end")
+            self.assertEqual(start["action"], "write_file")
+            self.assertEqual(start["target"], "notes/progress.txt")
+            self.assertEqual(end["action"], "write_file")
+            self.assertTrue(end["ok"])
+
     def test_agent_loop_respects_explicit_budget_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))
@@ -1551,6 +1592,21 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         self.assertIn("waiting for primary model gpt-5.5", output)
         self.assertIn("|", output)
+
+    def test_spinner_messages_cover_context_actions_and_file_materialization(self) -> None:
+        args = type(
+            "Args",
+            (),
+            {
+                "model": "gpt-5.5",
+                "model_routing": "primary",
+            },
+        )()
+
+        self.assertIn("context ready", spinner_message_from_event({"event": "context_ready", "step": 1, "max_steps": 5, "estimated_used": 120, "budget_total": 1800, "memory_count": 2, "skills": [{"id": "edit_file", "level": "l2"}]}, args))
+        self.assertIn("creating or updating file", spinner_message_from_event({"event": "action_start", "step": 1, "max_steps": 5, "action": "write_file", "target": "notes/demo.txt"}, args))
+        self.assertIn("saved 1 file", spinner_message_from_event({"event": "materialize_end", "step": 1, "max_steps": 5, "paths": ["notes/demo.txt"]}, args))
+        self.assertIn("recovery ready", spinner_message_from_event({"event": "recovery_end", "step": 1, "max_steps": 5, "count": 1}, args))
 
     def test_chat_supports_file_command_paste_and_compact_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2281,12 +2337,14 @@ class RuntimeTests(unittest.TestCase):
                     return ProviderResponse(json.dumps(action), input_tokens=10, output_tokens=12)
 
             with patch("context_kernel.runner.get_provider", return_value=LeakyCodeProvider()):
+                events: list[dict[str, object]] = []
                 report = AgentLoop(workspace).run(
                     "Create Python code that prints 123.",
                     provider_name="openai",
                     budget=1800,
                     max_steps=1,
                     remember=False,
+                    progress_callback=events.append,
                 )
 
             generated = list((Path(tmp) / "generated").glob("*.py"))
@@ -2294,6 +2352,8 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(generated), 1)
             self.assertIn("print(123)", generated[0].read_text(encoding="utf-8"))
             self.assertEqual(report["materialized_files"], [str(generated[0])])
+            self.assertTrue(any(event.get("event") == "materialize_start" for event in events))
+            self.assertTrue(any(event.get("event") == "materialize_end" for event in events))
 
     def test_agent_loop_prepares_recovery_context_after_command_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
