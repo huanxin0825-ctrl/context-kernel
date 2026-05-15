@@ -396,12 +396,12 @@ class AgentLoop:
                 "index": index,
                 "status": "needs_review",
                 "continue": False,
-                "stop_reason": "Agent loop stopped: repeated identical action would likely cause a loop.",
-                "reason": "repeated identical action detected",
+                "stop_reason": "Agent loop stopped: repeated identical actions would likely cause a loop.",
+                "reason": "repeated identical actions detected",
                 "diagnostic": {
                     "category": "loop_guard",
-                    "message": "The provider returned the same action twice.",
-                    "suggestion": "Inspect the saved agent run and linked traces, then retry with more specific instructions or a larger step budget.",
+                    "message": "The provider returned the same action repeatedly.",
+                    "suggestion": "Inspect the saved agent run and linked traces, then retry with more specific instructions, a fresh task, or a larger step budget.",
                 },
                 "plan": summarize_plan(plan),
                 "trace_id": trace["id"],
@@ -1990,9 +1990,15 @@ def repeated_agent_action(report_steps: list[dict[str, Any]], action: dict[str, 
     if not report_steps:
         return False
     fingerprint = action_fingerprint(action)
-    latest = report_steps[-1]
-    latest_action = latest.get("action") or {}
-    return bool(fingerprint) and action_fingerprint(latest_action) == fingerprint
+    if not fingerprint:
+        return False
+    repeats = 1
+    for step in reversed(report_steps):
+        latest_action = step.get("action") or {}
+        if action_fingerprint(latest_action) != fingerprint:
+            break
+        repeats += 1
+    return repeats >= 3
 
 
 def action_fingerprint(action: dict[str, Any]) -> str:

@@ -28,7 +28,7 @@ from context_kernel.cli import (
 from context_kernel.context import ContextBuilder
 from context_kernel.evals import EvalRunner
 from context_kernel.global_memory import pull_global_memories, push_global_memories
-from context_kernel.loop import AgentLoop, parse_agent_action
+from context_kernel.loop import AgentLoop, parse_agent_action, repeated_agent_action
 from context_kernel.marketplace import install_marketplace_skill, list_marketplace_skills
 from context_kernel.memory import MemoryStore, is_relevant_memory_match
 from context_kernel.mcp import add_mcp_server, list_mcp_servers, mcp_context_summary
@@ -367,6 +367,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("context_kernel.__version__", text)
         self.assertIn("versionAtLeast", text)
         self.assertIn("akernel-runtime>=", text)
+
+    def test_loop_guard_allows_one_duplicate_tool_step(self) -> None:
+        action = {"action": "run_command", "command": "python -m pytest"}
+
+        self.assertFalse(repeated_agent_action([{"action": action}], action))
+        self.assertTrue(repeated_agent_action([{"action": action}, {"action": action}], action))
 
     def test_agent_uses_project_profile_test_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2420,17 +2426,18 @@ class RuntimeTests(unittest.TestCase):
                     "Read notes/loop.txt twice if needed.",
                     provider_name="mock",
                     budget=900,
-                    max_steps=2,
+                    max_steps=3,
                     remember=False,
                 )
 
             task = TaskStore(workspace).get(report["task_id"])
             self.assertEqual(report["status"], "needs_review")
-            self.assertEqual(len(report["steps"]), 2)
+            self.assertEqual(len(report["steps"]), 3)
             self.assertEqual(report["steps"][0]["action"]["action"], "read_file")
             self.assertEqual(report["steps"][1]["action"]["action"], "read_file")
-            self.assertIsNone(report["steps"][1]["tool_trace_id"])
-            self.assertEqual(len(task["refs"]["tool_traces"]), 1)
+            self.assertEqual(report["steps"][2]["action"]["action"], "read_file")
+            self.assertIsNone(report["steps"][2]["tool_trace_id"])
+            self.assertEqual(len(task["refs"]["tool_traces"]), 2)
 
     def test_agent_loop_mock_provider_avoids_blocked_command_when_allowlist_is_visible(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

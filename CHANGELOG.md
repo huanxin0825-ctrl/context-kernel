@@ -8,6 +8,12 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.25 - 2026-05-15
+
+### Fixed
+
+- Relaxed the agent loop guard so one duplicate tool action is allowed before stopping repeated identical actions, reducing false loop-guard failures during normal retry, verification, and recovery workflows.
+
 ## 0.1.24 - 2026-05-15
 
 ### Fixed
