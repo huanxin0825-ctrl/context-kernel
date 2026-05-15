@@ -10,10 +10,10 @@ akernel setup
 akernel
 ```
 
-The launcher forwards arguments to `python -m context_kernel.cli`. If the Python package is missing, it attempts a user-level bootstrap with:
+The launcher forwards arguments to `python -m context_kernel.cli`. If the Python package is missing or older than this npm launcher, it attempts a user-level bootstrap or upgrade with:
 
 ```bash
-python -m pip install --user --upgrade akernel-runtime
+python -m pip install --user --upgrade "akernel-runtime>=<launcher-version>"
 ```
 
 Useful environment overrides:

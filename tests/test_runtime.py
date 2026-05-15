@@ -360,6 +360,14 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertTrue(Workspace.read_json(path)["ok"])
 
+    def test_npm_launcher_upgrades_stale_python_runtime(self) -> None:
+        launcher = ROOT / "packages" / "npm" / "akernel" / "bin" / "akernel.js"
+        text = launcher.read_text(encoding="utf-8")
+
+        self.assertIn("context_kernel.__version__", text)
+        self.assertIn("versionAtLeast", text)
+        self.assertIn("akernel-runtime>=", text)
+
     def test_agent_uses_project_profile_test_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))

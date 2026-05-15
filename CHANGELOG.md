@@ -8,6 +8,12 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 No changes yet.
 
+## 0.1.24 - 2026-05-15
+
+### Fixed
+
+- Fixed npm launcher updates leaving users on an older Python runtime. The launcher now checks `context_kernel.__version__` and upgrades `akernel-runtime` when it is older than the npm package version.
+
 ## 0.1.23 - 2026-05-15
 
 ### Added

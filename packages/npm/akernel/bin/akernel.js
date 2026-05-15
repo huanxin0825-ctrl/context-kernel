@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { spawnSync } = require("node:child_process");
+const launcherVersion = require("../package.json").version;
 
 const candidates = process.platform === "win32"
   ? ["py", "python", "python3"]
@@ -26,8 +27,51 @@ function findPython(args = ["--version"], requireSuccess = false) {
   return null;
 }
 
-function findContextKernelPython() {
-  return findPython(["-c", "import context_kernel"], true);
+function parseVersion(version) {
+  return String(version || "")
+    .trim()
+    .split(".")
+    .map((part) => Number.parseInt(part, 10))
+    .map((part) => (Number.isFinite(part) ? part : 0));
+}
+
+function versionAtLeast(actual, required) {
+  const left = parseVersion(actual);
+  const right = parseVersion(required);
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const a = left[index] || 0;
+    const b = right[index] || 0;
+    if (a > b) return true;
+    if (a < b) return false;
+  }
+  return true;
+}
+
+function runtimeVersion(command) {
+  const result = spawnSync(
+    command,
+    ["-c", "import context_kernel; print(context_kernel.__version__)"],
+    { encoding: "utf8" },
+  );
+  if (result.status !== 0) {
+    return null;
+  }
+  return String(result.stdout || "").trim();
+}
+
+function findContextKernelPython(requireCurrent = true) {
+  for (const command of candidates) {
+    const version = runtimeVersion(command);
+    if (!version) {
+      continue;
+    }
+    if (!requireCurrent || versionAtLeast(version, launcherVersion)) {
+      return command;
+    }
+    lastError = new Error(`runtime ${version} is older than launcher ${launcherVersion}`);
+  }
+  return null;
 }
 
 function bootstrapContextKernel() {
@@ -38,8 +82,8 @@ function bootstrapContextKernel() {
   if (!command) {
     return false;
   }
-  const source = process.env.AKERNEL_PIP_SOURCE || "akernel-runtime";
-  console.error(`akernel: Python package not found; installing ${source} with pip...`);
+  const source = process.env.AKERNEL_PIP_SOURCE || `akernel-runtime>=${launcherVersion}`;
+  console.error(`akernel: installing/upgrading Python runtime ${source} with pip...`);
   const install = spawnPython(command, ["-m", "pip", "install", "--user", "--upgrade", source], "inherit");
   return install.status === 0;
 }
