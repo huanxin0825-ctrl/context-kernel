@@ -11,6 +11,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Added productization acceptance goals for thin orchestration, natural interactive states, transactional tools, real-provider golden tests, release confidence, and first-run task guidance.
 - Added focused agent step handler modules so response materialization and tool/recovery execution no longer live in the main orchestration loop.
 - Added clearer agent report outcome and resume guidance for failed, blocked, and needs-review runs.
+- Added folded previews for long `tool exec` stdout/stderr with trace hints, plus copyable task continuation commands in `task brief`.
 
 ## 0.1.25 - 2026-05-15
 

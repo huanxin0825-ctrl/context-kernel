@@ -1409,6 +1409,30 @@ class RuntimeTests(unittest.TestCase):
             tools = {trace["tool"] for trace in ToolExecutor(workspace).list_traces()}
             self.assertTrue({"create_file", "append_file", "file_info", "list_dir"}.issubset(tools))
 
+    def test_tool_exec_folds_long_stdout_with_trace_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(
+                    [
+                        "--workspace",
+                        str(workspace.root),
+                        "tool",
+                        "exec",
+                        "--",
+                        "python",
+                        "-c",
+                        "print(chr(120)*3000)",
+                    ]
+                )
+
+            output = stdout.getvalue()
+            self.assertIn("ok: run_command", output)
+            self.assertIn("stdout folded", output)
+            self.assertIn("akernel tool show", output)
+
     def test_tool_executor_batch_patch_applies_multiple_edits_and_rolls_back_on_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))
@@ -1573,7 +1597,10 @@ class RuntimeTests(unittest.TestCase):
 
             with patch("sys.stdout", new=io.StringIO()) as stdout:
                 main(["--workspace", str(workspace.root), "task", "brief", task_id])
-            self.assertIn("active: M2", stdout.getvalue())
+            brief_output = stdout.getvalue()
+            self.assertIn("active: M2", brief_output)
+            self.assertIn(f"continue: akernel agent run --task {task_id}", brief_output)
+            self.assertIn(f"next: akernel task next {task_id}", brief_output)
 
     def test_task_resume_context_flows_into_context_plan_and_run_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

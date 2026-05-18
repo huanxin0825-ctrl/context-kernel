@@ -12,6 +12,9 @@ from .tasks import TaskStore
 from .tools import ToolExecutor
 
 
+DEFAULT_STREAM_PREVIEW_CHARS = 1200
+
+
 def add_tool_subcommands(tool_sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     tool_read = tool_sub.add_parser("read", help="Read a workspace file through policy.")
     tool_read.add_argument("path")
@@ -84,6 +87,7 @@ def add_tool_subcommands(tool_sub: argparse._SubParsersAction[argparse.ArgumentP
     tool_exec = tool_sub.add_parser("exec", help="Run a safe command through policy.")
     tool_exec.add_argument("--allow-destructive", action="store_true")
     tool_exec.add_argument("--timeout", type=int, default=30)
+    tool_exec.add_argument("--full-output", action="store_true", help="Print full captured stdout/stderr instead of a folded preview.")
     tool_exec.add_argument("--json", action="store_true")
     tool_exec.add_argument("--task", default=None, help="Attach the tool trace to a task session.")
     tool_exec.add_argument("command", nargs=argparse.REMAINDER)
@@ -264,11 +268,9 @@ def cmd_tool_exec(args: argparse.Namespace) -> None:
     if "exit_code" in output:
         print(f"exit_code: {output['exit_code']}")
     if output.get("stdout"):
-        print("stdout:")
-        print(output["stdout"].rstrip())
+        print_command_stream("stdout", output["stdout"], trace_id=result["id"], full=args.full_output)
     if output.get("stderr"):
-        print("stderr:")
-        print(output["stderr"].rstrip())
+        print_command_stream("stderr", output["stderr"], trace_id=result["id"], full=args.full_output)
 
 
 def cmd_tool_list(args: argparse.Namespace) -> None:
@@ -305,3 +307,26 @@ def attach_tool_to_task_if_requested(workspace: Workspace, task_id: str | None, 
     if not task_id:
         return
     TaskStore(workspace).attach(task_id, "tool", result["id"])
+
+
+def print_command_stream(
+    label: str,
+    text: str,
+    *,
+    trace_id: str,
+    full: bool = False,
+    preview_chars: int = DEFAULT_STREAM_PREVIEW_CHARS,
+) -> None:
+    print(f"{label}:")
+    clean = text.rstrip()
+    if full or len(clean) <= preview_chars:
+        print(clean)
+        return
+    head_chars = max(200, int(preview_chars * 0.7))
+    tail_chars = max(120, preview_chars - head_chars)
+    print(clean[:head_chars].rstrip())
+    omitted = len(clean) - head_chars - tail_chars
+    if omitted > 0:
+        print(f"... {label} folded: omitted {omitted} chars; full output is in tool trace {trace_id}")
+        print(f"... inspect with: akernel tool show {trace_id}")
+    print(clean[-tail_chars:].lstrip())

@@ -2320,6 +2320,12 @@ def cmd_task_brief(args: argparse.Namespace) -> None:
         f"runs={len(brief['linked_run_traces'])} "
         f"tools={len(brief['linked_tool_traces'])}"
     )
+    if task["status"] == "completed":
+        print("continue: task is completed; start a new task if more work is needed")
+    else:
+        print(f"continue: akernel agent run --task {task['id']} \"Continue from the latest checkpoint\"")
+        if brief.get("plan"):
+            print(f"next: akernel task next {task['id']}")
 
 
 def cmd_task_plan(args: argparse.Namespace) -> None:
