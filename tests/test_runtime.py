@@ -1336,17 +1336,22 @@ class RuntimeTests(unittest.TestCase):
             self.assertFalse(missing_info["output"]["exists"])
             self.assertTrue(created["ok"])
             self.assertEqual(created["tool"], "create_file")
+            self.assertEqual(created["output"]["transaction"]["status"], "committed")
+            self.assertEqual(created["output"]["transaction"]["snapshot_count"], 1)
             self.assertFalse(duplicate_create["ok"])
             self.assertEqual(duplicate_create["tool"], "create_file")
             self.assertIn("already exists", duplicate_create["error"])
             self.assertEqual((Path(tmp) / "notes" / "create-only.txt").read_text(encoding="utf-8"), "first\nsecond")
             self.assertTrue(appended["ok"])
             self.assertEqual(appended["tool"], "append_file")
+            self.assertEqual(appended["output"]["transaction"]["status"], "committed")
             self.assertEqual(append_read["output"]["content"], "first\nsecond")
             self.assertTrue(written["ok"])
+            self.assertEqual(written["output"]["transaction"]["status"], "committed")
             self.assertTrue(read["ok"])
             self.assertEqual(read["output"]["content"], "hello tool layer")
             self.assertTrue(patched["ok"])
+            self.assertEqual(patched["output"]["transaction"]["status"], "committed")
             self.assertEqual(after_patch["output"]["content"], "hello policy tool layer")
             self.assertEqual(bom_read["output"]["content"], "bom content")
             self.assertTrue(duplicate_source["ok"])
@@ -1388,10 +1393,12 @@ class RuntimeTests(unittest.TestCase):
             with patch("sys.stdout", new=io.StringIO()) as stdout:
                 main(["--workspace", str(workspace.root), "tool", "create", "notes/cli.txt", "--text", "first"])
             self.assertIn("ok: create_file", stdout.getvalue())
+            self.assertIn("transaction:", stdout.getvalue())
 
             with patch("sys.stdout", new=io.StringIO()) as stdout:
                 main(["--workspace", str(workspace.root), "tool", "append", "notes/cli.txt", "--text", "\nsecond"])
             self.assertIn("ok: append_file", stdout.getvalue())
+            self.assertIn("transaction:", stdout.getvalue())
 
             with patch("sys.stdout", new=io.StringIO()) as stdout:
                 main(["--workspace", str(workspace.root), "tool", "file-info", "notes/cli.txt"])

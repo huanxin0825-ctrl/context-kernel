@@ -129,6 +129,22 @@ def print_tool_result(result: dict[str, Any]) -> None:
     if result.get("error"):
         print(f"error: {result['error']}")
     print(f"policy: {result['policy']['status']}")
+    output = result.get("output", {})
+    transaction = output.get("transaction", {}) if isinstance(output, dict) else {}
+    if isinstance(transaction, dict) and transaction:
+        print(
+            "transaction: "
+            f"{transaction.get('id')} "
+            f"{transaction.get('status')} "
+            f"snapshots={transaction.get('snapshot_count', 0)}"
+        )
+        rollback = transaction.get("rollback", {})
+        if isinstance(rollback, dict) and rollback:
+            print(
+                "rollback: "
+                f"restored={len(rollback.get('restored', []))} "
+                f"deleted={len(rollback.get('deleted', []))}"
+            )
 
 
 def list_agent_reports(workspace: Workspace) -> list[dict[str, Any]]:

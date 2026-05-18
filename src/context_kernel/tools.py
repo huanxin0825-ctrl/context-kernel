@@ -131,6 +131,7 @@ class ToolExecutor:
             )
             return self._write_trace(result)
         target.parent.mkdir(parents=True, exist_ok=True)
+        transaction = begin_file_transaction(self.workspace, [path], label="create_file")
         try:
             atomic_create_text(target, text)
         except FileExistsError:
@@ -142,6 +143,15 @@ class ToolExecutor:
                 error=f"File already exists: {target}",
             )
             return self._write_trace(result)
+        except OSError as exc:
+            result = tool_result(
+                "create_file",
+                policy,
+                ok=False,
+                output={"transaction": transaction.rollback_output()},
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return self._write_trace(result)
         result = tool_result(
             "create_file",
             policy,
@@ -151,6 +161,7 @@ class ToolExecutor:
                 "written_chars": len(text),
                 "created": True,
                 "overwritten": False,
+                "transaction": transaction.commit_output(),
             },
         )
         return self._write_trace(result)
@@ -171,8 +182,19 @@ class ToolExecutor:
         existed = target.exists()
         before_chars = target.stat().st_size if existed else 0
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8", newline="") as handle:
-            handle.write(text)
+        transaction = begin_file_transaction(self.workspace, [path], label="append_file")
+        try:
+            with target.open("a", encoding="utf-8", newline="") as handle:
+                handle.write(text)
+        except OSError as exc:
+            result = tool_result(
+                "append_file",
+                policy,
+                ok=False,
+                output={"transaction": transaction.rollback_output()},
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return self._write_trace(result)
         result = tool_result(
             "append_file",
             policy,
@@ -183,6 +205,7 @@ class ToolExecutor:
                 "appended_chars": len(text),
                 "size_before_bytes": before_chars,
                 "size_after_bytes": target.stat().st_size,
+                "transaction": transaction.commit_output(),
             },
         )
         return self._write_trace(result)
@@ -207,7 +230,18 @@ class ToolExecutor:
             )
             return self._write_trace(result)
         target.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(target, text)
+        transaction = begin_file_transaction(self.workspace, [path], label="write_file" if overwrite else "create_file")
+        try:
+            atomic_write_text(target, text)
+        except OSError as exc:
+            result = tool_result(
+                "write_file" if overwrite else "create_file",
+                policy,
+                ok=False,
+                output={"transaction": transaction.rollback_output()},
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return self._write_trace(result)
         result = tool_result(
             "write_file" if overwrite else "create_file",
             policy,
@@ -217,6 +251,7 @@ class ToolExecutor:
                 "written_chars": len(text),
                 "created": not existed,
                 "overwritten": existed and overwrite,
+                "transaction": transaction.commit_output(),
             },
         )
         return self._write_trace(result)
@@ -310,7 +345,18 @@ class ToolExecutor:
             block = blocks[0]
             replacement = normalize_block_replacement(new, block["original"])
             updated = text[: block["replace_start"]] + replacement + text[block["replace_end"] :]
-            atomic_write_text(target, updated)
+            transaction = begin_file_transaction(self.workspace, [path], label="patch_file")
+            try:
+                atomic_write_text(target, updated)
+            except OSError as exc:
+                result = tool_result(
+                    "patch_file",
+                    policy,
+                    ok=False,
+                    output={"transaction": transaction.rollback_output()},
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                return self._write_trace(result)
             result = tool_result(
                 "patch_file",
                 policy,
@@ -325,6 +371,7 @@ class ToolExecutor:
                     "mode": "anchor_inclusive" if include_anchors else "anchor_between",
                     "start_anchor": start_anchor,
                     "end_anchor": end_anchor,
+                    "transaction": transaction.commit_output(),
                 },
             )
             return self._write_trace(result)
@@ -369,7 +416,18 @@ class ToolExecutor:
             replacement_mode = f"occurrence:{occurrence}"
         else:
             updated = text.replace(old, new, 1)
-        atomic_write_text(target, updated)
+        transaction = begin_file_transaction(self.workspace, [path], label="patch_file")
+        try:
+            atomic_write_text(target, updated)
+        except OSError as exc:
+            result = tool_result(
+                "patch_file",
+                policy,
+                ok=False,
+                output={"transaction": transaction.rollback_output()},
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return self._write_trace(result)
         result = tool_result(
             "patch_file",
             policy,
@@ -382,6 +440,7 @@ class ToolExecutor:
                 "matches": matches,
                 "replacement_count": replacement_count,
                 "mode": replacement_mode,
+                "transaction": transaction.commit_output(),
             },
         )
         return self._write_trace(result)
