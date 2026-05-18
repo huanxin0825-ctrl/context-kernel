@@ -2,6 +2,17 @@
 
 This roadmap defines what "done" means for the post-alpha product surface.
 
+## Productization Acceptance Goals
+
+These goals guide the current upgrade track. Treat them as release-readiness criteria, not aspirational notes.
+
+1. Thin agent orchestration: keep `loop.py` as a small coordinator while action handling, routing, reporting, recovery, planning, execution, and result shaping live in focused modules with direct boundary tests.
+2. Natural interactive states: make default chat and agent progress feel calm in the happy path, specific in error states, readable for long output, and helpful when resuming a task.
+3. Stable tool transactions: move beyond single safe tools toward grouped file/command operations with clear rollback, partial-failure reporting, and stricter confirmation boundaries for risky actions.
+4. Real-provider compatibility: add golden samples for OpenAI-compatible responses, including noisy JSON, markdown-wrapped JSON, tool-call-like shapes, malformed actions, and recovery-friendly failures.
+5. Industrial release confidence: validate Python and npm packaging across platforms, add install smoke checks, keep CI matrix coverage explicit, and make version publication repeatable.
+6. First-run task journey: document the path from installing/running `akernel` to completing a real file task, including setup, command examples, expected UI states, and troubleshooting.
+
 ## Code Editing Intelligence
 
 Current alpha:

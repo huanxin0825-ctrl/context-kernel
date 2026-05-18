@@ -10,13 +10,8 @@ from .tools import ToolExecutor
 from .loop_actions import (
     ALLOWED_ACTIONS,
     TOOL_ACTIONS,
-    action_progress_label,
-    action_progress_target,
-    compact,
-    execute_agent_action,
     parse_agent_action,
     repeated_agent_action,
-    summarize_action,
     summarize_tool_result,
 )
 from .loop_execution import (
@@ -25,23 +20,13 @@ from .loop_execution import (
     response_token_counts,
     run_provider_agent_step,
 )
-from .loop_materialize import (
-    extract_response_code_blocks,
-    looks_like_code_artifact_request,
-    materialize_code_response_if_needed,
-)
+from .loop_progress import emit_agent_progress
 from .loop_reports import (
     add_tokens,
     compact_saved_agent_report,
-    render_agent_response,
     write_agent_run_memory,
 )
 from .loop_planning import prepare_agent_step_plan
-from .loop_recovery import (
-    auto_recovery_tools,
-    diagnose_tool_result,
-    final_tool_stop_reason,
-)
 from .loop_routing import (
     AUX_REVIEW_MODES,
     MODEL_ROUTING_MODES,
@@ -49,16 +34,7 @@ from .loop_routing import (
     run_auxiliary_review,
     select_model_role,
 )
-from .loop_steps import agent_step_result
-
-
-def emit_agent_progress(callback: Callable[[dict[str, Any]], None] | None, event: dict[str, Any]) -> None:
-    if callback is None:
-        return
-    try:
-        callback(event)
-    except Exception:
-        return
+from .loop_step_handlers import handle_respond_action, handle_tool_action
 
 
 class AgentLoop:
@@ -317,186 +293,42 @@ class AgentLoop:
             return action_failure
 
         if action["action"] == "respond":
-            response_text = render_agent_response(action)
-            emit_agent_progress(
-                progress_callback,
-                {
-                    "event": "action_start",
-                    "step": index,
-                    "max_steps": max_steps,
-                    "action": "respond",
-                    "label": "preparing final response",
-                },
-            )
-            if looks_like_code_artifact_request(request) and extract_response_code_blocks(response_text):
-                emit_agent_progress(
-                    progress_callback,
-                    {
-                        "event": "materialize_start",
-                        "step": index,
-                        "max_steps": max_steps,
-                        "action": "write_file",
-                        "label": "saving generated code to workspace files",
-                    },
-                )
-            materialized = materialize_code_response_if_needed(self.tools, request, response_text)
-            if materialized:
-                for trace_result in materialized["traces"]:
-                    self.tasks.attach(task_id, "tool", trace_result["id"])
-                self.tasks.step(
-                    task_id,
-                    f"Agent materialized code response into file(s): {', '.join(materialized['paths'])}",
-                    kind="agent_tool",
-                    refs={"run_traces": [trace["id"]], "tool_traces": [item["id"] for item in materialized["traces"]]},
-                )
-                response_text = materialized["message"]
-                emit_agent_progress(
-                    progress_callback,
-                    {
-                        "event": "materialize_end",
-                        "step": index,
-                        "max_steps": max_steps,
-                        "action": "write_file",
-                        "ok": True,
-                        "paths": materialized["paths"],
-                    },
-                )
-            self.tasks.step(
-                task_id,
-                f"Agent response: {compact(response_text, limit=400)}",
-                kind="agent_response",
-                refs={"run_traces": [trace["id"]]},
-            )
-            return agent_step_result(
+            return handle_respond_action(
+                tasks=self.tasks,
+                tools=self.tools,
+                request=request,
+                task_id=task_id,
                 index=index,
-                status="responded",
-                can_continue=False,
+                max_steps=max_steps,
                 plan=plan,
-                stop_reason="Agent loop stopped: a final response was produced.",
-                trace_id=trace["id"],
-                model_role=selected_role,
-                model=selected_model,
+                trace=trace,
+                selected_role=selected_role,
+                selected_model=selected_model,
                 routing_reason=routing_reason,
-                aux_review=review,
-                tool_trace_id=None,
-                action=summarize_action(action),
+                review=review,
+                action=action,
                 tokens=tokens,
                 verifier_ok=verifier_ok,
                 contract_recovered=contract_recovered,
-                final_response=response_text,
-                materialized_files=materialized["paths"] if materialized else [],
+                progress_callback=progress_callback,
             )
 
-        emit_agent_progress(
-            progress_callback,
-            {
-                "event": "action_start",
-                "step": index,
-                "max_steps": max_steps,
-                "action": action["action"],
-                "label": action_progress_label(action),
-                "target": action_progress_target(action),
-            },
-        )
-        tool_result = execute_agent_action(self.tools, action)
-        self.tasks.attach(task_id, "tool", tool_result["id"])
-        tool_summary = summarize_tool_result(tool_result)
-        emit_agent_progress(
-            progress_callback,
-            {
-                "event": "action_end",
-                "step": index,
-                "max_steps": max_steps,
-                "action": action["action"],
-                "ok": tool_result["ok"],
-                "blocked": tool_result["blocked"],
-                "trace_id": tool_result["id"],
-                "summary": tool_summary,
-            },
-        )
-        self.tasks.step(
-            task_id,
-            f"Agent step {index} executed {action['action']}: {tool_summary}",
-            kind="agent_tool",
-            refs={"run_traces": [trace["id"]], "tool_traces": [tool_result["id"]]},
-        )
-        if index < max_steps and not tool_result["blocked"] and not tool_result["ok"]:
-            emit_agent_progress(
-                progress_callback,
-                {
-                    "event": "recovery_start",
-                    "step": index,
-                    "max_steps": max_steps,
-                    "action": action["action"],
-                    "label": "collecting recovery context",
-                },
-            )
-        recovery_tools = auto_recovery_tools(self.tools, request, action, tool_result) if index < max_steps else []
-        if recovery_tools:
-            for recovery in recovery_tools:
-                self.tasks.attach(task_id, "tool", recovery["id"])
-            recovery_summary = "; ".join(
-                f"{item['tool']}:{summarize_tool_result(item)}"
-                for item in recovery_tools
-            )
-            self.tasks.step(
-                task_id,
-                f"Agent recovery prepared after {action['action']}: {recovery_summary}",
-                kind="agent_recovery",
-                refs={"tool_traces": [item["id"] for item in recovery_tools]},
-            )
-            emit_agent_progress(
-                progress_callback,
-                {
-                    "event": "recovery_end",
-                    "step": index,
-                    "max_steps": max_steps,
-                    "action": action["action"],
-                    "count": len(recovery_tools),
-                    "summary": recovery_summary,
-                },
-            )
-        can_continue = index < max_steps and (tool_result["ok"] or bool(recovery_tools))
-        if tool_result["blocked"]:
-            status = "blocked"
-        elif not tool_result["ok"]:
-            status = "recovery_prepared" if can_continue else "needs_review"
-        else:
-            status = "ok" if can_continue else "stopped"
-        diagnostic = diagnose_tool_result(tool_result) if not can_continue and not tool_result["ok"] else None
-        return agent_step_result(
+        return handle_tool_action(
+            tasks=self.tasks,
+            tools=self.tools,
+            request=request,
+            task_id=task_id,
             index=index,
-            status=status,
-            can_continue=can_continue,
+            max_steps=max_steps,
             plan=plan,
-            stop_reason=final_tool_stop_reason(tool_result, recovery_tools=recovery_tools, max_steps=max_steps) if not can_continue else "",
-            diagnostic=diagnostic,
-            trace_id=trace["id"],
-            model_role=selected_role,
-            model=selected_model,
+            trace=trace,
+            selected_role=selected_role,
+            selected_model=selected_model,
             routing_reason=routing_reason,
-            aux_review=review,
-            tool_trace_id=tool_result["id"],
-            action=summarize_action(action),
-            tool={
-                "id": tool_result["id"],
-                "name": tool_result["tool"],
-                "ok": tool_result["ok"],
-                "blocked": tool_result["blocked"],
-                "error": tool_result.get("error"),
-                "summary": tool_summary,
-            },
-            recovery_tools=[
-                {
-                    "id": item["id"],
-                    "name": item["tool"],
-                    "ok": item["ok"],
-                    "blocked": item["blocked"],
-                    "summary": summarize_tool_result(item),
-                }
-                for item in recovery_tools
-            ],
+            review=review,
+            action=action,
             tokens=tokens,
             verifier_ok=verifier_ok,
             contract_recovered=contract_recovered,
+            progress_callback=progress_callback,
         )
