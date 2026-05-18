@@ -1461,6 +1461,9 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertTrue(success["ok"])
             self.assertEqual(success["output"]["applied_count"], 2)
+            self.assertEqual(success["output"]["transaction"]["status"], "committed")
+            self.assertFalse(success["output"]["transaction"]["rolled_back"])
+            self.assertEqual(success["output"]["transaction"]["snapshot_count"], 2)
             self.assertEqual((Path(tmp) / "notes" / "a.txt").read_text(encoding="utf-8"), "hello new")
             self.assertEqual(
                 (Path(tmp) / "notes" / "b.txt").read_text(encoding="utf-8"),
@@ -1468,7 +1471,20 @@ class RuntimeTests(unittest.TestCase):
             )
             self.assertFalse(failed["ok"])
             self.assertTrue(failed["output"]["rolled_back"])
+            self.assertEqual(failed["output"]["transaction"]["status"], "rolled_back")
+            self.assertTrue(failed["output"]["transaction"]["rollback"]["restored"])
             self.assertEqual((Path(tmp) / "notes" / "a.txt").read_text(encoding="utf-8"), "hello new")
+
+            spec = Path(tmp) / "patch-spec.json"
+            spec.write_text(
+                json.dumps([{"path": "notes/a.txt", "old": "new", "new": "newer"}]),
+                encoding="utf-8",
+            )
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "tool", "batch-patch", "--specs-file", str(spec)])
+            output = stdout.getvalue()
+            self.assertIn("transaction:", output)
+            self.assertIn("committed", output)
 
     def test_batch_patch_spec_loader_accepts_utf8_bom(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -225,6 +225,21 @@ def cmd_tool_batch_patch(args: argparse.Namespace) -> None:
     output = result.get("output", {})
     if "applied_count" in output:
         print(f"applied_count: {output['applied_count']}")
+    transaction = output.get("transaction", {})
+    if isinstance(transaction, dict) and transaction:
+        print(
+            "transaction: "
+            f"{transaction.get('id')} "
+            f"{transaction.get('status')} "
+            f"snapshots={transaction.get('snapshot_count', 0)}"
+        )
+        rollback = transaction.get("rollback", {})
+        if isinstance(rollback, dict) and rollback:
+            print(
+                "rollback: "
+                f"restored={len(rollback.get('restored', []))} "
+                f"deleted={len(rollback.get('deleted', []))}"
+            )
     if output.get("rolled_back"):
         print("rolled_back: true")
 

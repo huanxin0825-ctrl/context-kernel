@@ -11,6 +11,7 @@ from uuid import uuid4
 from .models import utc_now
 from .policy import check_batch_file_policy, check_command_policy, check_file_policy, resolve_target
 from .storage import Workspace
+from .tool_transactions import begin_file_transaction
 
 
 MAX_CAPTURE_CHARS = 8000
@@ -391,7 +392,11 @@ class ToolExecutor:
         if not policy["allowed"]:
             return self._write_trace(blocked_result("batch_patch", policy))
 
-        snapshots = snapshot_patch_targets(self.workspace, normalized_edits)
+        transaction = begin_file_transaction(
+            self.workspace,
+            [edit["path"] for edit in normalized_edits],
+            label="batch_patch",
+        )
         results: list[dict[str, Any]] = []
         for index, edit in enumerate(normalized_edits, start=1):
             result = self.patch_file(
@@ -406,7 +411,7 @@ class ToolExecutor:
             )
             results.append(batch_child_summary(index, result))
             if result["blocked"] or not result["ok"]:
-                restore_patch_snapshots(snapshots)
+                transaction_output = transaction.rollback_output()
                 return self._write_trace(
                     tool_result(
                         "batch_patch",
@@ -415,6 +420,7 @@ class ToolExecutor:
                         output={
                             "applied_count": max(0, index - 1),
                             "rolled_back": True,
+                            "transaction": transaction_output,
                             "results": results,
                         },
                         error=f"Batch patch failed at edit {index}: {result.get('error') or result['policy']['status']}",
@@ -429,6 +435,7 @@ class ToolExecutor:
                 output={
                     "applied_count": len(results),
                     "rolled_back": False,
+                    "transaction": transaction.commit_output(),
                     "results": results,
                     "subtrace_ids": [item["trace_id"] for item in results],
                 },
@@ -678,32 +685,6 @@ def normalize_patch_edit(edit: dict[str, Any]) -> dict[str, Any]:
     if edit.get("include_anchors"):
         normalized["include_anchors"] = True
     return normalized
-
-
-def snapshot_patch_targets(workspace: Workspace, edits: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    snapshots: dict[str, dict[str, Any]] = {}
-    for edit in edits:
-        target = resolve_target(workspace, Path(edit["path"]))
-        key = str(target)
-        if key in snapshots:
-            continue
-        snapshots[key] = {
-            "path": target,
-            "exists": target.exists(),
-            "is_file": target.exists() and target.is_file(),
-            "content": target.read_text(encoding="utf-8", errors="replace") if target.exists() and target.is_file() else "",
-        }
-    return snapshots
-
-
-def restore_patch_snapshots(snapshots: dict[str, dict[str, Any]]) -> None:
-    for snapshot in snapshots.values():
-        path = snapshot["path"]
-        if snapshot["exists"] and snapshot["is_file"]:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(path, snapshot["content"])
-        elif path.exists() and path.is_file():
-            path.unlink()
 
 
 def batch_child_summary(index: int, result: dict[str, Any]) -> dict[str, Any]:
