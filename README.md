@@ -94,6 +94,7 @@ These numbers come from the local mock-provider benchmark path, so they are repr
 
 See [Benchmark Evidence](docs/10-benchmark-evidence.md) for reproduction commands and fixture details.
 See [First Real File Task](docs/12-first-real-file-task.md) for a start-to-finish path from first launch to a traceable file edit.
+See [Release Dry Run](docs/13-release-dry-run.md) for the latest local package, launcher, and benchmark release rehearsal.
 
 ## Architecture
 
