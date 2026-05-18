@@ -88,6 +88,29 @@
     "expected_command": "python -V"
   },
   {
+    "name": "openai_tool_calls_transaction",
+    "response": {
+      "choices": [
+        {
+          "message": {
+            "content": null,
+            "tool_calls": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "transaction",
+                  "arguments": "{\"steps\":[{\"action\":\"append_file\",\"path\":\"notes/openai.txt\",\"text\":\" world\"},{\"action\":\"run_command\",\"command\":\"python -V\",\"timeout_seconds\":5}]}"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected_action": "transaction",
+    "expected_step_count": 2
+  },
+  {
     "name": "responses_api_function_call",
     "response": {
       "output": [

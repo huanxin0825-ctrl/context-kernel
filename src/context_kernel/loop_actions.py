@@ -17,6 +17,7 @@ TOOL_ACTIONS = {
     "append_file",
     "patch_file",
     "batch_patch",
+    "transaction",
     "run_command",
     "mcp_call",
 }
@@ -131,6 +132,15 @@ def parse_agent_action(text: str, *, expect_json: bool = False) -> dict[str, Any
             "edits": [parse_patch_edit(edit) for edit in edits],
             "reason": compact(str(action.get("reason", "")), limit=240),
         }
+    if action_name == "transaction":
+        steps = action.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("transaction requires a non-empty steps array")
+        return {
+            "action": "transaction",
+            "steps": [parse_transaction_step(step) for step in steps],
+            "reason": compact(str(action.get("reason", "")), limit=240),
+        }
     if action_name == "mcp_call":
         server = require_non_empty_string(action, "server")
         tool = require_non_empty_string(action, "tool")
@@ -207,6 +217,8 @@ def unwrap_single_action_payload(payload: dict[str, Any]) -> Any:
         value = payload.get(key)
         if isinstance(value, dict):
             return value
+    if any(payload.get(key) for key in ["action", "tool", "name", "tool_name"]):
+        return payload
     for key in ["actions", "steps"]:
         value = payload.get(key)
         if isinstance(value, list) and len(value) == 1:
@@ -273,6 +285,10 @@ def normalize_action_name(name: str) -> str:
         "patch": "patch_file",
         "edit_file": "patch_file",
         "batch_edit": "batch_patch",
+        "transact": "transaction",
+        "atomic_transaction": "transaction",
+        "transactional_edit": "transaction",
+        "tool_transaction": "transaction",
         "shell": "run_command",
         "exec": "run_command",
         "execute": "run_command",
@@ -326,6 +342,34 @@ def parse_patch_edit(edit: Any) -> dict[str, Any]:
     }
 
 
+def parse_transaction_step(step: Any) -> dict[str, Any]:
+    if not isinstance(step, dict):
+        raise ValueError("transaction steps must be objects")
+    action_name = normalize_action_name(str(step.get("action") or step.get("tool") or step.get("name") or ""))
+    if action_name in {"create_file", "write_file"}:
+        return {
+            "action": action_name,
+            "path": require_non_empty_string(step, "path"),
+            "text": str(step.get("text", "")),
+        }
+    if action_name == "append_file":
+        return {
+            "action": "append_file",
+            "path": require_non_empty_string(step, "path"),
+            "text": str(step.get("text", "")),
+            "create": bool(step.get("create", True)),
+        }
+    if action_name == "patch_file":
+        return {"action": "patch_file", **parse_patch_edit(step)}
+    if action_name == "run_command":
+        return {
+            "action": "run_command",
+            "command": require_non_empty_string(step, "command"),
+            "timeout_seconds": clamp_int(step.get("timeout_seconds", step.get("timeout", 30)), default=30, minimum=1, maximum=300),
+        }
+    raise ValueError(f"transaction step has unsupported action: {action_name or '[missing]'}")
+
+
 def execute_agent_action(executor: ToolExecutor, action: dict[str, Any]) -> dict[str, Any]:
     if action["action"] == "list_dir":
         return executor.list_dir(action.get("path", "."), limit=action.get("limit", 200))
@@ -352,6 +396,8 @@ def execute_agent_action(executor: ToolExecutor, action: dict[str, Any]) -> dict
         )
     if action["action"] == "batch_patch":
         return executor.batch_patch(action["edits"])
+    if action["action"] == "transaction":
+        return executor.transaction(action["steps"])
     if action["action"] == "run_command":
         return executor.run_command(action["command"], timeout_seconds=action["timeout_seconds"])
     if action["action"] == "mcp_call":
@@ -398,6 +444,8 @@ def action_progress_label(action: dict[str, Any]) -> str:
         return "applying file patch"
     if action_name == "batch_patch":
         return "applying multi-file patch"
+    if action_name == "transaction":
+        return "running transaction"
     if action_name == "run_command":
         return "running command"
     if action_name == "mcp_call":
@@ -414,6 +462,11 @@ def action_progress_target(action: dict[str, Any]) -> str:
         paths = [str(item.get("path", "")) for item in edits[:3] if isinstance(item, dict)]
         suffix = f" +{len(edits) - 3}" if isinstance(edits, list) and len(edits) > 3 else ""
         return compact(", ".join(paths) + suffix, limit=160)
+    if action_name == "transaction":
+        steps = action.get("steps", [])
+        names = [str(item.get("action", "")) for item in steps[:4] if isinstance(item, dict)]
+        suffix = f" +{len(steps) - 4}" if isinstance(steps, list) and len(steps) > 4 else ""
+        return compact(", ".join(names) + suffix, limit=160)
     if action_name == "run_command":
         return compact(str(action.get("command", "")), limit=160)
     if action_name == "mcp_call":
@@ -450,6 +503,14 @@ def summarize_action(action: dict[str, Any] | None) -> dict[str, Any] | None:
         summary["paths"] = [
             compact(str(edit.get("path", "")), limit=80)
             for edit in action.get("edits", [])[:5]
+        ]
+    if action["action"] == "transaction":
+        steps = action.get("steps", [])
+        summary["step_count"] = len(steps)
+        summary["steps"] = [
+            compact(str(step.get("action", "")), limit=80)
+            for step in steps[:6]
+            if isinstance(step, dict)
         ]
     if action["action"] == "mcp_call":
         summary["server"] = compact(str(action.get("server", "")), limit=80)
@@ -501,6 +562,12 @@ def summarize_tool_result(result: dict[str, Any]) -> str:
             f"applied_count={output.get('applied_count')}; "
             f"rolled_back={output.get('rolled_back')}; "
             f"edits={len(output.get('results', []))}"
+        )
+    if result["tool"] == "transaction":
+        return (
+            f"applied_count={output.get('applied_count')}; "
+            f"rolled_back={output.get('rolled_back')}; "
+            f"steps={len(output.get('results', []))}"
         )
     if result["tool"] == "run_command":
         command = compact(str(output.get("command", "")), limit=160)
@@ -582,6 +649,15 @@ def action_fingerprint(action: dict[str, Any]) -> str:
                 f"{compact(str(edit.get('new', '')), limit=30)}"
             )
         return "batch_patch:" + "|".join(pieces)
+    if action_name == "transaction":
+        pieces = []
+        for step in action.get("steps", [])[:8]:
+            pieces.append(
+                f"{step.get('action', '')}:"
+                f"{step.get('path', step.get('command', ''))}:"
+                f"{compact(str(step.get('text') or step.get('new') or ''), limit=30)}"
+            )
+        return "transaction:" + "|".join(pieces)
     if action_name == "run_command":
         return f"run_command:{action.get('command', '')}"
     return ""

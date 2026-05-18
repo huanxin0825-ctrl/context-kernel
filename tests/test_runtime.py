@@ -31,6 +31,7 @@ from context_kernel.context import ContextBuilder
 from context_kernel.evals import EvalRunner
 from context_kernel.global_memory import pull_global_memories, push_global_memories
 from context_kernel.loop import AgentLoop, parse_agent_action, repeated_agent_action
+from context_kernel.loop_actions import execute_agent_action
 from context_kernel.loop_execution import (
     build_agent_packet,
     parse_agent_step_action,
@@ -1550,6 +1551,46 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("files: committed", output)
             self.assertIn("applied_count: 2", output)
 
+    def test_agent_transaction_action_executes_with_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            executor = ToolExecutor(workspace)
+            executor.write_file("notes/a.txt", "stable")
+
+            action = parse_agent_action(
+                json.dumps(
+                    {
+                        "action": "transaction",
+                        "steps": [
+                            {"action": "append_file", "path": "notes/a.txt", "text": " changed"},
+                            {"action": "create_file", "path": "notes/temp.txt", "text": "temporary"},
+                            {"action": "run_command", "command": "python -c \"import sys; sys.exit(2)\""},
+                        ],
+                    }
+                )
+            )
+            result = execute_agent_action(executor, action)
+
+            self.assertEqual(action["action"], "transaction")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["tool"], "transaction")
+            self.assertIn("run_command exit_code=2", result["error"])
+            self.assertTrue(result["output"]["rolled_back"])
+            self.assertEqual(result["output"]["transaction"]["status"], "rolled_back")
+            self.assertEqual((Path(tmp) / "notes" / "a.txt").read_text(encoding="utf-8"), "stable")
+            self.assertFalse((Path(tmp) / "notes" / "temp.txt").exists())
+
+            with self.assertRaisesRegex(ValueError, "unsupported action: mcp_call"):
+                parse_agent_action(
+                    json.dumps(
+                        {
+                            "action": "transaction",
+                            "steps": [{"action": "mcp_call", "server": "fake", "tool": "echo"}],
+                        }
+                    )
+                )
+
     def test_batch_patch_spec_loader_accepts_utf8_bom(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             spec = Path(tmp) / "patch-spec.json"
@@ -2495,6 +2536,9 @@ class RuntimeTests(unittest.TestCase):
         command_action = parse_agent_action(
             '{"tool_calls":[{"function":{"name":"run-command","arguments":"{\\"command\\":\\"python -V\\",\\"timeout_seconds\\":5}"}}]}'
         )
+        transaction_action = parse_agent_action(
+            '{"tool":"tool_transaction","arguments":{"steps":[{"action":"append_file","path":"notes/new.txt","text":" more"},{"action":"run_command","command":"python -V","timeout":7}]}}'
+        )
         mcp_action = parse_agent_action(
             '{"action":"mcp_call","server":"fake","tool":"echo","arguments":{"text":"hi"},"timeout_seconds":3}'
         )
@@ -2517,6 +2561,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(command_action["action"], "run_command")
         self.assertEqual(command_action["command"], "python -V")
         self.assertEqual(command_action["timeout_seconds"], 5)
+        self.assertEqual(transaction_action["action"], "transaction")
+        self.assertEqual(len(transaction_action["steps"]), 2)
+        self.assertEqual(transaction_action["steps"][0]["action"], "append_file")
+        self.assertEqual(transaction_action["steps"][1]["timeout_seconds"], 7)
         self.assertEqual(mcp_action["action"], "mcp_call")
         self.assertEqual(mcp_action["server"], "fake")
         self.assertEqual(mcp_action["tool"], "echo")
@@ -3179,6 +3227,8 @@ class RuntimeTests(unittest.TestCase):
                     self.assertEqual(action["path"], fixture["expected_path"])
                 if fixture.get("expected_command"):
                     self.assertEqual(action["command"], fixture["expected_command"])
+                if fixture.get("expected_step_count"):
+                    self.assertEqual(len(action["steps"]), fixture["expected_step_count"])
 
     def test_openai_provider_retries_transient_network_error(self) -> None:
         provider = OpenAICompatibleProvider(
