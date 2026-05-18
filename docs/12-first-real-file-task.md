@@ -56,7 +56,29 @@ transaction: <id> committed snapshots=1
 
 That means the runtime captured the file boundary for this operation and saved the result in a tool trace.
 
-## 4. Run The Same Kind Of Task Through The Agent
+## 4. Run A Rollback-Safe Bundle
+
+When a file task has multiple edits plus a verification command, put them in a transaction spec:
+
+```json
+{
+  "steps": [
+    { "action": "append_file", "path": "notes/first-task.txt", "text": " verified" },
+    { "action": "patch_file", "path": "notes/first-task.txt", "old": "third", "new": "final" },
+    { "action": "run_command", "command": "python -c \"print('ok')\"" }
+  ]
+}
+```
+
+Run it with:
+
+```powershell
+akernel tool transaction --specs-file transaction.json
+```
+
+If any file step fails, a command is blocked, or the verification command exits non-zero, `akernel` rolls the file changes back to the pre-transaction snapshot and records the rollback in the parent tool trace.
+
+## 5. Run The Same Kind Of Task Through The Agent
 
 For a deterministic local path:
 
@@ -78,7 +100,7 @@ akernel
 
 The agent should show a compact status flow, execute file operations through policy-gated tools, and save task/run/tool traces under `.akernel/`.
 
-## 5. Resume Or Inspect The Work
+## 6. Resume Or Inspect The Work
 
 Use these when something is interrupted or you want evidence:
 
@@ -91,7 +113,7 @@ akernel trace show <trace-id>
 
 `task brief` prints a continuation command so a long task can be resumed without replaying the whole conversation.
 
-## 6. Local Release Smoke
+## 7. Local Release Smoke
 
 Before publishing or handing a build to someone else, run:
 

@@ -60,7 +60,7 @@ from .cli_reports import (
     print_benchmark_report,
     print_policy_result,
 )
-from .cli_tools import add_tool_subcommands, load_batch_patch_specs
+from .cli_tools import add_tool_subcommands, load_batch_patch_specs, load_transaction_specs
 from .context import ContextBuilder
 from .evals import EvalRunner
 from .global_memory import pull_global_memories, push_global_memories

@@ -20,6 +20,7 @@ from context_kernel.chat_ui import format_tui_report
 from context_kernel.cli import (
     chat_completion_items,
     load_batch_patch_specs,
+    load_transaction_specs,
     main,
     print_chat_report,
     run_agent_with_spinner,
@@ -1497,6 +1498,58 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("transaction:", output)
             self.assertIn("committed", output)
 
+    def test_tool_transaction_rolls_back_file_steps_when_verification_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            executor = ToolExecutor(workspace)
+            executor.write_file("notes/a.txt", "hello")
+
+            success = executor.transaction(
+                [
+                    {"action": "append_file", "path": "notes/a.txt", "text": " world"},
+                    {"action": "patch_file", "path": "notes/a.txt", "old": "world", "new": "agent"},
+                    {"action": "run_command", "command": "python -c \"print('ok')\""},
+                ]
+            )
+            failed = executor.transaction(
+                [
+                    {"action": "append_file", "path": "notes/a.txt", "text": " again"},
+                    {"action": "create_file", "path": "notes/new.txt", "text": "temporary"},
+                    {"action": "run_command", "command": "python -c \"import sys; sys.exit(2)\""},
+                ]
+            )
+
+            self.assertTrue(success["ok"])
+            self.assertFalse(success["output"]["rolled_back"])
+            self.assertEqual(success["output"]["transaction"]["status"], "committed")
+            self.assertEqual((Path(tmp) / "notes" / "a.txt").read_text(encoding="utf-8"), "hello agent")
+            self.assertFalse(failed["ok"])
+            self.assertIn("run_command exit_code=2", failed["error"])
+            self.assertTrue(failed["output"]["rolled_back"])
+            self.assertEqual(failed["output"]["transaction"]["status"], "rolled_back")
+            self.assertEqual((Path(tmp) / "notes" / "a.txt").read_text(encoding="utf-8"), "hello agent")
+            self.assertFalse((Path(tmp) / "notes" / "new.txt").exists())
+
+            spec = Path(tmp) / "transaction-spec.json"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {"action": "append_file", "path": "notes/a.txt", "text": " cli"},
+                            {"action": "run_command", "command": "python -c \"print('ok')\""},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "tool", "transaction", "--specs-file", str(spec)])
+            output = stdout.getvalue()
+            self.assertIn("ok: transaction", output)
+            self.assertIn("files: committed", output)
+            self.assertIn("applied_count: 2", output)
+
     def test_batch_patch_spec_loader_accepts_utf8_bom(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             spec = Path(tmp) / "patch-spec.json"
@@ -1505,6 +1558,15 @@ class RuntimeTests(unittest.TestCase):
             edits = load_batch_patch_specs(spec)
 
             self.assertEqual(edits, [{"path": "notes/a.txt", "old": "old", "new": "new"}])
+
+    def test_transaction_spec_loader_accepts_utf8_bom(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "transaction-spec.json"
+            spec.write_text('\ufeff{"steps":[{"action":"run_command","command":"python -V"}]}', encoding="utf-8")
+
+            steps = load_transaction_specs(spec)
+
+            self.assertEqual(steps, [{"action": "run_command", "command": "python -V"}])
 
     def test_task_store_tracks_checkpoints_refs_and_completion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

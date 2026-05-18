@@ -16,6 +16,9 @@ from .tool_transactions import begin_file_transaction
 
 MAX_CAPTURE_CHARS = 8000
 MAX_LIST_ENTRIES = 200
+TRANSACTION_FILE_ACTIONS = {"create_file", "write_file", "append_file", "patch_file"}
+TRANSACTION_COMMAND_ACTIONS = {"run_command"}
+TRANSACTION_ACTIONS = TRANSACTION_FILE_ACTIONS | TRANSACTION_COMMAND_ACTIONS
 
 
 class ToolExecutor:
@@ -501,6 +504,90 @@ class ToolExecutor:
             )
         )
 
+    def transaction(
+        self,
+        steps: list[dict[str, Any]],
+        *,
+        allow_destructive_commands: bool = False,
+    ) -> dict[str, Any]:
+        normalized_steps = normalize_transaction_steps(steps)
+        file_paths = transaction_file_paths(normalized_steps)
+        policy = transaction_policy(self.workspace, file_paths)
+        if not policy["allowed"]:
+            return self._write_trace(blocked_result("transaction", policy))
+
+        transaction = begin_file_transaction(self.workspace, file_paths, label="transaction")
+        results: list[dict[str, Any]] = []
+        for index, step in enumerate(normalized_steps, start=1):
+            result = self.execute_transaction_step(
+                step,
+                allow_destructive_commands=allow_destructive_commands,
+            )
+            results.append(batch_child_summary(index, result))
+            if result["blocked"] or not result["ok"]:
+                transaction_output = transaction.rollback_output()
+                failure_reason = child_failure_reason(result)
+                return self._write_trace(
+                    tool_result(
+                        "transaction",
+                        policy,
+                        ok=False,
+                        output={
+                            "applied_count": max(0, index - 1),
+                            "rolled_back": True,
+                            "transaction": transaction_output,
+                            "results": results,
+                            "subtrace_ids": [item["trace_id"] for item in results],
+                        },
+                        error=f"Transaction failed at step {index}: {failure_reason}",
+                    )
+                )
+
+        return self._write_trace(
+            tool_result(
+                "transaction",
+                policy,
+                ok=True,
+                output={
+                    "applied_count": len(results),
+                    "rolled_back": False,
+                    "transaction": transaction.commit_output(),
+                    "results": results,
+                    "subtrace_ids": [item["trace_id"] for item in results],
+                },
+            )
+        )
+
+    def execute_transaction_step(
+        self,
+        step: dict[str, Any],
+        *,
+        allow_destructive_commands: bool,
+    ) -> dict[str, Any]:
+        action = step["action"]
+        if action == "create_file":
+            return self.create_file(step["path"], step["text"])
+        if action == "write_file":
+            return self.write_file(step["path"], step["text"])
+        if action == "append_file":
+            return self.append_file(step["path"], step["text"], create=bool(step.get("create", True)))
+        if action == "patch_file":
+            return self.patch_file(
+                step["path"],
+                step.get("old", ""),
+                step.get("new", ""),
+                replace_all=bool(step.get("replace_all", False)),
+                occurrence=step.get("occurrence"),
+                start_anchor=step.get("start_anchor"),
+                end_anchor=step.get("end_anchor"),
+                include_anchors=bool(step.get("include_anchors", False)),
+            )
+        return self.run_command(
+            step["command"],
+            allow_destructive=allow_destructive_commands,
+            timeout_seconds=step["timeout_seconds"],
+        )
+
     def delete_file(self, path: str, *, allow_destructive: bool = False) -> dict[str, Any]:
         policy = check_file_policy(self.workspace, "delete", path, allow_destructive=allow_destructive)
         if not policy["allowed"]:
@@ -759,6 +846,110 @@ def batch_child_summary(index: int, result: dict[str, Any]) -> dict[str, Any]:
         "replacement_count": output.get("replacement_count"),
         "error": result.get("error"),
     }
+
+
+def child_failure_reason(result: dict[str, Any]) -> str:
+    if result.get("error"):
+        return str(result["error"])
+    output = result.get("output", {})
+    if result.get("tool") == "run_command" and isinstance(output, dict) and output.get("exit_code") is not None:
+        return f"run_command exit_code={output.get('exit_code')}"
+    return str(result.get("policy", {}).get("status") or "failed")
+
+
+def normalize_transaction_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(steps, list) or not steps:
+        raise ValueError("transaction requires a non-empty steps array")
+    normalized: list[dict[str, Any]] = []
+    for index, step in enumerate(steps, start=1):
+        if not isinstance(step, dict):
+            raise ValueError(f"transaction step {index} must be an object")
+        action = normalize_transaction_action(str(step.get("action") or step.get("tool") or step.get("name") or ""))
+        if action not in TRANSACTION_ACTIONS:
+            raise ValueError(f"transaction step {index} has unsupported action: {action or '[missing]'}")
+        if action in {"create_file", "write_file"}:
+            normalized.append(
+                {
+                    "action": action,
+                    "path": require_transaction_string(step, "path", index),
+                    "text": str(step.get("text", "")),
+                }
+            )
+        elif action == "append_file":
+            normalized.append(
+                {
+                    "action": "append_file",
+                    "path": require_transaction_string(step, "path", index),
+                    "text": str(step.get("text", "")),
+                    "create": bool(step.get("create", True)),
+                }
+            )
+        elif action == "patch_file":
+            normalized.append({"action": "patch_file", **normalize_patch_edit(step)})
+        else:
+            normalized.append(
+                {
+                    "action": "run_command",
+                    "command": require_transaction_string(step, "command", index),
+                    "timeout_seconds": clamp_transaction_int(
+                        step.get("timeout_seconds", step.get("timeout", 30)),
+                        default=30,
+                        minimum=1,
+                        maximum=300,
+                    ),
+                }
+            )
+    return normalized
+
+
+def normalize_transaction_action(action: str) -> str:
+    normalized = action.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "create": "create_file",
+        "write": "write_file",
+        "append": "append_file",
+        "patch": "patch_file",
+        "edit_file": "patch_file",
+        "run": "run_command",
+        "exec": "run_command",
+        "shell": "run_command",
+        "command": "run_command",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def require_transaction_string(step: dict[str, Any], key: str, index: int) -> str:
+    value = step.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"transaction step {index} requires a non-empty {key}")
+    return value.strip()
+
+
+def clamp_transaction_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def transaction_file_paths(steps: list[dict[str, Any]]) -> list[str]:
+    return [step["path"] for step in steps if step["action"] in TRANSACTION_FILE_ACTIONS]
+
+
+def transaction_policy(workspace: Workspace, file_paths: list[str]) -> dict[str, Any]:
+    if not file_paths:
+        return {
+            "allowed": True,
+            "status": "allowed",
+            "kind": "transaction",
+            "operation": "transaction",
+            "subject": "commands only",
+            "reasons": [],
+        }
+    policy = check_batch_file_policy(workspace, [{"path": path} for path in file_paths])
+    policy["operation"] = "transaction"
+    return policy
 
 
 def replace_nth_occurrence(text: str, old: str, new: str, occurrence: int) -> str:

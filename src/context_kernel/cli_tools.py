@@ -77,6 +77,13 @@ def add_tool_subcommands(tool_sub: argparse._SubParsersAction[argparse.ArgumentP
     tool_batch_patch.add_argument("--task", default=None, help="Attach the batch trace to a task session.")
     tool_batch_patch.set_defaults(func=cmd_tool_batch_patch)
 
+    tool_transaction = tool_sub.add_parser("transaction", help="Run file and command steps as one rollback-safe unit.")
+    tool_transaction.add_argument("--specs-file", required=True, help="JSON file containing a steps array, or an array of steps.")
+    tool_transaction.add_argument("--allow-destructive-commands", action="store_true", help="Allow destructive command terms inside run_command steps.")
+    tool_transaction.add_argument("--json", action="store_true")
+    tool_transaction.add_argument("--task", default=None, help="Attach the transaction trace to a task session.")
+    tool_transaction.set_defaults(func=cmd_tool_transaction)
+
     tool_delete = tool_sub.add_parser("delete", help="Delete a workspace file through destructive policy.")
     tool_delete.add_argument("path")
     tool_delete.add_argument("--allow-destructive", action="store_true")
@@ -229,6 +236,26 @@ def cmd_tool_batch_patch(args: argparse.Namespace) -> None:
         print("rolled_back: true")
 
 
+def cmd_tool_transaction(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    ensure_task_attachable(workspace, args.task)
+    steps = load_transaction_specs(Path(args.specs_file))
+    result = ToolExecutor(workspace).transaction(
+        steps,
+        allow_destructive_commands=args.allow_destructive_commands,
+    )
+    attach_tool_to_task_if_requested(workspace, args.task, result)
+    if args.json:
+        print_json(result)
+        return
+    print_tool_result(result)
+    output = result.get("output", {})
+    if "applied_count" in output:
+        print(f"applied_count: {output['applied_count']}")
+    if output.get("rolled_back"):
+        print("rolled_back: true")
+
+
 def load_batch_patch_specs(path: Path) -> list[dict[str, object]]:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     edits = payload.get("edits") if isinstance(payload, dict) else payload
@@ -237,6 +264,16 @@ def load_batch_patch_specs(path: Path) -> list[dict[str, object]]:
     if not all(isinstance(edit, dict) for edit in edits):
         raise ValueError("batch-patch edits must be JSON objects.")
     return edits
+
+
+def load_transaction_specs(path: Path) -> list[dict[str, object]]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    steps = payload.get("steps") if isinstance(payload, dict) else payload
+    if not isinstance(steps, list):
+        raise ValueError("transaction specs file must contain a JSON array or an object with a `steps` array.")
+    if not all(isinstance(step, dict) for step in steps):
+        raise ValueError("transaction steps must be JSON objects.")
+    return steps
 
 
 def cmd_tool_delete(args: argparse.Namespace) -> None:
