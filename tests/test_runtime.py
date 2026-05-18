@@ -30,6 +30,15 @@ from context_kernel.context import ContextBuilder
 from context_kernel.evals import EvalRunner
 from context_kernel.global_memory import pull_global_memories, push_global_memories
 from context_kernel.loop import AgentLoop, parse_agent_action, repeated_agent_action
+from context_kernel.loop_execution import (
+    build_agent_packet,
+    parse_agent_step_action,
+    response_token_counts,
+)
+from context_kernel.loop_planning import adaptive_context_budget
+from context_kernel.loop_recovery import command_failure_target_paths, diagnose_agent_exception
+from context_kernel.loop_routing import parse_aux_review, select_model_role
+from context_kernel.loop_steps import agent_step_result
 from context_kernel.marketplace import install_marketplace_skill, list_marketplace_skills
 from context_kernel.memory import MemoryStore, is_relevant_memory_match
 from context_kernel.mcp import add_mcp_server, import_codex_mcp_servers, list_mcp_servers, mcp_context_summary
@@ -456,6 +465,124 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertFalse(repeated_agent_action([{"action": action}], action))
         self.assertTrue(repeated_agent_action([{"action": action}, {"action": action}], action))
+
+    def test_loop_module_boundary_helpers_keep_contracts(self) -> None:
+        plan = {
+            "route": {"complexity": "medium"},
+            "budget": {"estimated_used": 5000, "total": 1200},
+            "task": {"id": "task"},
+            "selection": {"memory": ["m1"], "skills": ["s1", "s2"]},
+            "warnings": [],
+        }
+
+        role, reason = select_model_role(
+            model_routing="auto",
+            plan=plan,
+            step_index=1,
+            prior_steps=[],
+            profile="balanced",
+        )
+        self.assertEqual(role, "auxiliary")
+        self.assertIn("medium-complexity", reason)
+        self.assertEqual(adaptive_context_budget(plan), 6250)
+        self.assertEqual(
+            response_token_counts({"response": {"input_tokens": "3", "output_tokens": 4}})["total_tokens"],
+            0,
+        )
+
+        step = agent_step_result(index=1, status="ok", can_continue=True, plan=plan, stop_reason="continue")
+        self.assertEqual(step["plan"]["selection"]["skill_count"], 2)
+        self.assertEqual(step["tokens"], {})
+
+        review = parse_aux_review('{"ok": false, "risk": "wild", "recommendation": "bad", "notes": "single"}')
+        self.assertFalse(review["ok"])
+        self.assertEqual(review["risk"], "medium")
+        self.assertEqual(review["recommendation"], "continue")
+        self.assertEqual(review["notes"], ["single"])
+
+        packet = build_agent_packet(
+            "write demo.py and run command python -m unittest",
+            1,
+            2,
+            expect_json=True,
+            model_role="primary",
+            routing_reason="test",
+        )
+        rules = packet["agent"]["response_contract"]["rules"]
+        self.assertTrue(any("write the file first" in rule for rule in rules))
+        self.assertEqual(
+            packet["agent"]["available_tools"][0]["schema"]["message"],
+            "string containing compact JSON text",
+        )
+
+    def test_loop_execution_recovers_contract_when_verifier_is_non_strict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            tasks = TaskStore(workspace)
+            task = tasks.start("contract recovery")
+            plan = {
+                "route": {"complexity": "low"},
+                "budget": {"estimated_used": 100, "total": 1200},
+                "task": {"id": task["id"]},
+                "selection": {"memory": [], "skills": []},
+                "warnings": [],
+            }
+            trace = {
+                "id": "run123",
+                "response": {"text": '{"action":"respond","message":"ok"}'},
+            }
+
+            action, recovered, failure = parse_agent_step_action(
+                tasks,
+                task_id=task["id"],
+                index=1,
+                trace=trace,
+                expect_json=False,
+                verifier_ok=False,
+                prior_steps=[],
+                plan=plan,
+                model_role="primary",
+                model="model",
+                routing_reason="test",
+                aux_review={"enabled": False},
+                tokens={"total_tokens": 1},
+            )
+
+            self.assertIsNone(failure)
+            self.assertTrue(recovered)
+            self.assertEqual(action["action"], "respond")
+            saved = tasks.get(task["id"])
+            self.assertIn("recovered a valid action", saved["steps"][-1]["note"])
+
+    def test_loop_recovery_extracts_workspace_failure_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            src = Path(tmp) / "src" / "first.py"
+            src.parent.mkdir()
+            src.write_text("raise RuntimeError()\n", encoding="utf-8")
+            tests_dir = Path(tmp) / "tests"
+            tests_dir.mkdir()
+            second = tests_dir / "second.py"
+            second.write_text("assert False\n", encoding="utf-8")
+            outside = Path(tmp).parent / "outside_failure.py"
+            tool_result = {
+                "output": {
+                    "stderr": (
+                        f'File "{src}", line 1, in <module>\n'
+                        f"{outside}:2: outside\n"
+                        f"{second}:3: failed\n"
+                    )
+                },
+                "error": "",
+            }
+
+            targets = command_failure_target_paths(workspace, tool_result, limit=3)
+
+            self.assertEqual(targets[:2], ["tests/second.py", "src/first.py"])
+            diagnostic = diagnose_agent_exception(RuntimeError("Provider HTTP 404: missing model"))
+            self.assertEqual(diagnostic["category"], "provider_endpoint")
 
     def test_agent_uses_project_profile_test_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
