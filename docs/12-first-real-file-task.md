@@ -100,4 +100,4 @@ powershell -ExecutionPolicy Bypass -File scripts\release_check.ps1
 python scripts\install_smoke.py --command akernel
 ```
 
-The install smoke creates a temporary workspace and verifies create, append, patch, and read through the installed `akernel` command.
+The install smoke creates a temporary workspace and verifies create, append, patch, and read through the installed `akernel` command. `release_check.ps1` also runs this path through the Python module, the installed command when available, and the npm launcher smoke when npm is installed.

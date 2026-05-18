@@ -35,6 +35,6 @@
   },
   "scripts": {
     "pack:dry": "npm pack --dry-run",
-    "smoke": "node bin/akernel.js --help"
+    "smoke": "python ../../../scripts/install_smoke.py --node-launcher bin/akernel.js"
   }
 }

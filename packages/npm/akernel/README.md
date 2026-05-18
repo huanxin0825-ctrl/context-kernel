@@ -24,3 +24,13 @@ Useful environment overrides:
 - `AKERNEL_SKIP_BOOTSTRAP=1` disables automatic pip installation.
 
 Python 3.10 or newer is required. The Python package remains the source of truth.
+
+## Smoke Test
+
+From the repository checkout, the launcher smoke runs the same real file-task path used by release validation:
+
+```bash
+npm run smoke
+```
+
+It creates a temporary workspace and verifies `init`, `tool create`, `tool append`, `tool patch`, and `tool read` through the Node launcher.

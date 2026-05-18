@@ -4,6 +4,7 @@ Context Kernel now has a repository-level CI path that checks the same things a 
 
 - the package installs cleanly
 - the runtime tests pass
+- the installed command can complete a real file task
 - the CLI can run a benchmark and gate it against a saved baseline
 - the Windows one-click wake flow still works
 
@@ -13,9 +14,10 @@ The workflow lives at `.github/workflows/ci.yml`.
 
 It runs:
 
-- a cross-platform matrix on `ubuntu-latest` and `windows-latest`
+- a cross-platform matrix on `ubuntu-latest`, `windows-latest`, and `macos-latest`
 - Python `3.10` and `3.12`
 - `python -m unittest discover -s tests -p test_runtime.py`
+- an installed-command smoke that creates, appends, patches, and reads a real workspace file through `akernel`
 - a CLI smoke path:
   - `init`
   - `skill register`
@@ -31,8 +33,8 @@ It runs:
 
 - Python source distribution and wheel builds
 - `twine check` metadata validation
-- wheel smoke installation in a fresh virtual environment
-- npm launcher `npm pack --dry-run`
+- wheel smoke installation in a fresh virtual environment, followed by the real file-task smoke
+- npm launcher `npm pack --dry-run` and launcher smoke
 - benchmark evidence generation for the deterministic scale suite
 - PyPI publishing through trusted publishing on `v*` tags or explicit manual approval
 - npm publishing only when `NPM_TOKEN` and the `PUBLISH_NPM` repository variable are configured
@@ -51,6 +53,7 @@ python -m context_kernel --workspace .sandbox-ci skill register examples\skills\
 python -m context_kernel --workspace .sandbox-ci memory add --kind preference --text "Prefer CLI-first context budget prototypes." --tags cli
 python -m context_kernel --workspace .sandbox-ci bench run examples\benchmarks\phase2
 python -m context_kernel --workspace .sandbox-ci bench gate examples\benchmarks\phase2 --require-baseline
+python scripts\install_smoke.py --command akernel
 python -m build
 ```
 
@@ -67,7 +70,7 @@ For release preparation, run the bundled check:
 .\scripts\release_check.ps1
 ```
 
-It runs the unit test suite, builds the Python package, checks package metadata, checks the CLI entrypoint, verifies that packaged marketplace skills can be listed, performs an npm dry-run pack when npm is available, and generates benchmark evidence for the deterministic scale suite.
+It runs the unit test suite, builds the Python package, checks package metadata, checks the CLI entrypoint, verifies that packaged marketplace skills can be listed, runs the real file-task smoke through the Python module and installed `akernel` command when available, performs an npm dry-run pack and npm launcher smoke when npm is available, and generates benchmark evidence for the deterministic scale suite.
 
 ## Release Shape
 

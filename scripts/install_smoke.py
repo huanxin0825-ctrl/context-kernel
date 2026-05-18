@@ -11,21 +11,34 @@ from pathlib import Path
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke test an installed akernel command.")
     parser.add_argument("--command", default="akernel", help="Console command to exercise.")
+    parser.add_argument("--node-launcher", default=None, help="Path to a Node launcher script to exercise.")
     args = parser.parse_args()
 
-    command = resolve_command(args.command)
+    command = resolve_invocation(args)
     with tempfile.TemporaryDirectory(prefix="akernel-install-smoke-") as tmp:
         workspace = Path(tmp)
-        run([command, "init", str(workspace)])
-        run([command, "--workspace", str(workspace), "tool", "create", "notes/smoke.txt", "--text", "first"])
-        run([command, "--workspace", str(workspace), "tool", "append", "notes/smoke.txt", "--text", " second"])
-        run([command, "--workspace", str(workspace), "tool", "patch", "notes/smoke.txt", "--old", "second", "--new", "third"])
+        run([*command, "init", str(workspace)])
+        run([*command, "--workspace", str(workspace), "tool", "create", "notes/smoke.txt", "--text", "first"])
+        run([*command, "--workspace", str(workspace), "tool", "append", "notes/smoke.txt", "--text", " second"])
+        run([*command, "--workspace", str(workspace), "tool", "patch", "notes/smoke.txt", "--old", "second", "--new", "third"])
         content = (workspace / "notes" / "smoke.txt").read_text(encoding="utf-8")
         if content != "first third":
             raise SystemExit(f"unexpected smoke file content: {content!r}")
-        run([command, "--workspace", str(workspace), "tool", "read", "notes/smoke.txt", "--max-chars", "80"])
+        run([*command, "--workspace", str(workspace), "tool", "read", "notes/smoke.txt", "--max-chars", "80"])
     print("install_smoke: ok")
     return 0
+
+
+def resolve_invocation(args: argparse.Namespace) -> list[str]:
+    if args.node_launcher:
+        node = shutil.which("node")
+        if not node:
+            raise SystemExit("command not found on PATH: node")
+        launcher = Path(args.node_launcher)
+        if not launcher.exists():
+            raise SystemExit(f"node launcher not found: {launcher}")
+        return [node, str(launcher)]
+    return [resolve_command(args.command)]
 
 
 def resolve_command(command: str) -> str:

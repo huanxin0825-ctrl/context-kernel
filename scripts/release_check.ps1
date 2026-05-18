@@ -42,6 +42,15 @@ if (-not $SkipBuild) {
 
 Invoke-Checked $PythonCommand @("-m", "context_kernel.cli", "--help")
 Invoke-Checked $PythonCommand @("-m", "context_kernel.cli", "skill", "market-list")
+Invoke-Checked $PythonCommand @((Join-Path $RepoRoot "scripts\install_smoke.py"), "--command", "python-module")
+
+$akernelCommand = Get-Command akernel -ErrorAction SilentlyContinue
+if ($akernelCommand) {
+  Invoke-Checked $PythonCommand @((Join-Path $RepoRoot "scripts\install_smoke.py"), "--command", "akernel")
+}
+else {
+  Write-Host "akernel command not found on PATH; skipping installed command smoke"
+}
 
 if (-not $SkipNpm) {
   $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
@@ -52,6 +61,7 @@ if (-not $SkipNpm) {
     Push-Location "packages/npm/akernel"
     try {
       Invoke-Checked $npm.Source @("pack", "--dry-run")
+      Invoke-Checked $npm.Source @("run", "smoke")
     }
     finally {
       Pop-Location
