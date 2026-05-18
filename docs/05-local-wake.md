@@ -45,7 +45,7 @@ If your machine already allows local PowerShell scripts, you can still call `.\s
 
 ## Interactive Chat
 
-After waking the project and initializing a workspace, start the interactive agent cockpit with:
+After waking the project and initializing a workspace, start the interactive agent workspace with:
 
 ```powershell
 akernel

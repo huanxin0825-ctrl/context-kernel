@@ -157,7 +157,7 @@ No changes yet.
 
 ### Changed
 
-- Reworked the default TUI startup into a quieter chat-first header while keeping the full cockpit dashboard available with `AKERNEL_ALT_SCREEN=1`.
+- Reworked the default TUI startup into a quieter chat-first header while keeping the richer terminal dashboard available with `AKERNEL_ALT_SCREEN=1`.
 - Improved command and file completion so `/` and `@` work on the current cursor token, including inline text such as `inspect @README`.
 
 ## 0.1.8 - 2026-05-14
@@ -258,7 +258,7 @@ No changes yet.
 - Publishing setup documentation lists the PyPI Trusted Publishing, npm token, GitHub environment, and first-release steps needed for public release.
 - Product roadmap documentation defines completion bars for TUI, advanced editing, memory retention, marketplace, distribution, and benchmark maturity.
 - `akernel --ui auto|classic|tui` adds a zero-dependency full-screen terminal UI with transcript, session sidebar, last-run summary, diagnostics, pending context, and input hint.
-- The TUI now uses a cockpit layout with a status header, command strip, task mission panel, model stack, workspace summary, and last-run action timeline.
+- The TUI now uses a terminal dashboard layout with a status header, command strip, task panel, model stack, workspace summary, and last-run action summary.
 - Failing-test recovery can now read multiple file candidates from command output and apply inferred multi-file fixes as one rollback-safe `batch_patch`.
 - Long task sessions can now carry structured milestone plans, active checkpoints, acceptance criteria, and compact resume prompts through `task plan`, `task next`, and `task checkpoint`.
 - `memory audit` and enhanced `memory prune` explain retention scores, token cost, pinned records, and trace-backed recoverability before archiving lower-value memories.

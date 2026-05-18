@@ -32,7 +32,7 @@ from context_kernel.global_memory import pull_global_memories, push_global_memor
 from context_kernel.loop import AgentLoop, parse_agent_action, repeated_agent_action
 from context_kernel.marketplace import install_marketplace_skill, list_marketplace_skills
 from context_kernel.memory import MemoryStore, is_relevant_memory_match
-from context_kernel.mcp import add_mcp_server, list_mcp_servers, mcp_context_summary
+from context_kernel.mcp import add_mcp_server, import_codex_mcp_servers, list_mcp_servers, mcp_context_summary
 from context_kernel.planner import ExecutionPlanner
 from context_kernel.policy import assess_request_policy, check_command_policy, check_file_policy
 from context_kernel.project import load_project_profile, scan_project
@@ -201,6 +201,88 @@ class RuntimeTests(unittest.TestCase):
                 main(["--workspace", str(workspace.root), "mcp", "remove", "demo"])
             self.assertIn("removed MCP server: demo", stdout.getvalue())
             self.assertEqual(list_mcp_servers(workspace), [])
+
+    def test_mcp_imports_codex_config_without_copying_env_values_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "codex.toml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        '[mcp_servers.gitnexus]',
+                        'command = "node"',
+                        'args = ["D:/GitNexus/dist/index.js", "mcp"]',
+                        'startup_timeout_ms = 20000',
+                        "",
+                        '[mcp_servers.gitnexus.tools.query]',
+                        'approval_mode = "approve"',
+                        "",
+                        '[mcp_servers.page-agent]',
+                        'command = "node"',
+                        'args = ["D:/page-agent/index.js"]',
+                        "",
+                        '[mcp_servers.page-agent.env]',
+                        'LLM_API_KEY = "secret-value"',
+                        'PORT = "38431"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            workspace = Workspace(root / "workspace")
+            workspace.init()
+
+            result = import_codex_mcp_servers(workspace, config_path=config_path)
+            servers = {server["name"]: server for server in list_mcp_servers(workspace)}
+            summary = mcp_context_summary(workspace)
+
+            self.assertEqual(result["count"], 2)
+            self.assertEqual(servers["gitnexus"]["command"], "node")
+            self.assertEqual(servers["gitnexus"]["args"], ["D:/GitNexus/dist/index.js", "mcp"])
+            self.assertEqual(servers["gitnexus"]["startup_timeout_ms"], 20000)
+            self.assertEqual(servers["gitnexus"]["tool_approvals"]["query"]["approval_mode"], "approve")
+            self.assertEqual(servers["page-agent"]["env"], {})
+            self.assertEqual(servers["page-agent"]["env_keys"], ["LLM_API_KEY", "PORT"])
+            self.assertFalse(servers["page-agent"]["enabled"])
+            self.assertTrue(servers["page-agent"]["env_required"])
+            self.assertEqual(summary["enabled_count"], 1)
+
+    def test_mcp_import_codex_cli_can_copy_env_when_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "codex.toml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        '[mcp_servers.demo]',
+                        'command = "python"',
+                        'args = ["server.py"]',
+                        "",
+                        '[mcp_servers.demo.env]',
+                        'TOKEN = "secret-value"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            workspace = Workspace(root / "workspace")
+            workspace.init()
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(
+                    [
+                        "--workspace",
+                        str(workspace.root),
+                        "mcp",
+                        "import-codex",
+                        "--config",
+                        str(config_path),
+                        "--include-env",
+                    ]
+                )
+
+            server = list_mcp_servers(workspace)[0]
+            self.assertIn("imported MCP servers from Codex: 1", stdout.getvalue())
+            self.assertEqual(server["env"], {"TOKEN": "secret-value"})
+            self.assertEqual(server["env_keys"], ["TOKEN"])
 
     def test_mcp_refresh_discovers_stdio_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1074,6 +1156,12 @@ class RuntimeTests(unittest.TestCase):
             workspace.init()
             executor = ToolExecutor(workspace)
 
+            listed_root = executor.list_dir(".")
+            missing_info = executor.file_info("notes/missing.txt")
+            created = executor.create_file("notes/create-only.txt", "first")
+            duplicate_create = executor.create_file("notes/create-only.txt", "second")
+            appended = executor.append_file("notes/create-only.txt", "\nsecond")
+            append_read = executor.read_file("notes/create-only.txt")
             written = executor.write_file("notes/result.txt", "hello tool layer")
             read = executor.read_file("notes/result.txt")
             patched = executor.patch_file("notes/result.txt", "tool layer", "policy tool layer")
@@ -1113,6 +1201,19 @@ class RuntimeTests(unittest.TestCase):
             traces = executor.list_traces()
             loaded = executor.get_trace(written["id"])
 
+            self.assertTrue(listed_root["ok"])
+            self.assertIn("entries", listed_root["output"])
+            self.assertTrue(missing_info["ok"])
+            self.assertFalse(missing_info["output"]["exists"])
+            self.assertTrue(created["ok"])
+            self.assertEqual(created["tool"], "create_file")
+            self.assertFalse(duplicate_create["ok"])
+            self.assertEqual(duplicate_create["tool"], "create_file")
+            self.assertIn("already exists", duplicate_create["error"])
+            self.assertEqual((Path(tmp) / "notes" / "create-only.txt").read_text(encoding="utf-8"), "first\nsecond")
+            self.assertTrue(appended["ok"])
+            self.assertEqual(appended["tool"], "append_file")
+            self.assertEqual(append_read["output"]["content"], "first\nsecond")
             self.assertTrue(written["ok"])
             self.assertTrue(read["ok"])
             self.assertEqual(read["output"]["content"], "hello tool layer")
@@ -1149,6 +1250,35 @@ class RuntimeTests(unittest.TestCase):
             self.assertFalse((Path(tmp) / "notes" / "result.txt").exists())
             self.assertGreaterEqual(len(traces), 24)
             self.assertEqual(loaded["id"], written["id"])
+
+    def test_tool_cli_exposes_stable_file_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "tool", "create", "notes/cli.txt", "--text", "first"])
+            self.assertIn("ok: create_file", stdout.getvalue())
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "tool", "append", "notes/cli.txt", "--text", "\nsecond"])
+            self.assertIn("ok: append_file", stdout.getvalue())
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "tool", "file-info", "notes/cli.txt"])
+            self.assertIn("kind: file", stdout.getvalue())
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "tool", "list-dir", "notes"])
+            self.assertIn("cli.txt", stdout.getvalue())
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                main(["--workspace", str(workspace.root), "tool", "create", "notes/cli.txt", "--text", "overwrite"])
+            self.assertIn("failed: create_file", stdout.getvalue())
+
+            self.assertEqual((Path(tmp) / "notes" / "cli.txt").read_text(encoding="utf-8"), "first\nsecond")
+            tools = {trace["tool"] for trace in ToolExecutor(workspace).list_traces()}
+            self.assertTrue({"create_file", "append_file", "file_info", "list_dir"}.issubset(tools))
 
     def test_tool_executor_batch_patch_applies_multiple_edits_and_rolls_back_on_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1571,18 +1701,18 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertEqual(len(reports), 1)
             self.assertEqual(len(tasks), 1)
-            self.assertIn("Context Kernel Agent", output)
-            self.assertIn("Context Kernel Agent Cockpit", output)
-            self.assertIn("Launch Paths", output)
+            self.assertIn("akernel", output)
+            self.assertIn("focused agent workspace", output)
+            self.assertIn("/help commands", output)
             self.assertIn("Command Palette - Context", output)
             self.assertIn("Status Runway", output)
             self.assertIn("Runtime Deck", output)
             self.assertIn("Model Roles", output)
             self.assertIn("auxiliary", output)
-            self.assertIn("Models", output)
+            self.assertIn("model_routing", output)
             self.assertIn("AKERNEL_OPENAI_AUX_MODEL", output)
             self.assertIn("agent_run:", output)
-            self.assertIn("Timeline", output)
+            self.assertIn("/cost for details", output)
             self.assertIn("Mock agent response", output)
             self.assertIn("contacting primary model", output)
             self.assertIn("route=primary", output)
@@ -1808,10 +1938,10 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertIn("AKERNEL // READY", screen)
             self.assertIn("provider  mock", screen)
-            self.assertIn("Mission", screen)
+            self.assertIn("Focus", screen)
             self.assertIn("Flow", screen)
             self.assertIn("Last Run", screen)
-            self.assertIn("Timeline", screen)
+            self.assertIn("Steps", screen)
             self.assertIn("actions   respond", screen)
             self.assertIn("meter", screen)
             self.assertIn("42/2400", screen)
@@ -1844,9 +1974,9 @@ class RuntimeTests(unittest.TestCase):
 
         output = stdout.getvalue()
 
-        self.assertIn("Timeline", output)
+        self.assertIn("/cost for details", output)
         self.assertIn("600", output)
-        self.assertIn("[####..............]", output)
+        self.assertIn("agent_run:", output)
 
     def test_tui_chat_runs_agent_loop_after_user_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1874,12 +2004,12 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertEqual(len(reports), 1)
             self.assertIn("AKERNEL", output)
-            self.assertIn("shortcuts /help /status /model /commands", output)
+            self.assertIn("/help commands", output)
             self.assertIn("AKERNEL", output)
             self.assertIn("Mock agent response", output)
             self.assertNotIn("AKERNEL: Assistant", output)
             self.assertIn("bye", output)
-            self.assertEqual(output.count("shortcuts /help /status /model /commands"), 1)
+            self.assertEqual(output.count("/help commands"), 1)
 
     def test_tui_screen_can_render_older_history_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2037,7 +2167,7 @@ class RuntimeTests(unittest.TestCase):
             workspace.init()
             task = TaskStore(workspace).start(
                 "Ship polished TUI",
-                goal="Make the interactive agent cockpit easier to scan.",
+                goal="Make the interactive agent workspace easier to scan.",
                 with_plan=True,
             )
             args = type(
@@ -2067,8 +2197,8 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("AKERNEL // READY", screen)
             self.assertIn("/compact", screen)
             self.assertIn("small context, visible actions", screen)
-            self.assertIn("Ready Queue", screen)
-            self.assertIn("plan -> action -> trace", screen)
+            self.assertIn("Next", screen)
+            self.assertIn("plan, act, trace", screen)
             self.assertIn("Task", screen)
             self.assertIn("plan", screen)
             self.assertIn("active", screen)
@@ -2087,7 +2217,7 @@ class RuntimeTests(unittest.TestCase):
             output = stdout.getvalue()
             self.assertTrue((Path(tmp) / ".akernel").exists())
             self.assertIn("initialized workspace:", output)
-            self.assertIn("Context Kernel Agent", output)
+            self.assertIn("focused agent workspace", output)
             self.assertIn("bye", output)
 
     def test_bare_akernel_accepts_chat_flags(self) -> None:
@@ -2103,10 +2233,15 @@ class RuntimeTests(unittest.TestCase):
 
             output = stdout.getvalue()
             self.assertTrue((Path(tmp) / ".akernel").exists())
-            self.assertIn("provider   mock", output)
-            self.assertIn("loop       max 1 steps per message", output)
+            self.assertIn("focused agent workspace", output)
+            self.assertIn("task ", output)
+            self.assertIn("mock | gpt-5.5 | balanced | max 1", output)
 
     def test_agent_action_parser_accepts_common_tool_call_shapes(self) -> None:
+        list_action = parse_agent_action('{"action":"list_dir","path":"src","limit":5}')
+        info_action = parse_agent_action('{"action":"file_info","path":"README.md"}')
+        create_action = parse_agent_action('{"action":"create_file","path":"notes/new.txt","text":"hello"}')
+        append_action = parse_agent_action('{"action":"append_file","path":"notes/new.txt","text":"again","create":false}')
         read_action = parse_agent_action('{"tool":"read","args":{"path":"README.md"}}')
         command_action = parse_agent_action(
             '{"tool_calls":[{"function":{"name":"run-command","arguments":"{\\"command\\":\\"python -V\\",\\"timeout_seconds\\":5}"}}]}'
@@ -2121,6 +2256,13 @@ class RuntimeTests(unittest.TestCase):
             '{"actions":[{"name":"final_answer","arguments":{"message":"ready","reason":"done"}}]}'
         )
 
+        self.assertEqual(list_action["action"], "list_dir")
+        self.assertEqual(list_action["limit"], 5)
+        self.assertEqual(info_action["action"], "file_info")
+        self.assertEqual(create_action["action"], "create_file")
+        self.assertEqual(create_action["text"], "hello")
+        self.assertEqual(append_action["action"], "append_file")
+        self.assertFalse(append_action["create"])
         self.assertEqual(read_action["action"], "read_file")
         self.assertEqual(read_action["path"], "README.md")
         self.assertEqual(command_action["action"], "run_command")
@@ -2350,6 +2492,63 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(task["refs"]["memories"]), 1)
             self.assertEqual(report["state"]["written_count"], 1)
             self.assertIn("hello agent", brief["linked_tool_traces"][-1]["output_summary"])
+
+    def test_agent_loop_uses_create_and_append_file_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+
+            create_report = AgentLoop(workspace).run(
+                'Create notes/new.txt with "hello"',
+                provider_name="mock",
+                budget=1600,
+                max_steps=2,
+            )
+            append_report = AgentLoop(workspace).run(
+                'Append notes/new.txt with " again"',
+                provider_name="mock",
+                budget=1600,
+                max_steps=2,
+            )
+            unquoted_create_report = AgentLoop(workspace).run(
+                "Create notes/plain.txt with plain hello",
+                provider_name="mock",
+                budget=1600,
+                max_steps=2,
+            )
+            unquoted_append_report = AgentLoop(workspace).run(
+                "Append notes/plain.txt with plus one",
+                provider_name="mock",
+                budget=1600,
+                max_steps=2,
+            )
+
+            self.assertEqual(create_report["status"], "responded")
+            self.assertEqual(create_report["steps"][0]["action"]["action"], "create_file")
+            self.assertEqual(append_report["status"], "responded")
+            self.assertEqual(append_report["steps"][0]["action"]["action"], "append_file")
+            self.assertEqual((Path(tmp) / "notes" / "new.txt").read_text(encoding="utf-8"), "hello again")
+            self.assertEqual(unquoted_create_report["steps"][0]["action"]["action"], "create_file")
+            self.assertEqual(unquoted_append_report["steps"][0]["action"]["action"], "append_file")
+            self.assertEqual((Path(tmp) / "notes" / "plain.txt").read_text(encoding="utf-8"), "plain helloplus one")
+
+    def test_agent_loop_can_list_directory_then_respond(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            (Path(tmp) / "notes").mkdir()
+            (Path(tmp) / "notes" / "a.txt").write_text("alpha", encoding="utf-8")
+
+            report = AgentLoop(workspace).run(
+                "List notes",
+                provider_name="mock",
+                budget=1600,
+                max_steps=2,
+            )
+
+            self.assertEqual(report["status"], "responded")
+            self.assertEqual(report["steps"][0]["action"]["action"], "list_dir")
+            self.assertIn("a.txt", report["final_response"])
 
     def test_agent_loop_materializes_code_block_response_to_explicit_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

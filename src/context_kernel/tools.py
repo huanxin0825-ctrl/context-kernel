@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import shlex
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -12,11 +14,77 @@ from .storage import Workspace
 
 
 MAX_CAPTURE_CHARS = 8000
+MAX_LIST_ENTRIES = 200
 
 
 class ToolExecutor:
     def __init__(self, workspace: Workspace):
         self.workspace = workspace
+
+    def list_dir(self, path: str = ".", *, limit: int = MAX_LIST_ENTRIES) -> dict[str, Any]:
+        policy = check_file_policy(self.workspace, "read", path)
+        if not policy["allowed"]:
+            return self._write_trace(blocked_result("list_dir", policy))
+
+        target = Path(policy["subject"])
+        if not target.exists():
+            result = tool_result("list_dir", policy, ok=False, error=f"Directory does not exist: {target}")
+            return self._write_trace(result)
+        if not target.is_dir():
+            result = tool_result("list_dir", policy, ok=False, error=f"Target is not a directory: {target}")
+            return self._write_trace(result)
+
+        entries = sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold()))
+        limited = entries[: max(1, min(limit, MAX_LIST_ENTRIES))]
+        result = tool_result(
+            "list_dir",
+            policy,
+            ok=True,
+            output={
+                "path": str(target),
+                "entries": [
+                    {
+                        "name": item.name,
+                        "path": str(item.relative_to(self.workspace.root)) if is_relative_path(item, self.workspace.root) else str(item),
+                        "kind": "dir" if item.is_dir() else "file",
+                        "size_bytes": item.stat().st_size if item.is_file() else None,
+                    }
+                    for item in limited
+                ],
+                "total_entries": len(entries),
+                "truncated": len(entries) > len(limited),
+            },
+        )
+        return self._write_trace(result)
+
+    def file_info(self, path: str) -> dict[str, Any]:
+        policy = check_file_policy(self.workspace, "read", path)
+        if not policy["allowed"]:
+            return self._write_trace(blocked_result("file_info", policy))
+
+        target = Path(policy["subject"])
+        if not target.exists():
+            result = tool_result(
+                "file_info",
+                policy,
+                ok=True,
+                output={"path": str(target), "exists": False},
+            )
+            return self._write_trace(result)
+        stat = target.stat()
+        result = tool_result(
+            "file_info",
+            policy,
+            ok=True,
+            output={
+                "path": str(target),
+                "exists": True,
+                "kind": "dir" if target.is_dir() else "file" if target.is_file() else "other",
+                "size_bytes": stat.st_size if target.is_file() else None,
+                "modified_at": utc_now_from_timestamp(stat.st_mtime),
+            },
+        )
+        return self._write_trace(result)
 
     def read_file(self, path: str, *, max_chars: int = MAX_CAPTURE_CHARS) -> dict[str, Any]:
         policy = check_file_policy(self.workspace, "read", path)
@@ -46,19 +114,109 @@ class ToolExecutor:
         )
         return self._write_trace(result)
 
-    def write_file(self, path: str, text: str) -> dict[str, Any]:
+    def create_file(self, path: str, text: str) -> dict[str, Any]:
+        policy = check_file_policy(self.workspace, "write", path)
+        if not policy["allowed"]:
+            return self._write_trace(blocked_result("create_file", policy))
+
+        target = resolve_target(self.workspace, Path(path))
+        if target.exists():
+            result = tool_result(
+                "create_file",
+                policy,
+                ok=False,
+                output={"path": str(target), "exists": True},
+                error=f"File already exists: {target}",
+            )
+            return self._write_trace(result)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            atomic_create_text(target, text)
+        except FileExistsError:
+            result = tool_result(
+                "create_file",
+                policy,
+                ok=False,
+                output={"path": str(target), "exists": True},
+                error=f"File already exists: {target}",
+            )
+            return self._write_trace(result)
+        result = tool_result(
+            "create_file",
+            policy,
+            ok=True,
+            output={
+                "path": str(target),
+                "written_chars": len(text),
+                "created": True,
+                "overwritten": False,
+            },
+        )
+        return self._write_trace(result)
+
+    def append_file(self, path: str, text: str, *, create: bool = True) -> dict[str, Any]:
+        policy = check_file_policy(self.workspace, "write", path)
+        if not policy["allowed"]:
+            return self._write_trace(blocked_result("append_file", policy))
+
+        target = resolve_target(self.workspace, Path(path))
+        if target.exists() and not target.is_file():
+            result = tool_result("append_file", policy, ok=False, error=f"Target is not a file: {target}")
+            return self._write_trace(result)
+        if not target.exists() and not create:
+            result = tool_result("append_file", policy, ok=False, error=f"File does not exist: {target}")
+            return self._write_trace(result)
+
+        existed = target.exists()
+        before_chars = target.stat().st_size if existed else 0
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        result = tool_result(
+            "append_file",
+            policy,
+            ok=True,
+            output={
+                "path": str(target),
+                "created": not existed,
+                "appended_chars": len(text),
+                "size_before_bytes": before_chars,
+                "size_after_bytes": target.stat().st_size,
+            },
+        )
+        return self._write_trace(result)
+
+    def write_file(self, path: str, text: str, *, overwrite: bool = True) -> dict[str, Any]:
         policy = check_file_policy(self.workspace, "write", path)
         if not policy["allowed"]:
             return self._write_trace(blocked_result("write_file", policy))
 
         target = resolve_target(self.workspace, Path(path))
+        existed = target.exists()
+        if existed and not target.is_file():
+            result = tool_result("write_file", policy, ok=False, error=f"Target is not a file: {target}")
+            return self._write_trace(result)
+        if existed and not overwrite:
+            result = tool_result(
+                "create_file",
+                policy,
+                ok=False,
+                output={"path": str(target), "exists": True},
+                error=f"File already exists: {target}",
+            )
+            return self._write_trace(result)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        atomic_write_text(target, text)
         result = tool_result(
-            "write_file",
+            "write_file" if overwrite else "create_file",
             policy,
             ok=True,
-            output={"path": str(target), "written_chars": len(text)},
+            output={
+                "path": str(target),
+                "written_chars": len(text),
+                "created": not existed,
+                "overwritten": existed and overwrite,
+            },
         )
         return self._write_trace(result)
 
@@ -151,7 +309,7 @@ class ToolExecutor:
             block = blocks[0]
             replacement = normalize_block_replacement(new, block["original"])
             updated = text[: block["replace_start"]] + replacement + text[block["replace_end"] :]
-            target.write_text(updated, encoding="utf-8")
+            atomic_write_text(target, updated)
             result = tool_result(
                 "patch_file",
                 policy,
@@ -210,7 +368,7 @@ class ToolExecutor:
             replacement_mode = f"occurrence:{occurrence}"
         else:
             updated = text.replace(old, new, 1)
-        target.write_text(updated, encoding="utf-8")
+        atomic_write_text(target, updated)
         result = tool_result(
             "patch_file",
             policy,
@@ -444,6 +602,61 @@ def trim_capture(text: str) -> str:
     return text[:MAX_CAPTURE_CHARS]
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        newline="",
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temp_path = Path(handle.name)
+        handle.write(text)
+    try:
+        temp_path.replace(path)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
+
+
+def atomic_create_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        newline="",
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temp_path = Path(handle.name)
+        handle.write(text)
+    try:
+        os.link(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def is_relative_path(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def utc_now_from_timestamp(timestamp: float) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+
 def normalize_patch_edit(edit: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(edit, dict):
         raise ValueError("Batch patch edits must be objects.")
@@ -488,7 +701,7 @@ def restore_patch_snapshots(snapshots: dict[str, dict[str, Any]]) -> None:
         path = snapshot["path"]
         if snapshot["exists"] and snapshot["is_file"]:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(snapshot["content"], encoding="utf-8")
+            atomic_write_text(path, snapshot["content"])
         elif path.exists() and path.is_file():
             path.unlink()
 

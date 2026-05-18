@@ -153,18 +153,14 @@ def tui_compact_start_lines(
     route = getattr(args, "model_routing", "primary")
     return [
         "",
-        chat_color(truncate_line("AKERNEL // CONTEXT COCKPIT", width), "cyan", bold=True),
-        chat_color(truncate_line("Small packets. Visible actions. Every tool leaves a trail.", width), "dim"),
+        chat_color(truncate_line("akernel", width), "cyan", bold=True),
+        chat_color(truncate_line("focused agent workspace", width), "dim"),
         "",
-        truncate_line(f"cwd       {compact_path(Path.cwd())}", width),
-        truncate_line(f"work      {compact_path(workspace.root)}", width),
-        truncate_line(f"session   {status} | task {task_short} | provider {args.provider} | profile {args.profile}", width),
-        truncate_line(f"models    primary {primary_model(args)} | aux {auxiliary_model(args)} | route {route}", width),
-        truncate_line(f"context   {len(pending_context)} attached | last run {tokens} tokens | @ search, @path attach", width),
-        truncate_line(f"flow      {tui_flow_summary(last_report)}", width),
+        truncate_line(f"{compact_path(Path.cwd())}", width),
+        chat_color(truncate_line(f"task {task_short} | {args.provider} | {primary_model(args)} | {args.profile} | route {route}", width), "dim"),
         "",
-        chat_color(truncate_line("shortcuts /help /status /model /commands /extensions /compact /runs /cost /clear /exit", width), "dim"),
-        chat_color(truncate_line("input      ask one concrete task; use !command for checked shell context", width), "dim"),
+        truncate_line("Ask a task, attach @file, or run !command for checked local context.", width),
+        chat_color(truncate_line(f"/help commands | /status session | /extensions tools | /cost last run | ctx {len(pending_context)} | last {tokens} tokens", width), "dim"),
     ]
 
 
@@ -181,7 +177,7 @@ def tui_header_lines(
     status_color = "green" if status == "ready" else "yellow" if status == "running" else "cyan"
     tokens = 0 if not last_report else last_report.get("totals", {}).get("total_tokens", 0)
     run_id = str(last_report.get("id", ""))[:12] if last_report else "none"
-    title = f" AKERNEL // {status_label} // CONTEXT COCKPIT "
+    title = f" AKERNEL // {status_label} "
     subtitle = (
         f"{compact_path(workspace.root)}  |  provider {args.provider}  |  "
         f"profile {getattr(args, 'profile', DEFAULT_PROFILE)}  |  run {run_id}"
@@ -189,12 +185,6 @@ def tui_header_lines(
     model_line = (
         f"primary {primary_model(args)}  |  aux {auxiliary_model(args)}  |  "
         f"route {getattr(args, 'model_routing', 'primary')}  |  tokens {tokens}"
-    )
-    signal_line = (
-        f"{tui_pill('signal ' + status_label)}  "
-        f"{tui_pill(str(len(pending_context)) + ' ctx')}  "
-        f"{tui_pill(str(0 if last_report is None else len(last_report.get('steps', []))) + ' steps')}  "
-        f"{tui_pill('run ' + run_id)}"
     )
     status_line = (
         f"{tui_status_bar(status, width)}  "
@@ -205,7 +195,6 @@ def tui_header_lines(
         chat_color(tui_rule(title, width), status_color, bold=True),
         truncate_line(subtitle, width),
         chat_color(truncate_line(model_line, width), "dim"),
-        chat_color(truncate_line(signal_line, width), status_color),
         chat_color(truncate_line(status_line, width), "dim"),
         tui_command_strip(width),
     ]
@@ -221,24 +210,24 @@ def tui_footer_lines(width: int) -> list[str]:
 
 
 def tui_command_strip(width: int) -> str:
-    commands = " command deck  /help  /status  /model  /extensions  /commands  /compact  /runs  /cost  @file  !cmd "
+    commands = " /help  /status  /model  /extensions  /commands  /compact  /runs  /cost  @file  !cmd "
     return chat_color(truncate_line(commands.center(width, "-"), width), "dim")
 
 
 def tui_body_lines(transcript: list[dict[str, str]], width: int, *, status: str = "ready") -> list[str]:
     if not transcript:
         return [
-            "Launch Board",
+            "Start",
             "-" * min(width, 32),
             "",
-            "1. Scout     @README.md, then ask for a focused summary.",
-            "2. Verify    !python -m unittest discover -s tests",
-            "3. Extend    /extensions, /skills recommend <task>, or /mcp",
+            "Ask one focused task.",
+            "Attach context with @path.",
+            "Capture safe shell output with !command.",
             "",
-            "The cockpit builds a minimal packet before the model sees anything.",
+            "Details stay available through slash commands.",
         ]
     lines: list[str] = []
-    lines.append(f"Conversation Stream [{status}]")
+    lines.append(f"Conversation [{status}]")
     lines.append("=" * min(width, 32))
     for item in transcript:
         title = item.get("title", item.get("role", "message"))
@@ -272,9 +261,9 @@ def tui_sidebar_lines(
     pending_context: list[str],
     width: int,
 ) -> list[str]:
-    rows = tui_section("Mission", width)
+    rows = tui_section("Focus", width)
     rows.append("small context, visible actions")
-    rows.append("skills + tools stay inspectable")
+    rows.append("quiet by default, inspectable on demand")
     rows.extend(tui_flow_panel(last_report, width))
     rows.extend(tui_section("Session", width))
     rows.extend(
@@ -288,7 +277,7 @@ def tui_sidebar_lines(
     if last_report:
         rows.extend(tui_last_run_panel(last_report, width))
     else:
-        rows.extend(tui_section("Ready Queue", width))
+        rows.extend(tui_section("Next", width))
         rows.extend(
             [
                 tui_kv("attach", "@query or @path", width),
@@ -339,7 +328,7 @@ def tui_flow_panel(last_report: dict[str, Any] | None, width: int) -> list[str]:
         rows.extend(
             [
                 tui_kv("mode", "standing by", width),
-                tui_kv("next", "plan -> action -> trace", width),
+                tui_kv("next", "plan, act, trace", width),
                 tui_kv("proof", "/runs + /cost", width),
             ]
         )
@@ -349,7 +338,6 @@ def tui_flow_panel(last_report: dict[str, Any] | None, width: int) -> list[str]:
     rows.extend(
         [
             tui_kv("status", last_report.get("status", "unknown"), width),
-            "[ Timeline ]",
             tui_kv("actions", " -> ".join(actions) if actions else "none", width),
             tui_token_meter(int(last_report.get("totals", {}).get("total_tokens", 0) or 0), width, report_budget_total(last_report)),
             tui_kv("proof", f"/cost run {str(last_report.get('id', ''))[:8]}", width),
@@ -397,7 +385,7 @@ def tui_last_run_panel(report: dict[str, Any], width: int) -> list[str]:
     )
     rows.append(tui_token_meter(int(report.get("totals", {}).get("total_tokens", 0) or 0), width, report_budget_total(report)))
     if steps:
-        rows.extend(tui_section("Timeline", width))
+        rows.extend(tui_section("Steps", width))
         for step in steps[:4]:
             action = str((step.get("action") or {}).get("action") or "none")
             ok = "ok" if step.get("verifier_ok", True) else "check"

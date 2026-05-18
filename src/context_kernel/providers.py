@@ -98,9 +98,12 @@ class MockProvider:
             or self._mock_patch_verify_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_write_verify_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_mcp_call_action(request, linked_tools, mcp if isinstance(mcp, dict) else {})
+            or self._mock_list_dir_action(request, linked_tools)
+            or self._mock_file_info_action(request, linked_tools)
             or self._mock_read_file_action(request, linked_tools)
             or self._mock_fix_failing_tests_action(request, linked_tools, allowed_roots, project_commands)
             or self._mock_run_command_action(request, linked_tools, allowed_roots, project_commands)
+            or self._mock_append_file_action(request, linked_tools)
             or self._mock_write_file_action(request, linked_tools)
             or self._mock_batch_patch_action(request, linked_tools)
             or self._mock_patch_file_action(request, linked_tools)
@@ -250,13 +253,14 @@ class MockProvider:
         if not write or not command:
             return None
         path, text = write
-        write_trace = find_tool_trace(linked_tools, "write_file", path)
+        action = "create_file" if request_starts_with_create(request) else "write_file"
+        write_trace = find_tool_trace(linked_tools, action, path) or find_tool_trace(linked_tools, "write_file", path)
         read_trace = find_tool_trace(linked_tools, "read_file", path)
         command_trace = find_command_trace(linked_tools, command)
 
         if not write_trace:
             return {
-                "action": "write_file",
+                "action": action,
                 "path": path,
                 "text": text,
                 "reason": "Create the requested file before verification.",
@@ -462,6 +466,45 @@ class MockProvider:
             "path": path,
             "max_chars": 2000,
             "reason": "Need the file contents before responding.",
+        }
+
+    def _mock_list_dir_action(self, request: str, linked_tools: list[dict[str, Any]]) -> dict[str, Any] | None:
+        match = re.search(r"(?i)\b(?:list|ls)\s+([^\s,;]+)", request)
+        if not match:
+            return None
+        path = match.group(1).strip().strip("'\"")
+        prior = find_tool_trace(linked_tools, "list_dir", path)
+        if prior:
+            summary = prior.get("output_summary") or "directory was listed"
+            return {
+                "action": "respond",
+                "message": f"Listed {path}: {summary}",
+                "reason": "The requested directory listing is already available in task state.",
+            }
+        return {
+            "action": "list_dir",
+            "path": path,
+            "limit": 200,
+            "reason": "Need the directory entries before responding.",
+        }
+
+    def _mock_file_info_action(self, request: str, linked_tools: list[dict[str, Any]]) -> dict[str, Any] | None:
+        match = re.search(r"(?i)\b(?:stat|file-info|file_info|inspect)\s+([^\s,;]+)", request)
+        if not match:
+            return None
+        path = match.group(1).strip().strip("'\"")
+        prior = find_tool_trace(linked_tools, "file_info", path)
+        if prior:
+            summary = prior.get("output_summary") or "file info was checked"
+            return {
+                "action": "respond",
+                "message": f"Checked {path}: {summary}",
+                "reason": "The requested file metadata is already available in task state.",
+            }
+        return {
+            "action": "file_info",
+            "path": path,
+            "reason": "Need path metadata before responding.",
         }
 
     def _mock_run_command_action(
@@ -710,7 +753,8 @@ class MockProvider:
         if not write:
             return None
         path, text = write
-        prior = find_tool_trace(linked_tools, "write_file", path)
+        action = "create_file" if request_starts_with_create(request) else "write_file"
+        prior = find_tool_trace(linked_tools, action, path) or find_tool_trace(linked_tools, "write_file", path)
         if prior:
             summary = prior.get("output_summary") or "file was written"
             return {
@@ -719,10 +763,31 @@ class MockProvider:
                 "reason": "The requested file write is already recorded in task state.",
             }
         return {
-            "action": "write_file",
+            "action": action,
             "path": path,
             "text": text,
             "reason": "Need to create or overwrite the requested file before responding.",
+        }
+
+    def _mock_append_file_action(self, request: str, linked_tools: list[dict[str, Any]]) -> dict[str, Any] | None:
+        append = extract_append_instruction(request)
+        if not append:
+            return None
+        path, text = append
+        prior = find_tool_trace(linked_tools, "append_file", path)
+        if prior:
+            summary = prior.get("output_summary") or "file was appended"
+            return {
+                "action": "respond",
+                "message": f"Appended {path}: {summary}",
+                "reason": "The requested append is already recorded in task state.",
+            }
+        return {
+            "action": "append_file",
+            "path": path,
+            "text": text,
+            "create": True,
+            "reason": "Need to append the requested text before responding.",
         }
 
 
@@ -1087,10 +1152,30 @@ def patch_edit_from_request(patch: dict[str, Any]) -> dict[str, Any]:
 
 def extract_write_instruction(request: str) -> tuple[str, str] | None:
     match = re.search(r"(?is)\b(?:write|create)\s+([^\s]+)\s+with\s+([\"'])(.*?)\2", request)
+    if match:
+        path, _, text = match.groups()
+        return path.strip(), text
+    match = re.search(r"(?is)\b(?:write|create)\s+([^\s]+)\s+with\s+(.+?)\s*$", request)
     if not match:
         return None
-    path, _, text = match.groups()
+    path, text = match.groups()
     return path.strip(), text
+
+
+def extract_append_instruction(request: str) -> tuple[str, str] | None:
+    match = re.search(r"(?is)\bappend\s+([^\s]+)\s+with\s+([\"'])(.*?)\2", request)
+    if match:
+        path, _, text = match.groups()
+        return path.strip(), text
+    match = re.search(r"(?is)\bappend\s+([^\s]+)\s+with\s+(.+?)\s*$", request)
+    if not match:
+        return None
+    path, text = match.groups()
+    return path.strip(), text
+
+
+def request_starts_with_create(request: str) -> bool:
+    return bool(re.match(r"(?is)^\s*create\b", request))
 
 
 def extract_requested_command(request: str) -> str | None:

@@ -34,11 +34,12 @@ def chat_color(text: str, color: str, *, bold: bool = False) -> str:
 
 def chat_banner(title: str, subtitle: str) -> None:
     width = chat_width()
+    brand = " akernel "
     print("")
-    print(chat_color("=" * width, "cyan", bold=True))
-    print(chat_color(title, "cyan", bold=True))
-    print(chat_color(subtitle, "dim"))
-    print(chat_color("=" * width, "cyan", bold=True))
+    print(chat_color(tui_rule(brand, width), "cyan", bold=True))
+    print(chat_color(truncate_line(title, width), "cyan", bold=True))
+    print(chat_color(truncate_line(subtitle, width), "dim"))
+    print(chat_color("-" * width, "cyan"))
 
 
 def chat_rule(title: str) -> str:
@@ -53,10 +54,10 @@ def chat_rule(title: str) -> str:
 def chat_panel(title: str, rows: list[tuple[str, str]]) -> None:
     width = chat_width()
     print("")
-    print(chat_color(f"[ {title} ]", "cyan", bold=True))
+    print(chat_color(tui_soft_rule(f"[ {title} ]", width), "cyan", bold=True))
     key_width = max(len(key) for key, _ in rows)
     for key, value in rows:
-        prefix = f"  {key:<{key_width}}  "
+        prefix = f"  {key:<{key_width}} | "
         wrapped = wrap_chat_text(str(value), indent=" " * len(prefix), width=width)
         lines = wrapped.splitlines() or [""]
         print(chat_color(prefix, "dim") + lines[0].lstrip())
@@ -66,7 +67,7 @@ def chat_panel(title: str, rows: list[tuple[str, str]]) -> None:
 
 def chat_notice(title: str, message: str) -> None:
     print("")
-    print(chat_color(f"! {title}", "yellow", bold=True))
+    print(chat_color(f"[ ! {title} ]", "yellow", bold=True))
     print(wrap_chat_text(message, indent="  "))
 
 

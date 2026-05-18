@@ -61,13 +61,13 @@ This does not replace strong models. It helps strong models spend less attention
 
 ## Core Capabilities
 
-- **Interactive agent CLI:** run `akernel` from any directory and start an agent cockpit task session.
+- **Interactive agent CLI:** run `akernel` from any directory and start a focused agent workspace.
 - **Primary + auxiliary model stack:** use a strong primary model for execution and an auxiliary model for cheaper planning or review.
 - **Structured memory:** typed records backed by local SQLite and recoverable traces.
 - **Progressive skill contracts:** load only the level of a skill that the task needs.
 - **MCP integration:** register, refresh, enable, disable, inspect, and call MCP tools from the CLI or chat.
 - **Policy-gated tools:** keep file and command execution behind explicit runtime checks.
-- **Multi-file coding actions:** support `read_file`, `write_file`, `patch_file`, `batch_patch`, `run_command`, `mcp_call`, and `respond`.
+- **Stable file actions:** support `list_dir`, `file_info`, `read_file`, `create_file`, `write_file`, `append_file`, `patch_file`, `batch_patch`, `run_command`, `mcp_call`, and `respond`.
 - **Code materialization guard:** code-writing tasks are steered into workspace files instead of being left as chat-only code blocks.
 - **Resumable task planning:** keep long work in milestones and compact checkpoints instead of replaying the whole conversation.
 - **Token budgets and cost reports:** estimate context pressure before provider calls and report actual run costs afterward.
@@ -192,11 +192,15 @@ akernel init . --scan
 akernel
 akernel --ui tui
 akernel --provider mock
+akernel tool create notes\result.txt --text "hello"
+akernel tool append notes\result.txt --text " world"
+akernel tool list-dir notes
+akernel tool file-info notes\result.txt
 ```
 
-Inside the interactive session, type a task and press Enter. Bare `akernel` accepts chat flags such as `--provider mock`, `--model`, `--aux-model`, `--max-steps`, and `--ui tui` without requiring the explicit `chat` subcommand. `--ui auto` uses the polished terminal chat UI on real terminals and falls back to classic output for CI, pipes, and tests. `akernel init . --scan` or `akernel project scan` writes a compact `.akernel/project.json` profile with detected languages, package managers, key files, project instruction files such as `AGENTS.md`, and test/build commands; this profile enters future context packets without loading the whole repository. If you ask to `run tests` or `verify` without naming a command, the agent prefers the scanned project test command. If you ask it to fix failing tests, the agent can run that profile test command, inspect one or more failing files from the command output, apply a bounded patch or rollback-safe batch patch when the failure is simple enough, and rerun verification.
+Inside the interactive session, type a task and press Enter. Bare `akernel` accepts chat flags such as `--provider mock`, `--model`, `--aux-model`, `--max-steps`, and `--ui tui` without requiring the explicit `chat` subcommand. `--ui auto` now stays in the calm scrollback-friendly chat by default; use `--ui tui` or `AKERNEL_UI=tui` when you explicitly want the richer terminal layout. `akernel init . --scan` or `akernel project scan` writes a compact `.akernel/project.json` profile with detected languages, package managers, key files, project instruction files such as `AGENTS.md`, and test/build commands; this profile enters future context packets without loading the whole repository. If you ask to `run tests` or `verify` without naming a command, the agent prefers the scanned project test command. If you ask it to fix failing tests, the agent can run that profile test command, inspect one or more failing files from the command output, apply a bounded patch or rollback-safe batch patch when the failure is simple enough, and rerun verification.
 
-The interactive chat UI opens as a lightweight agent cockpit. Classic scrollback mode shows a Mission panel, Session Deck, Launch Paths, per-run Timeline, token meter, model roles, and trace/cost follow-ups. The TUI mode adds a fixed header, command strip, transcript viewport, Mission/Flow sidebar, Task panel, Ready Queue, Last Run timeline, diagnostics, and bottom input hints without adding runtime dependencies. Type `/status` for the live workspace runway, `/model` for primary and auxiliary model roles, `/extensions` for MCP and skill availability, `/compact` for the task brief, `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave. Type `/` for command completion, `@` for workspace file completion, or mention an exact `@path` inside a task to attach that file automatically. Project and user slash commands can be saved as Markdown prompts under `.akernel/commands` or `~/.akernel/commands`; use `/commands` to list them. Set `AKERNEL_ALT_SCREEN=1` if you want the full-screen ANSI cockpit instead of the default scrollback-friendly cockpit. In `--model-routing auto` mode, low/medium first-step planning can run on the auxiliary model while high-risk, deep, warning-heavy, or synthesis steps stay on the primary model. In `--aux-review auto` mode, auxiliary review runs before primary-model steps and is included in token cost reports.
+The interactive chat UI opens quietly: workspace path, task id, provider/model/profile, and a short command hint line. Detailed session cards live behind `/status`, `/model`, `/extensions`, `/compact`, `/runs`, and `/cost`, so the default prompt stays comfortable for daily use. The optional TUI mode keeps a fixed header, command strip, transcript viewport, Focus/Flow sidebar, Task panel, Last Run summary, diagnostics, and bottom input hints without adding runtime dependencies. Type `/status` for the live workspace runway, `/model` for primary and auxiliary model roles, `/extensions` for MCP and skill availability, `/compact` for the task brief, `/cost` for the last run's token report, `/task` to inspect the current task session, and `/exit` to leave. Type `/` for command completion, `@` for workspace file completion, or mention an exact `@path` inside a task to attach that file automatically. Project and user slash commands can be saved as Markdown prompts under `.akernel/commands` or `~/.akernel/commands`; use `/commands` to list them. In `--model-routing auto` mode, low/medium first-step planning can run on the auxiliary model while high-risk, deep, warning-heavy, or synthesis steps stay on the primary model. In `--aux-review auto` mode, auxiliary review runs before primary-model steps and is included in token cost reports.
 
 If you want to prepare the benchmark workspace manually:
 
@@ -268,6 +272,7 @@ akernel skill market-list
 akernel skill market-list --index examples\marketplace\skills\index.json
 akernel skill market-install multi_file_bugfix
 akernel skill market-install remote_skill --index https://example.com/context-kernel/skills/index.json --trust-remote
+akernel mcp import-codex
 akernel mcp add filesystem --command "python -m mcp_server_filesystem ." --tool "read_file:Read workspace files"
 akernel mcp list
 akernel mcp refresh filesystem
@@ -296,7 +301,7 @@ Interactive runs show a live spinner while waiting for provider responses. Set `
 
 When no explicit `--budget` is provided, chat and agent runs can automatically expand the per-turn context budget if the compact task state grows beyond the conservative default. Explicit budgets remain hard limits.
 
-MCP v1 stores local stdio server configuration in `.akernel/mcp.json`. Enabled MCP servers enter the context packet as compact summaries only: server name, transport, command root, and curated tool summaries. `akernel mcp refresh <name>` starts a stdio MCP server, runs `initialize` and `tools/list`, and stores the discovered tool summaries. `akernel mcp call <name> <tool>` manually invokes a discovered MCP tool and records the result as a tool trace. Agent runs can also choose `mcp_call` automatically, but only for enabled servers and discovered tools listed in the current context packet.
+MCP v1 stores local stdio server configuration in `.akernel/mcp.json`. Enabled MCP servers enter the context packet as compact summaries only: server name, transport, command root, startup metadata, env key names, approval hints, and curated tool summaries. `akernel mcp import-codex` imports `[mcp_servers.*]` entries from `~/.codex/config.toml`, preserving command args, startup timeouts, and per-tool approval metadata. For safety it does not copy env values by default; servers that require env values are imported disabled unless you explicitly pass `--include-env`. `akernel mcp refresh <name>` starts a stdio MCP server, runs `initialize` and `tools/list`, and stores the discovered tool summaries. `akernel mcp call <name> <tool>` manually invokes a discovered MCP tool and records the result as a tool trace. Agent runs can also choose `mcp_call` automatically, but only for enabled servers and discovered tools listed in the current context packet.
 
 When an agent run cannot continue, the CLI prints a compact diagnostic with a category, reason, and suggested next step. Common categories include provider configuration, provider auth/network/protocol errors, context budget blocks, policy blocks, command failures, malformed provider actions, and loop guards.
 

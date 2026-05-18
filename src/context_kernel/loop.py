@@ -18,7 +18,18 @@ from .tasks import TaskStore
 from .tools import MAX_CAPTURE_CHARS, ToolExecutor
 
 
-TOOL_ACTIONS = {"read_file", "write_file", "patch_file", "batch_patch", "run_command", "mcp_call"}
+TOOL_ACTIONS = {
+    "list_dir",
+    "file_info",
+    "read_file",
+    "create_file",
+    "write_file",
+    "append_file",
+    "patch_file",
+    "batch_patch",
+    "run_command",
+    "mcp_call",
+}
 ALLOWED_ACTIONS = TOOL_ACTIONS | {"respond"}
 DEFAULT_PRIMARY_MODEL = "gpt-5.5"
 DEFAULT_AUXILIARY_MODEL = "gpt-5.3-codex"
@@ -795,8 +806,10 @@ def build_agent_packet(
         "Choose exactly one action.",
         "Use at most one tool action in a step.",
         "Use respond when enough information is already available.",
-        "For requests to write, create, generate, implement, or modify code/scripts/apps/files, do not answer with a code block only; choose write_file, patch_file, or batch_patch so the code is saved in the workspace.",
-        "If the user asks for code but does not provide a filename, infer a safe filename under generated/ and use write_file.",
+        "For requests to write, create, generate, implement, or modify code/scripts/apps/files, do not answer with a code block only; choose create_file, write_file, patch_file, append_file, or batch_patch so the code is saved in the workspace.",
+        "Prefer create_file for new files because it refuses to overwrite existing files. Use write_file only when the request clearly allows replacing the whole file.",
+        "Use file_info or list_dir before writing if you are unsure whether a path already exists.",
+        "If the user asks for code but does not provide a filename, infer a safe filename under generated/ and use create_file.",
         "Respect policy-gated tools; do not ask for destructive operations.",
         "Before choosing run_command, check runtime.command_policy.allowed_roots and only use an allowed command root.",
         "When the user asks to run tests, verify, build, lint, or install and runtime.project.commands contains the matching command, use that exact project command.",
@@ -825,6 +838,25 @@ def build_agent_packet(
                     "schema": respond_schema,
                 },
                 {
+                    "name": "list_dir",
+                    "description": "List one workspace directory before choosing files to read or edit.",
+                    "schema": {
+                        "action": "list_dir",
+                        "path": "relative directory path, default .",
+                        "limit": "optional integer, <= 200",
+                        "reason": "string optional",
+                    },
+                },
+                {
+                    "name": "file_info",
+                    "description": "Check whether one workspace path exists and whether it is a file or directory.",
+                    "schema": {
+                        "action": "file_info",
+                        "path": "relative file or directory path",
+                        "reason": "string optional",
+                    },
+                },
+                {
                     "name": "read_file",
                     "description": "Read one workspace file through policy checks.",
                     "schema": {
@@ -835,12 +867,33 @@ def build_agent_packet(
                     },
                 },
                 {
+                    "name": "create_file",
+                    "description": "Create one new workspace file. Fails safely if the file already exists.",
+                    "schema": {
+                        "action": "create_file",
+                        "path": "relative file path",
+                        "text": "complete file contents",
+                        "reason": "string optional",
+                    },
+                },
+                {
                     "name": "write_file",
-                    "description": "Create or overwrite one workspace file through policy checks.",
+                    "description": "Create or overwrite one workspace file through policy checks. Prefer create_file for new files and patch_file for edits.",
                     "schema": {
                         "action": "write_file",
                         "path": "relative file path",
                         "text": "complete file contents",
+                        "reason": "string optional",
+                    },
+                },
+                {
+                    "name": "append_file",
+                    "description": "Append text to the end of one workspace file. Can create the file unless create=false.",
+                    "schema": {
+                        "action": "append_file",
+                        "path": "relative file path",
+                        "text": "text to append",
+                        "create": "optional boolean, default true",
                         "reason": "string optional",
                     },
                 },
@@ -927,6 +980,22 @@ def parse_agent_action(text: str, *, expect_json: bool = False) -> dict[str, Any
             "message": message.strip(),
             "reason": compact(str(action.get("reason", "")), limit=240),
         }
+    if action_name == "list_dir":
+        path = str(action.get("path") or ".").strip() or "."
+        limit = clamp_int(action.get("limit", 200), default=200, minimum=1, maximum=200)
+        return {
+            "action": "list_dir",
+            "path": path,
+            "limit": limit,
+            "reason": compact(str(action.get("reason", "")), limit=240),
+        }
+    if action_name == "file_info":
+        path = require_non_empty_string(action, "path")
+        return {
+            "action": "file_info",
+            "path": path,
+            "reason": compact(str(action.get("reason", "")), limit=240),
+        }
     if action_name == "read_file":
         path = require_non_empty_string(action, "path")
         max_chars = clamp_int(action.get("max_chars", MAX_CAPTURE_CHARS), default=MAX_CAPTURE_CHARS, minimum=1, maximum=MAX_CAPTURE_CHARS)
@@ -936,13 +1005,23 @@ def parse_agent_action(text: str, *, expect_json: bool = False) -> dict[str, Any
             "max_chars": max_chars,
             "reason": compact(str(action.get("reason", "")), limit=240),
         }
-    if action_name == "write_file":
+    if action_name in {"create_file", "write_file"}:
         path = require_non_empty_string(action, "path")
         text = str(action.get("text", ""))
         return {
-            "action": "write_file",
+            "action": action_name,
             "path": path,
             "text": text,
+            "reason": compact(str(action.get("reason", "")), limit=240),
+        }
+    if action_name == "append_file":
+        path = require_non_empty_string(action, "path")
+        text = str(action.get("text", ""))
+        return {
+            "action": "append_file",
+            "path": path,
+            "text": text,
+            "create": bool(action.get("create", True)),
             "reason": compact(str(action.get("reason", "")), limit=240),
         }
     if action_name == "patch_file":
@@ -1119,8 +1198,19 @@ def normalize_action_name(name: str) -> str:
     aliases = {
         "read": "read_file",
         "file_read": "read_file",
+        "ls": "list_dir",
+        "list": "list_dir",
+        "list_files": "list_dir",
+        "list_directory": "list_dir",
+        "stat": "file_info",
+        "file_stat": "file_info",
+        "inspect_file": "file_info",
+        "create": "create_file",
+        "create_file": "create_file",
         "write": "write_file",
         "file_write": "write_file",
+        "append": "append_file",
+        "append_file": "append_file",
         "patch": "patch_file",
         "edit_file": "patch_file",
         "batch_edit": "batch_patch",
@@ -1178,10 +1268,18 @@ def parse_patch_edit(edit: Any) -> dict[str, Any]:
 
 
 def execute_agent_action(executor: ToolExecutor, action: dict[str, Any]) -> dict[str, Any]:
+    if action["action"] == "list_dir":
+        return executor.list_dir(action.get("path", "."), limit=action.get("limit", 200))
+    if action["action"] == "file_info":
+        return executor.file_info(action["path"])
     if action["action"] == "read_file":
         return executor.read_file(action["path"], max_chars=action["max_chars"])
+    if action["action"] == "create_file":
+        return executor.create_file(action["path"], action["text"])
     if action["action"] == "write_file":
         return executor.write_file(action["path"], action["text"])
+    if action["action"] == "append_file":
+        return executor.append_file(action["path"], action["text"], create=bool(action.get("create", True)))
     if action["action"] == "patch_file":
         return executor.patch_file(
             action["path"],
@@ -1225,10 +1323,18 @@ def execute_agent_action(executor: ToolExecutor, action: dict[str, Any]) -> dict
 
 def action_progress_label(action: dict[str, Any]) -> str:
     action_name = str(action.get("action", ""))
+    if action_name == "list_dir":
+        return "listing directory"
+    if action_name == "file_info":
+        return "checking file"
     if action_name == "read_file":
         return "reading file"
+    if action_name == "create_file":
+        return "creating file"
     if action_name == "write_file":
         return "creating or updating file"
+    if action_name == "append_file":
+        return "appending file"
     if action_name == "patch_file":
         return "applying file patch"
     if action_name == "batch_patch":
@@ -1242,7 +1348,7 @@ def action_progress_label(action: dict[str, Any]) -> str:
 
 def action_progress_target(action: dict[str, Any]) -> str:
     action_name = str(action.get("action", ""))
-    if action_name in {"read_file", "write_file", "patch_file"}:
+    if action_name in {"list_dir", "file_info", "read_file", "create_file", "write_file", "append_file", "patch_file"}:
         return compact(str(action.get("path", "")), limit=160)
     if action_name == "batch_patch":
         edits = action.get("edits", [])
@@ -2020,8 +2126,10 @@ def summarize_action(action: dict[str, Any] | None) -> dict[str, Any] | None:
     for key in ["path", "command", "reason"]:
         if action.get(key):
             summary[key] = compact(str(action[key]), limit=240)
-    if action["action"] == "write_file":
+    if action["action"] in {"create_file", "write_file", "append_file"}:
         summary["text"] = compact(str(action.get("text", "")), limit=120)
+    if action["action"] == "append_file":
+        summary["create"] = bool(action.get("create", True))
     if action["action"] == "patch_file":
         summary["new"] = compact(str(action.get("new", "")), limit=120)
         if action.get("start_anchor"):
@@ -2056,11 +2164,30 @@ def summarize_tool_result(result: dict[str, Any]) -> str:
     if result.get("error"):
         return compact(str(result["error"]), limit=240)
     output = result.get("output", {})
+    if result["tool"] == "list_dir":
+        names = ", ".join(str(item.get("name", "")) for item in output.get("entries", [])[:8])
+        suffix = "..." if output.get("truncated") else ""
+        return f"path={compact(str(output.get('path', '')), limit=120)}; entries={output.get('total_entries', 0)}; {compact(names + suffix, limit=160)}"
+    if result["tool"] == "file_info":
+        return (
+            f"path={compact(str(output.get('path', '')), limit=160)}; "
+            f"exists={output.get('exists')}; kind={output.get('kind', 'missing')}; "
+            f"size={output.get('size_bytes')}"
+        )
     if result["tool"] == "read_file":
         text = compact(str(output.get("content", "")), limit=240)
         return text or "file read completed"
-    if result["tool"] == "write_file":
-        return f"path={compact(str(output.get('path', '')), limit=160)}; written_chars={output.get('written_chars')}"
+    if result["tool"] in {"create_file", "write_file"}:
+        return (
+            f"path={compact(str(output.get('path', '')), limit=160)}; "
+            f"written_chars={output.get('written_chars')}; "
+            f"created={output.get('created')}; overwritten={output.get('overwritten')}"
+        )
+    if result["tool"] == "append_file":
+        return (
+            f"path={compact(str(output.get('path', '')), limit=160)}; "
+            f"appended_chars={output.get('appended_chars')}; created={output.get('created')}"
+        )
     if result["tool"] == "patch_file":
         return (
             f"path={compact(str(output.get('path', '')), limit=160)}; "
@@ -2163,10 +2290,14 @@ def repeated_agent_action(report_steps: list[dict[str, Any]], action: dict[str, 
 
 def action_fingerprint(action: dict[str, Any]) -> str:
     action_name = action.get("action")
+    if action_name == "list_dir":
+        return f"list_dir:{action.get('path', '')}:{action.get('limit', '')}"
+    if action_name == "file_info":
+        return f"file_info:{action.get('path', '')}"
     if action_name == "read_file":
         return f"read_file:{action.get('path', '')}"
-    if action_name == "write_file":
-        return f"write_file:{action.get('path', '')}:{compact(str(action.get('text', '')), limit=80)}"
+    if action_name in {"create_file", "write_file", "append_file"}:
+        return f"{action_name}:{action.get('path', '')}:{compact(str(action.get('text', '')), limit=80)}"
     if action_name == "patch_file":
         if action.get("start_anchor"):
             return (

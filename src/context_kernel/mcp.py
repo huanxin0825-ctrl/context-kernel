@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import queue
 import re
@@ -9,6 +10,11 @@ import shlex
 import subprocess
 import threading
 from typing import Any
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from .models import utc_now
 from .storage import Workspace
@@ -50,11 +56,21 @@ def normalize_mcp_config(config: dict[str, Any] | None) -> dict[str, Any]:
 def normalize_mcp_server(name: str, server: dict[str, Any]) -> dict[str, Any]:
     now = utc_now()
     tools = server.get("tools")
+    args = server.get("args") if isinstance(server.get("args"), list) else []
+    env = server.get("env") if isinstance(server.get("env"), dict) else {}
+    env_keys = server.get("env_keys") if isinstance(server.get("env_keys"), list) else []
+    tool_approvals = server.get("tool_approvals") if isinstance(server.get("tool_approvals"), dict) else {}
     return {
         "name": name,
         "transport": "stdio",
         "command": str(server.get("command", "")).strip(),
+        "args": [str(item) for item in args],
         "cwd": str(server.get("cwd", "")).strip(),
+        "env": {str(key): str(value) for key, value in env.items() if str(key).strip()},
+        "env_keys": sorted({str(item) for item in env_keys if str(item).strip()} | {str(key) for key in env.keys()}),
+        "env_required": bool(server.get("env_required", False)),
+        "startup_timeout_ms": safe_positive_int(server.get("startup_timeout_ms"), 10000),
+        "tool_approvals": normalize_tool_approvals(tool_approvals),
         "enabled": bool(server.get("enabled", True)),
         "tools": normalize_tool_summaries(tools),
         "created_at": str(server.get("created_at") or now),
@@ -73,6 +89,20 @@ def normalize_tool_summaries(tools: Any) -> list[dict[str, str]]:
         if not name:
             continue
         result.append({"name": name, "description": description})
+    return result
+
+
+def normalize_tool_approvals(tool_approvals: dict[str, Any]) -> dict[str, dict[str, str]]:
+    result: dict[str, dict[str, str]] = {}
+    for name, config in tool_approvals.items():
+        if not isinstance(config, dict):
+            continue
+        tool_name = str(name).strip()
+        if not tool_name:
+            continue
+        approval_mode = str(config.get("approval_mode", "")).strip()
+        if approval_mode:
+            result[tool_name] = {"approval_mode": approval_mode}
     return result
 
 
@@ -95,7 +125,13 @@ def add_mcp_server(
     name: str,
     *,
     command: str,
+    args: list[str] | None = None,
     cwd: str = "",
+    env: dict[str, str] | None = None,
+    env_keys: list[str] | None = None,
+    env_required: bool = False,
+    startup_timeout_ms: int | None = None,
+    tool_approvals: dict[str, Any] | None = None,
     tools: list[str] | None = None,
     enabled: bool = True,
 ) -> dict[str, Any]:
@@ -106,13 +142,20 @@ def add_mcp_server(
     config = load_mcp_config(workspace)
     now = utc_now()
     existing = config["servers"].get(name, {})
+    tool_summaries = [parse_tool_summary(item) for item in tools] if tools is not None else existing.get("tools", [])
     config["servers"][name] = normalize_mcp_server(
         name,
         {
             "command": command,
+            "args": args or [],
             "cwd": cwd,
+            "env": env or {},
+            "env_keys": env_keys or [],
+            "env_required": env_required,
+            "startup_timeout_ms": startup_timeout_ms,
+            "tool_approvals": tool_approvals or {},
             "enabled": enabled,
-            "tools": [parse_tool_summary(item) for item in (tools or [])],
+            "tools": tool_summaries,
             "created_at": existing.get("created_at") or now,
             "updated_at": now,
         },
@@ -195,7 +238,7 @@ def call_mcp_tool(
     result = run_mcp_session(
         server,
         [{"method": "tools/call", "params": {"name": tool_name, "arguments": arguments or {}}}],
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=effective_mcp_timeout(server, timeout_seconds),
     )[0]
     return {
         "server": server_name,
@@ -209,7 +252,7 @@ def discover_mcp_tools(server: dict[str, Any], *, timeout_seconds: float = 10.0)
     initialize, tools_result = run_mcp_session(
         server,
         [{"method": "tools/list", "params": {}}],
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=effective_mcp_timeout(server, timeout_seconds),
         include_initialize=True,
     )
     return {
@@ -232,9 +275,12 @@ def run_mcp_session(
     cwd = str(server.get("cwd", "")).strip() or None
     if cwd:
         cwd = str(Path(cwd).resolve())
+    process_env = os.environ.copy()
+    process_env.update({str(key): str(value) for key, value in (server.get("env") or {}).items()})
     process = subprocess.Popen(
-        split_command(command),
+        mcp_command_args(server),
         cwd=cwd,
+        env=process_env,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -338,6 +384,14 @@ def split_command(command: str) -> list[str]:
     return shlex.split(command)
 
 
+def mcp_command_args(server: dict[str, Any]) -> list[str]:
+    command = str(server.get("command", "")).strip()
+    args = server.get("args")
+    if isinstance(args, list) and args:
+        return [*split_command(command), *[str(item) for item in args]]
+    return split_command(command)
+
+
 def _collect_stderr(process: subprocess.Popen[str], lines: list[str]) -> None:
     if process.stderr is None:
         return
@@ -384,6 +438,14 @@ def mcp_context_summary(workspace: Workspace, *, budget_tokens: int = 220) -> di
             "command_root": command_root(str(server.get("command", ""))),
             "tools": server.get("tools", [])[:8],
         }
+        if server.get("args"):
+            item["args_count"] = len(server.get("args", []))
+        if server.get("env_keys"):
+            item["env_keys"] = server.get("env_keys", [])
+        if server.get("env_required"):
+            item["env_required"] = True
+        if server.get("tool_approvals"):
+            item["tool_approvals"] = server.get("tool_approvals", {})
         if server.get("cwd"):
             item["cwd"] = server["cwd"]
         if estimate_tokens({"servers": summaries + [item]}) > budget_tokens:
@@ -405,3 +467,100 @@ def command_root(command: str) -> str:
     except ValueError:
         parts = command.split()
     return parts[0] if parts else ""
+
+
+def import_codex_mcp_servers(
+    workspace: Workspace,
+    *,
+    config_path: Path | None = None,
+    names: list[str] | None = None,
+    include_env: bool = False,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    source = config_path or Path.home() / ".codex" / "config.toml"
+    data = tomllib.loads(source.read_text(encoding="utf-8-sig"))
+    servers = data.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return {"source": str(source), "imported": [], "skipped": [], "count": 0}
+    selected_names = {name.strip() for name in (names or []) if name.strip()}
+    imported: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    for name, server in servers.items():
+        server_name = str(name)
+        if selected_names and server_name not in selected_names:
+            continue
+        if not isinstance(server, dict):
+            skipped.append({"name": server_name, "reason": "invalid server config"})
+            continue
+        if not is_valid_mcp_name(server_name):
+            skipped.append({"name": server_name, "reason": "invalid server name"})
+            continue
+        command = str(server.get("command", "")).strip()
+        if not command:
+            skipped.append({"name": server_name, "reason": "missing command"})
+            continue
+        env_keys = sorted(codex_server_env(server).keys())
+        env = codex_server_env(server) if include_env else {}
+        server_enabled = enabled and (include_env or not env_keys)
+        imported_server = add_mcp_server(
+            workspace,
+            server_name,
+            command=command,
+            args=codex_server_args(server),
+            cwd=str(server.get("cwd", "") or ""),
+            env=env,
+            env_keys=env_keys,
+            env_required=bool(env_keys),
+            startup_timeout_ms=safe_positive_int(server.get("startup_timeout_ms"), 10000),
+            tool_approvals=codex_tool_approvals(server),
+            enabled=server_enabled,
+        )
+        imported.append(redact_mcp_server(imported_server))
+    return {
+        "source": str(source),
+        "include_env": include_env,
+        "imported": imported,
+        "skipped": skipped,
+        "count": len(imported),
+    }
+
+
+def codex_server_args(server: dict[str, Any]) -> list[str]:
+    args = server.get("args")
+    if not isinstance(args, list):
+        return []
+    return [str(item) for item in args]
+
+
+def codex_server_env(server: dict[str, Any]) -> dict[str, str]:
+    env = server.get("env")
+    if not isinstance(env, dict):
+        return {}
+    return {str(key): str(value) for key, value in env.items() if str(key).strip()}
+
+
+def codex_tool_approvals(server: dict[str, Any]) -> dict[str, dict[str, str]]:
+    tools = server.get("tools")
+    if not isinstance(tools, dict):
+        return {}
+    return normalize_tool_approvals(tools)
+
+
+def effective_mcp_timeout(server: dict[str, Any], requested_seconds: float) -> float:
+    startup_seconds = safe_positive_int(server.get("startup_timeout_ms"), 0) / 1000
+    return max(float(requested_seconds), startup_seconds)
+
+
+def safe_positive_int(value: Any, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
+def redact_mcp_server(server: dict[str, Any]) -> dict[str, Any]:
+    redacted = deepcopy(server)
+    if redacted.get("env"):
+        redacted["env"] = {key: "[set]" for key in redacted["env"].keys()}
+    return redacted

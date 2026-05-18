@@ -88,16 +88,21 @@ For OpenAI-compatible providers, put credentials in project `.env` using `.env.e
 
 `agent run` is the first bounded loop entrypoint. It creates or resumes a task, generates a plan, calls the provider with task resume context, requires a one-action JSON reply, executes one policy-gated tool when needed, feeds the resulting tool summary back into the task brief, and saves an agent report under `.akernel/agent_runs/`.
 
-`akernel` without a subcommand starts an interactive agent cockpit in the current directory. Each normal line is sent through the same bounded `agent run` loop while reusing one task session, so the runtime can keep compact progress state instead of replaying the full conversation. The classic shell UI renders Mission, Session Deck, Launch Paths, Packet Plan, run Timeline, token meter, model roles, memory write count, and assistant response blocks. `--ui auto` uses the polished terminal UI on real terminals and falls back to classic output for CI, pipes, and tests; `--ui classic` and `--ui tui` force either mode. The TUI keeps a fixed session header, command strip, transcript area, Mission/Flow sidebar, Task panel, Ready Queue, Last Run timeline, diagnostics, and bottom input hint without adding third-party dependencies. The model panel separates the primary execution model from the auxiliary planning/review/compression model. In `--model-routing auto` mode, low/medium first-step planning can run on the auxiliary model while high-risk, deep, warning-heavy, or synthesis steps stay on the primary model. In `--aux-review auto` mode, auxiliary review runs before primary-model steps and is included in saved traces and token reports. Built-in commands are grouped by `/help` into navigation, context, extension, and observability commands, including `/status`, `/model`, `/config`, `/extensions`, `/mcp`, `/skills`, `/compact`, `/commands`, `/paste`, `/task`, `/runs`, `/cost`, `/clear`, and `/exit`; `@path` attaches a workspace file and `!command` runs a policy-checked command for the next task.
+`akernel` without a subcommand starts an interactive agent workspace in the current directory. Each normal line is sent through the same bounded `agent run` loop while reusing one task session, so the runtime can keep compact progress state instead of replaying the full conversation. The default shell UI starts quietly with workspace, task, provider/model/profile, and a short command hint line; detailed session, extension, run, and cost cards are available through slash commands instead of filling the first screen. `--ui auto` stays in the scrollback-friendly shell UI; `--ui classic` and `--ui tui` force either mode, and `AKERNEL_UI=tui` opts into the richer terminal layout. The TUI keeps a fixed session header, command strip, transcript area, Focus/Flow sidebar, Task panel, Last Run summary, diagnostics, and bottom input hint without adding third-party dependencies. The model panel separates the primary execution model from the auxiliary planning/review/compression model. In `--model-routing auto` mode, low/medium first-step planning can run on the auxiliary model while high-risk, deep, warning-heavy, or synthesis steps stay on the primary model. In `--aux-review auto` mode, auxiliary review runs before primary-model steps and is included in saved traces and token reports. Built-in commands are grouped by `/help` into navigation, context, extension, and observability commands, including `/status`, `/model`, `/config`, `/extensions`, `/mcp`, `/skills`, `/compact`, `/commands`, `/paste`, `/task`, `/runs`, `/cost`, `/clear`, and `/exit`; `@path` attaches a workspace file and `!command` runs a policy-checked command for the next task.
 
 Current action set:
 
 - `respond`
+- `list_dir`
+- `file_info`
 - `read_file`
+- `create_file`
 - `write_file`
+- `append_file`
 - `patch_file`
 - `batch_patch`
 - `run_command`
+- `mcp_call`
 
 Memory and skill commands now include productization primitives:
 
@@ -109,10 +114,13 @@ Memory and skill commands now include productization primitives:
 - `memory global-pull --namespace NAME --source-project PROJECT --dry-run` previews a filtered import before copying.
 - `skill market-list` lists packaged marketplace skills.
 - `skill market-install <skill-id>` installs a packaged skill contract into the current workspace.
+- `mcp import-codex` imports Codex `[mcp_servers.*]` stdio tool servers, including args, startup timeouts, env key names, and tool approval hints. Env values are skipped by default, and env-dependent servers stay disabled unless `--include-env` is used.
 
 Current multi-step pattern:
 
+- `create_file -> run_command -> respond`
 - `write_file -> run_command -> respond`
+- `append_file -> run_command -> respond`
 - `patch_file -> run_command -> respond`
 - `batch_patch -> run_command -> respond`
 
@@ -171,8 +179,13 @@ For commands, the result is workspace-aware: `.akernel/config.json` can extend `
 ### Execute Tools
 
 ```powershell
+akernel tool list-dir .
+akernel tool file-info notes\result.txt
+akernel tool create notes\result.txt --text "hello tool layer"
 akernel tool write notes\result.txt --text "hello tool layer"
 akernel tool read notes\result.txt
+akernel tool append notes\result.txt --text "`nextra line"
+akernel tool append notes\missing.txt --text "must exist" --no-create
 akernel tool patch notes\result.txt --old "tool layer" --new "policy tool layer"
 akernel tool patch notes\result.txt --old "policy" --new "tracked" --task <task-id>
 akernel tool patch notes\result.txt --old "soon" --new "now" --replace-all
@@ -306,8 +319,12 @@ akernel agent show <agent-run-id>
 akernel agent cost <agent-run-id> [--json]
 akernel policy file <read|write|delete> <path> [--allow-destructive] [--json]
 akernel policy command [--allow-destructive] [--json] -- <command...>
+akernel tool list-dir [path] [--limit n] [--task task-id] [--json]
+akernel tool file-info <path> [--task task-id] [--json]
 akernel tool read <path> [--max-chars n] [--task task-id] [--json]
+akernel tool create <path> --text <text> [--task task-id] [--json]
 akernel tool write <path> --text <text> [--task task-id] [--json]
+akernel tool append <path> --text <text> [--no-create] [--task task-id] [--json]
 akernel tool patch <path> [--old <text> | --start-anchor <text> --end-anchor <text>] --new <text> [--replace-all] [--occurrence n] [--include-anchors] [--task task-id] [--json]
 akernel tool batch-patch --specs-file <json> [--task task-id] [--json]
 akernel tool delete <path> [--allow-destructive] [--task task-id] [--json]

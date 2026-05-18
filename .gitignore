@@ -15,3 +15,5 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+.gitnexus/
+.claude/

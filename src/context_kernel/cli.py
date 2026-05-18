@@ -43,10 +43,8 @@ from .chat_tui import (
 )
 from .chat_ui import (
     chat_help_groups,
-    format_agent_timeline,
     format_chat_help_text,
     format_tui_report,
-    token_meter_text,
     tui_flow_summary,
 )
 from .cli_output import parse_json_object, print_json, print_mcp_call_result
@@ -56,14 +54,13 @@ from .cli_reports import (
     enforce_benchmark_report_gate,
     enforce_regression_gate,
     list_agent_reports,
-    model_routing_summary,
     print_agent_report,
     print_benchmark_check_summary,
     print_benchmark_diff,
     print_benchmark_report,
     print_policy_result,
-    print_tool_result,
 )
+from .cli_tools import add_tool_subcommands, load_batch_patch_specs
 from .context import ContextBuilder
 from .evals import EvalRunner
 from .global_memory import pull_global_memories, push_global_memories
@@ -73,7 +70,9 @@ from .mcp import (
     add_mcp_server,
     call_mcp_tool,
     get_mcp_server,
+    import_codex_mcp_servers,
     list_mcp_servers,
+    redact_mcp_server,
     refresh_mcp_server_tools,
     remove_mcp_server,
     set_mcp_server_enabled,
@@ -98,7 +97,6 @@ from .storage import Workspace
 from .tasks import MILESTONE_STATUSES, TASK_STATUSES, TaskStore
 from .terminal import (
     ascii_meter,
-    chat_banner,
     chat_color,
     chat_notice,
     chat_panel,
@@ -303,11 +301,21 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_add = mcp_sub.add_parser("add", help="Add or update a stdio MCP server.")
     mcp_add.add_argument("name")
     mcp_add.add_argument("--command", required=True, help="Command used to launch the stdio MCP server.")
+    mcp_add.add_argument("--arg", action="append", default=[], help="Argument passed after --command. Repeatable.")
     mcp_add.add_argument("--cwd", default="", help="Optional working directory for the server command.")
-    mcp_add.add_argument("--tool", action="append", default=[], help="Tool summary as name:description. Repeatable.")
+    mcp_add.add_argument("--env", action="append", default=[], help="Environment variable as KEY=VALUE. Repeatable.")
+    mcp_add.add_argument("--startup-timeout-ms", type=int, default=None, help="Startup timeout inherited by refresh/call.")
+    mcp_add.add_argument("--tool", action="append", default=None, help="Tool summary as name:description. Repeatable.")
     mcp_add.add_argument("--disabled", action="store_true", help="Add the server but keep it disabled.")
     mcp_add.add_argument("--json", action="store_true")
     mcp_add.set_defaults(func=cmd_mcp_add)
+    mcp_import_codex = mcp_sub.add_parser("import-codex", help="Import stdio MCP servers from a Codex config.toml.")
+    mcp_import_codex.add_argument("--config", default=None, help="Codex config.toml path. Defaults to ~/.codex/config.toml.")
+    mcp_import_codex.add_argument("--name", action="append", default=[], help="Only import this server name. Repeatable.")
+    mcp_import_codex.add_argument("--include-env", action="store_true", help="Also copy env values. Defaults off to avoid writing secrets into the workspace.")
+    mcp_import_codex.add_argument("--disabled", action="store_true", help="Import servers but keep them disabled.")
+    mcp_import_codex.add_argument("--json", action="store_true")
+    mcp_import_codex.set_defaults(func=cmd_mcp_import_codex)
     mcp_list = mcp_sub.add_parser("list", help="List configured MCP servers.")
     mcp_list.add_argument("--enabled-only", action="store_true")
     mcp_list.add_argument("--json", action="store_true")
@@ -433,7 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_cost.add_argument("--json", action="store_true")
     agent_cost.set_defaults(func=cmd_agent_cost)
 
-    chat_parser = subparsers.add_parser("chat", help="Start an interactive agent cockpit task session.")
+    chat_parser = subparsers.add_parser("chat", help="Start an interactive agent workspace.")
     add_provider_args(chat_parser)
     add_budget_args(chat_parser)
     chat_parser.add_argument("--task", default=None, help="Continue an existing task session.")
@@ -489,53 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     tool_parser = subparsers.add_parser("tool", help="Execute local tools through policy contracts.")
     tool_sub = tool_parser.add_subparsers(dest="tool_command", required=True)
-    tool_read = tool_sub.add_parser("read", help="Read a workspace file through policy.")
-    tool_read.add_argument("path")
-    tool_read.add_argument("--max-chars", type=int, default=8000)
-    tool_read.add_argument("--json", action="store_true")
-    tool_read.add_argument("--task", default=None, help="Attach the tool trace to a task session.")
-    tool_read.set_defaults(func=cmd_tool_read)
-    tool_write = tool_sub.add_parser("write", help="Write a workspace file through policy.")
-    tool_write.add_argument("path")
-    tool_write.add_argument("--text", required=True)
-    tool_write.add_argument("--json", action="store_true")
-    tool_write.add_argument("--task", default=None, help="Attach the tool trace to a task session.")
-    tool_write.set_defaults(func=cmd_tool_write)
-    tool_patch = tool_sub.add_parser("patch", help="Patch a workspace file with structured replacement modes.")
-    tool_patch.add_argument("path")
-    tool_patch.add_argument("--old")
-    tool_patch.add_argument("--new", required=True)
-    tool_patch.add_argument("--replace-all", action="store_true", help="Replace every match of --old instead of requiring a single match.")
-    tool_patch.add_argument("--occurrence", type=int, default=None, help="Replace only the nth match of --old.")
-    tool_patch.add_argument("--start-anchor", default=None, help="Replace the block that starts after this anchor.")
-    tool_patch.add_argument("--end-anchor", default=None, help="Replace the block that ends before this anchor.")
-    tool_patch.add_argument("--include-anchors", action="store_true", help="Replace the anchors together with the block body.")
-    tool_patch.add_argument("--json", action="store_true")
-    tool_patch.add_argument("--task", default=None, help="Attach the tool trace to a task session.")
-    tool_patch.set_defaults(func=cmd_tool_patch)
-    tool_batch_patch = tool_sub.add_parser("batch-patch", help="Apply multiple structured patches from a JSON spec file.")
-    tool_batch_patch.add_argument("--specs-file", required=True, help="JSON file containing an array of patch specs, or an object with an edits array.")
-    tool_batch_patch.add_argument("--json", action="store_true")
-    tool_batch_patch.add_argument("--task", default=None, help="Attach the batch trace to a task session.")
-    tool_batch_patch.set_defaults(func=cmd_tool_batch_patch)
-    tool_delete = tool_sub.add_parser("delete", help="Delete a workspace file through destructive policy.")
-    tool_delete.add_argument("path")
-    tool_delete.add_argument("--allow-destructive", action="store_true")
-    tool_delete.add_argument("--json", action="store_true")
-    tool_delete.add_argument("--task", default=None, help="Attach the tool trace to a task session.")
-    tool_delete.set_defaults(func=cmd_tool_delete)
-    tool_exec = tool_sub.add_parser("exec", help="Run a safe command through policy.")
-    tool_exec.add_argument("--allow-destructive", action="store_true")
-    tool_exec.add_argument("--timeout", type=int, default=30)
-    tool_exec.add_argument("--json", action="store_true")
-    tool_exec.add_argument("--task", default=None, help="Attach the tool trace to a task session.")
-    tool_exec.add_argument("command", nargs=argparse.REMAINDER)
-    tool_exec.set_defaults(func=cmd_tool_exec)
-    tool_list = tool_sub.add_parser("list", help="List tool execution traces.")
-    tool_list.set_defaults(func=cmd_tool_list)
-    tool_show = tool_sub.add_parser("show", help="Show a tool execution trace.")
-    tool_show.add_argument("trace_id")
-    tool_show.set_defaults(func=cmd_tool_show)
+    add_tool_subcommands(tool_sub)
 
     task_parser = subparsers.add_parser("task", help="Manage resumable task sessions.")
     task_sub = task_parser.add_subparsers(dest="task_command", required=True)
@@ -891,6 +853,17 @@ def restore_env(previous: dict[str, str | None]) -> None:
             os.environ[key] = value
 
 
+def parse_env_assignments(values: list[str]) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for value in values:
+        key, separator, raw = value.partition("=")
+        key = key.strip()
+        if not separator or not key:
+            raise ValueError("MCP --env values must use KEY=VALUE.")
+        env[key] = raw
+    return env
+
+
 def cmd_skill_register(args: argparse.Namespace) -> None:
     workspace = workspace_from_args(args)
     skill = SkillRegistry(workspace).register(Path(args.json_file))
@@ -996,7 +969,10 @@ def cmd_mcp_add(args: argparse.Namespace) -> None:
         workspace,
         args.name,
         command=args.command,
+        args=args.arg,
         cwd=args.cwd,
+        env=parse_env_assignments(args.env),
+        startup_timeout_ms=args.startup_timeout_ms,
         tools=args.tool,
         enabled=not args.disabled,
     )
@@ -1007,8 +983,35 @@ def cmd_mcp_add(args: argparse.Namespace) -> None:
     print(f"mcp: {server['name']} ({state})")
     print(f"transport: {server['transport']}")
     print(f"command: {server['command']}")
+    if server.get("args"):
+        print(f"args: {len(server['args'])}")
+    if server.get("env_keys"):
+        print(f"env: {len(server['env_keys'])} key(s)")
     if server.get("tools"):
         print(f"tools: {len(server['tools'])}")
+
+
+def cmd_mcp_import_codex(args: argparse.Namespace) -> None:
+    workspace = workspace_from_args(args)
+    result = import_codex_mcp_servers(
+        workspace,
+        config_path=Path(args.config) if args.config else None,
+        names=args.name,
+        include_env=args.include_env,
+        enabled=not args.disabled,
+    )
+    if args.json:
+        print_json(result)
+        return
+    print(f"imported MCP servers from Codex: {result['count']}")
+    for server in result.get("imported", []):
+        env_note = f", env_keys={len(server.get('env_keys', []))}" if server.get("env_keys") else ""
+        arg_note = f", args={len(server.get('args', []))}" if server.get("args") else ""
+        print(f"  {server['name']} ({'enabled' if server.get('enabled') else 'disabled'}{arg_note}{env_note})")
+    for skipped in result.get("skipped", []):
+        print(f"  skipped {skipped['name']}: {skipped['reason']}")
+    if not args.include_env:
+        print("env values were not copied; rerun with --include-env only if this workspace may store those secrets.")
 
 
 def cmd_mcp_list(args: argparse.Namespace) -> None:
@@ -1023,12 +1026,14 @@ def cmd_mcp_list(args: argparse.Namespace) -> None:
     for server in servers:
         status = "enabled" if server.get("enabled") else "disabled"
         tools = len(server.get("tools", []))
-        print(f"{server['name']}\t{status}\t{server['transport']}\ttools={tools}\t{server['command']}")
+        args_suffix = f" args={len(server.get('args', []))}" if server.get("args") else ""
+        env_suffix = f" env_keys={len(server.get('env_keys', []))}" if server.get("env_keys") else ""
+        print(f"{server['name']}\t{status}\t{server['transport']}\ttools={tools}{args_suffix}{env_suffix}\t{server['command']}")
 
 
 def cmd_mcp_show(args: argparse.Namespace) -> None:
     workspace = workspace_from_args(args)
-    print_json(get_mcp_server(workspace, args.name))
+    print_json(redact_mcp_server(get_mcp_server(workspace, args.name)))
 
 
 def cmd_mcp_refresh(args: argparse.Namespace) -> None:
@@ -1435,47 +1440,23 @@ def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespa
     model = primary_model(args)
     base_url = args.base_url or env_value("AKERNEL_OPENAI_BASE_URL") or ""
     api_key_set = bool(env_value("AKERNEL_OPENAI_API_KEY"))
-    chat_banner(
-        "Context Kernel Agent Cockpit",
-        "Plan the packet. Watch the tools. Keep the trace.",
-    )
-    chat_panel(
-        "Mission",
-        [
-            ("focus", "small context, visible actions, durable task state"),
-            ("flow", "task brief -> context packet -> model action -> tool trace -> report"),
-            ("proof", "/runs and /cost show what happened after each task"),
-        ],
-    )
-    chat_panel(
-        "Session Deck",
-        [
-            ("cwd", compact_path(Path.cwd())),
-            ("workspace", compact_path(workspace.root)),
-            ("task", task_id),
-            ("provider", args.provider),
-            ("primary", model),
-            ("auxiliary", auxiliary_model(args)),
-            ("routing", args.model_routing),
-            ("review", args.aux_review),
-            ("profile", args.profile),
-            ("loop", f"max {args.max_steps} steps per message"),
-            ("state", workspace_state_summary(workspace)),
-        ],
-    )
+    print_chat_home(workspace, task_id, args, model)
     if args.provider == "openai" and (not api_key_set or not base_url):
         chat_notice("Setup needed", "Run `akernel setup` before sending OpenAI-backed tasks.")
-    chat_panel(
-        "Launch Paths",
-        [
-            ("inspect", "@README.md, @src/context_kernel/cli.py, or /status"),
-            ("compose", "/paste for multi-line work; /commands for saved prompts"),
-            ("verify", "!python -m unittest discover -s tests -p test_runtime.py"),
-            ("extend", "/extensions, /skills recommend <task>, /mcp"),
-            ("observe", "/compact for task state; /runs and /cost for evidence"),
-            ("control", "/help, /config, /clear, /exit"),
-        ],
-    )
+
+
+def print_chat_home(workspace: Workspace, task_id: str, args: argparse.Namespace, model: str) -> None:
+    width = chat_width()
+    print("")
+    print(chat_color("akernel", "cyan", bold=True))
+    print(chat_color("focused agent workspace", "dim"))
+    print("")
+    print(truncate_line(f"{compact_path(Path.cwd())}", width))
+    session = f"task {task_id[:12]} | {args.provider} | {model} | {args.profile} | max {args.max_steps}"
+    print(chat_color(truncate_line(session, width), "dim"))
+    print("")
+    print(truncate_line("Ask a task, attach @file, or run !command for checked local context.", width))
+    print(chat_color(truncate_line("/help commands | /status session | /extensions tools | /cost last run | /exit", width), "dim"))
 
 
 def resolve_chat_ui(args: argparse.Namespace) -> str:
@@ -1486,11 +1467,7 @@ def resolve_chat_ui(args: argparse.Namespace) -> str:
         value = os.environ["AKERNEL_UI"].strip().lower()
         if value in {"classic", "tui"}:
             return value
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        return "classic"
-    if os.environ.get("TERM", "").lower() == "dumb":
-        return "classic"
-    return "tui"
+    return "classic"
 
 
 def run_chat_loop_tui(
@@ -1950,52 +1927,49 @@ def chat_completion_items(root: Path, text: str, *, limit: int = 12) -> list[tup
 def print_chat_turn_start(request: str, args: argparse.Namespace) -> None:
     preview = request if len(request) <= chat_width() - 14 else request[: chat_width() - 17] + "..."
     print("")
-    print(chat_rule("New Task"))
-    chat_panel(
-        "Packet Plan",
-        [
-            ("task", preview),
-            ("flow", "minimal context -> model action -> policy tool -> trace"),
-            ("runtime", f"provider={args.provider} primary={primary_model(args)} route={args.model_routing} max_steps={args.max_steps}"),
-        ],
-    )
-    print(chat_color("status  assembling context packet", "dim"), flush=True)
+    print(chat_rule("Task"))
+    print(truncate_line(preview, chat_width()))
+    runtime = f"{args.provider} | {primary_model(args)} | route={args.model_routing} | max {args.max_steps} steps"
+    print(chat_color(truncate_line(runtime, chat_width()), "dim"))
+    print(chat_color("assembling context...", "dim"), flush=True)
 
 
 def print_chat_report(report: dict[str, Any]) -> None:
-    actions = [
-        str((step.get("action") or {}).get("action") or "none")
-        for step in report.get("steps", [])
-    ]
     print("")
-    print(chat_rule("Result"))
-    chat_panel(
-        "Run Summary",
-        [
-            ("status", str(report["status"])),
-            ("steps", f"{len(report['steps'])}/{report['max_steps']}"),
-            ("tokens", f"{report['totals']['total_tokens']} {token_meter_text(int(report['totals']['total_tokens']), report)}"),
-            ("agent_run:", str(report["id"])),
-        ],
+    final_response = report.get("final_response")
+    if final_response:
+        print(wrap_chat_text(str(final_response)))
+        print("")
+    elif report.get("status") != "responded":
+        diagnostic = report.get("diagnostic")
+        if isinstance(diagnostic, dict) and diagnostic:
+            message = diagnostic.get("message") or diagnostic.get("category") or report.get("status")
+        else:
+            message = report.get("status", "run finished")
+        print(wrap_chat_text(str(message)))
+        print("")
+
+    summary_line = (
+        f"{report['status']} | {len(report['steps'])}/{report['max_steps']} steps | "
+        f"{report['totals']['total_tokens']} tokens | agent_run: {str(report['id'])[:12]} | /cost for details"
     )
-    if actions:
-        print(chat_color("Timeline", "cyan", bold=True))
-        for line in format_agent_timeline(report):
-            print("  " + line)
-    print(chat_color("Models", "cyan"))
-    print(wrap_chat_text(model_routing_summary(report), indent="  "))
+    print(chat_color(truncate_line(summary_line, chat_width()), "dim"))
+
+    actions = [str((step.get("action") or {}).get("action") or "none") for step in report.get("steps", [])]
+    if actions and actions != ["respond"]:
+        print(chat_color(truncate_line("actions: " + " -> ".join(actions), chat_width()), "dim"))
+
     review_text = aux_review_summary(report)
     if review_text:
-        print(chat_color("Review", "cyan"))
-        print(wrap_chat_text(review_text, indent="  "))
-    if report.get("state", {}).get("enabled"):
-        print(chat_color(f"Memory  wrote {report['state']['written_count']} record(s)", "dim"))
-    if report.get("final_response"):
-        print("")
-        print(chat_color("Assistant", "green", bold=True))
-        print(wrap_chat_text(str(report["final_response"]), indent="  "))
-    print("")
-    print(chat_color(f"Next    /cost for cost report | akernel agent show {report['id']} for trace", "dim"))
+        print(chat_color(truncate_line(review_text, chat_width()), "dim"))
+
+    state_info = report.get("state", {})
+    if state_info.get("enabled") and state_info.get("written_count", 0):
+        print(chat_color(f"memory: wrote {state_info['written_count']} record(s)", "dim"))
+
+    diagnostic = report.get("diagnostic")
+    if isinstance(diagnostic, dict) and diagnostic.get("suggestion"):
+        print(chat_color(truncate_line(f"next: {diagnostic['suggestion']}", chat_width()), "yellow"))
 
 
 def print_chat_help() -> None:
@@ -2267,133 +2241,6 @@ def cmd_policy_command(args: argparse.Namespace) -> None:
         allow_destructive=args.allow_destructive,
     )
     print_policy_result(result, args.json)
-
-
-def cmd_tool_read(args: argparse.Namespace) -> None:
-    workspace = workspace_from_args(args)
-    ensure_task_attachable(workspace, args.task)
-    result = ToolExecutor(workspace).read_file(args.path, max_chars=args.max_chars)
-    attach_tool_to_task_if_requested(workspace, args.task, result)
-    if args.json:
-        print_json(result)
-        return
-    print_tool_result(result)
-    if result["ok"]:
-        print(result["output"]["content"])
-
-
-def cmd_tool_write(args: argparse.Namespace) -> None:
-    workspace = workspace_from_args(args)
-    ensure_task_attachable(workspace, args.task)
-    result = ToolExecutor(workspace).write_file(args.path, args.text)
-    attach_tool_to_task_if_requested(workspace, args.task, result)
-    if args.json:
-        print_json(result)
-        return
-    print_tool_result(result)
-
-
-def cmd_tool_patch(args: argparse.Namespace) -> None:
-    workspace = workspace_from_args(args)
-    ensure_task_attachable(workspace, args.task)
-    if (args.start_anchor or args.end_anchor) and args.old:
-        raise ValueError("tool patch cannot combine --old with --start-anchor/--end-anchor")
-    if not (args.start_anchor or args.end_anchor) and not args.old:
-        raise ValueError("tool patch requires --old, or both --start-anchor and --end-anchor")
-    result = ToolExecutor(workspace).patch_file(
-        args.path,
-        args.old or "",
-        args.new,
-        replace_all=args.replace_all,
-        occurrence=args.occurrence,
-        start_anchor=args.start_anchor,
-        end_anchor=args.end_anchor,
-        include_anchors=args.include_anchors,
-    )
-    attach_tool_to_task_if_requested(workspace, args.task, result)
-    if args.json:
-        print_json(result)
-        return
-    print_tool_result(result)
-
-
-def cmd_tool_batch_patch(args: argparse.Namespace) -> None:
-    workspace = workspace_from_args(args)
-    ensure_task_attachable(workspace, args.task)
-    edits = load_batch_patch_specs(Path(args.specs_file))
-    result = ToolExecutor(workspace).batch_patch(edits)
-    attach_tool_to_task_if_requested(workspace, args.task, result)
-    if args.json:
-        print_json(result)
-        return
-    print_tool_result(result)
-    output = result.get("output", {})
-    if "applied_count" in output:
-        print(f"applied_count: {output['applied_count']}")
-    if output.get("rolled_back"):
-        print("rolled_back: true")
-
-
-def load_batch_patch_specs(path: Path) -> list[dict[str, object]]:
-    payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    edits = payload.get("edits") if isinstance(payload, dict) else payload
-    if not isinstance(edits, list):
-        raise ValueError("batch-patch specs file must contain a JSON array or an object with an `edits` array.")
-    if not all(isinstance(edit, dict) for edit in edits):
-        raise ValueError("batch-patch edits must be JSON objects.")
-    return edits
-
-
-def cmd_tool_delete(args: argparse.Namespace) -> None:
-    workspace = workspace_from_args(args)
-    ensure_task_attachable(workspace, args.task)
-    result = ToolExecutor(workspace).delete_file(args.path, allow_destructive=args.allow_destructive)
-    attach_tool_to_task_if_requested(workspace, args.task, result)
-    if args.json:
-        print_json(result)
-        return
-    print_tool_result(result)
-
-
-def cmd_tool_exec(args: argparse.Namespace) -> None:
-    workspace = workspace_from_args(args)
-    ensure_task_attachable(workspace, args.task)
-    command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    result = ToolExecutor(workspace).run_command(
-        " ".join(command),
-        allow_destructive=args.allow_destructive,
-        timeout_seconds=args.timeout,
-    )
-    attach_tool_to_task_if_requested(workspace, args.task, result)
-    if args.json:
-        print_json(result)
-        return
-    print_tool_result(result)
-    output = result.get("output", {})
-    if "exit_code" in output:
-        print(f"exit_code: {output['exit_code']}")
-    if output.get("stdout"):
-        print("stdout:")
-        print(output["stdout"].rstrip())
-    if output.get("stderr"):
-        print("stderr:")
-        print(output["stderr"].rstrip())
-
-
-def cmd_tool_list(args: argparse.Namespace) -> None:
-    workspace = workspace_from_args(args)
-    traces = ToolExecutor(workspace).list_traces()
-    if not traces:
-        print("no tool traces")
-        return
-    for trace in traces:
-        status = "blocked" if trace["blocked"] else "ok" if trace["ok"] else "failed"
-        print(f"{trace['id']}\t{trace['created_at']}\t{trace['tool']}\t{status}\t{trace['subject']}")
-
-
-def cmd_tool_show(args: argparse.Namespace) -> None:
-    workspace = workspace_from_args(args)
-    print_json(ToolExecutor(workspace).get_trace(args.trace_id))
 
 
 def cmd_task_start(args: argparse.Namespace) -> None:

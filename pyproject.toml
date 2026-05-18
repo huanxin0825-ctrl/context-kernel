@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
-dependencies = ["prompt_toolkit>=3.0.43"]
+dependencies = ["prompt_toolkit>=3.0.43", "tomli>=2.0.1; python_version<'3.11'"]
 keywords = ["agent", "cli", "context", "llm", "token-budget"]
 authors = [
   { name = "Context Kernel contributors" },

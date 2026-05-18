@@ -144,8 +144,12 @@ The tool executor is the first execution layer above policy contracts.
 
 Current tools:
 
+- `tool list-dir [path]` lists workspace directory entries after file policy passes.
+- `tool file-info <path>` reports existence, type, size, and modification metadata after file policy passes.
 - `tool read <path>` reads a workspace file after file policy passes.
+- `tool create <path> --text ...` creates a workspace file without overwriting an existing file.
 - `tool write <path> --text ...` writes a workspace file after file policy passes.
+- `tool append <path> --text ...` appends to a workspace file and can fail on missing files with `--no-create`.
 - `tool patch <path> --old ... --new ...` applies a structured replacement after file policy passes, including one-match, `replace_all`, nth-occurrence, and anchor-block modes.
 - `tool batch-patch --specs-file <json>` applies multiple structured patch specs as one transaction. If any edit fails, previously applied edits are rolled back and the batch trace records the failure.
 - `tool delete <path> --allow-destructive` deletes a file only after destructive policy is explicitly allowed.
