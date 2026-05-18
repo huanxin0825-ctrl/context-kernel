@@ -1451,7 +1451,7 @@ def print_chat_home(workspace: Workspace, task_id: str, args: argparse.Namespace
     print(chat_color("akernel", "cyan", bold=True))
     print(chat_color("focused agent workspace", "dim"))
     print("")
-    print(truncate_line(f"{compact_path(Path.cwd())}", width))
+    print(truncate_line(f"{compact_path(workspace.root)}", width))
     session = f"task {task_id[:12]} | {args.provider} | {model} | {args.profile} | max {args.max_steps}"
     print(chat_color(truncate_line(session, width), "dim"))
     print("")

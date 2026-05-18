@@ -1830,6 +1830,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(tasks), 1)
             self.assertIn("akernel", output)
             self.assertIn("focused agent workspace", output)
+            self.assertIn(str(workspace.root), output)
             self.assertIn("/help commands", output)
             self.assertIn("Command Palette - Context", output)
             self.assertIn("Status Runway", output)
