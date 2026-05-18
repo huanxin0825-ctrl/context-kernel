@@ -98,6 +98,8 @@ def agent_report_outcome_lines(report: dict[str, Any]) -> list[str]:
             lines.append("resume: adjust the requested path/command or project policy, then rerun with the same task id")
         elif task_id:
             lines.append(f"resume: continue with `akernel agent run --task {task_id} \"...\"`")
+        if task_id:
+            lines.append(f"inspect: akernel task brief {task_id}")
     return lines
 
 
@@ -132,19 +134,42 @@ def print_tool_result(result: dict[str, Any]) -> None:
     output = result.get("output", {})
     transaction = output.get("transaction", {}) if isinstance(output, dict) else {}
     if isinstance(transaction, dict) and transaction:
+        snapshot_count = transaction.get("snapshot_count", 0)
+        transaction_status = transaction.get("status")
         print(
             "transaction: "
             f"{transaction.get('id')} "
-            f"{transaction.get('status')} "
-            f"snapshots={transaction.get('snapshot_count', 0)}"
+            f"{transaction_status} "
+            f"snapshots={snapshot_count}"
         )
+        print(f"files: {transaction_status} ({snapshot_count} snapshot(s))")
         rollback = transaction.get("rollback", {})
         if isinstance(rollback, dict) and rollback:
+            restored = len(rollback.get("restored", []))
+            deleted = len(rollback.get("deleted", []))
             print(
                 "rollback: "
-                f"restored={len(rollback.get('restored', []))} "
-                f"deleted={len(rollback.get('deleted', []))}"
+                f"restored={restored} "
+                f"deleted={deleted}"
             )
+            print(f"files: rollback restored={restored} deleted={deleted}")
+    for line in tool_result_next_lines(result, status):
+        print(line)
+
+
+def tool_result_next_lines(result: dict[str, Any], status: str) -> list[str]:
+    trace_id = result.get("id")
+    if status == "blocked":
+        return [
+            "next: adjust the requested path/command or policy, then retry.",
+            f"inspect: akernel trace show {trace_id}",
+        ]
+    if status == "failed":
+        return [
+            "next: inspect the saved trace, adjust the input, then retry.",
+            f"inspect: akernel trace show {trace_id}",
+        ]
+    return []
 
 
 def list_agent_reports(workspace: Workspace) -> list[dict[str, Any]]:

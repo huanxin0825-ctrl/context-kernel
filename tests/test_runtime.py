@@ -1394,6 +1394,7 @@ class RuntimeTests(unittest.TestCase):
                 main(["--workspace", str(workspace.root), "tool", "create", "notes/cli.txt", "--text", "first"])
             self.assertIn("ok: create_file", stdout.getvalue())
             self.assertIn("transaction:", stdout.getvalue())
+            self.assertIn("files: committed", stdout.getvalue())
 
             with patch("sys.stdout", new=io.StringIO()) as stdout:
                 main(["--workspace", str(workspace.root), "tool", "append", "notes/cli.txt", "--text", "\nsecond"])
@@ -1410,7 +1411,10 @@ class RuntimeTests(unittest.TestCase):
 
             with patch("sys.stdout", new=io.StringIO()) as stdout:
                 main(["--workspace", str(workspace.root), "tool", "create", "notes/cli.txt", "--text", "overwrite"])
-            self.assertIn("failed: create_file", stdout.getvalue())
+            failed_output = stdout.getvalue()
+            self.assertIn("failed: create_file", failed_output)
+            self.assertIn("next: inspect the saved trace", failed_output)
+            self.assertIn("inspect: akernel trace show", failed_output)
 
             self.assertEqual((Path(tmp) / "notes" / "cli.txt").read_text(encoding="utf-8"), "first\nsecond")
             tools = {trace["tool"] for trace in ToolExecutor(workspace).list_traces()}
@@ -2286,6 +2290,7 @@ class RuntimeTests(unittest.TestCase):
     def test_tui_report_includes_command_failure_reason(self) -> None:
         report = {
             "id": "run123",
+            "task_id": "task123",
             "status": "needs_review",
             "max_steps": 5,
             "totals": {"total_tokens": 123},
@@ -2301,8 +2306,10 @@ class RuntimeTests(unittest.TestCase):
         text = format_tui_report(report)
 
         self.assertIn("Run failed: command_failed", text)
+        self.assertIn("Outcome: needs_review", text)
         self.assertIn("Reason: command=python missing.py; exit_code=2; stderr=No such file", text)
         self.assertIn("Next: Fix the command and rerun the task.", text)
+        self.assertIn("Resume: akernel task brief task123", text)
 
     def test_chat_inline_file_reference_attaches_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2935,6 +2942,7 @@ class RuntimeTests(unittest.TestCase):
             output = stdout.getvalue()
             self.assertIn("outcome: blocked - Agent loop stopped: the final tool action was blocked by policy.", output)
             self.assertIn("resume: adjust the requested path/command or project policy", output)
+            self.assertIn("inspect: akernel task brief", output)
 
     def test_execution_planner_surfaces_policy_warnings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

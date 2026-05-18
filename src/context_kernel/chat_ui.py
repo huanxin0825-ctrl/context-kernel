@@ -15,10 +15,13 @@ def format_tui_report(report: dict[str, Any]) -> str:
         category = diagnostic.get("category") or "unknown"
         message = str(diagnostic.get("message") or "").strip()
         suggestion = diagnostic.get("suggestion") or "Use /runs for details."
-        lines = [f"Run failed: {category}"]
+        task_id = str(report.get("task_id") or "").strip()
+        lines = [f"Run failed: {category}", f"Outcome: {report.get('status', 'failed')}"]
         if message:
             lines.append(f"Reason: {message}")
         lines.append(f"Next: {suggestion}")
+        if task_id:
+            lines.append(f"Resume: akernel task brief {task_id}")
         return "\n".join(lines)
 
     status = report.get("status", "finished")
