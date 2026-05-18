@@ -182,55 +182,19 @@ class AgentLoop:
         expect_json: bool,
         progress_callback: Callable[[dict[str, Any]], None] | None,
     ) -> dict[str, Any]:
-        effective_budget = budget
-        plan = ExecutionPlanner(self.workspace).plan(
-            request,
-            effective_budget,
-            profile,
+        plan, effective_budget, budget_block = prepare_agent_step_plan(
+            self.workspace,
+            request=request,
             task_id=task_id,
-            resume=True,
+            budget=budget,
+            profile=profile,
+            index=index,
+            max_steps=max_steps,
+            allow_over_budget=allow_over_budget,
+            progress_callback=progress_callback,
         )
-        if plan["budget"]["over_budget"] and budget is None:
-            expanded_budget = adaptive_context_budget(plan)
-            effective_budget = expanded_budget
-            emit_agent_progress(
-                progress_callback,
-                {
-                    "event": "budget_expand",
-                    "step": index,
-                    "max_steps": max_steps,
-                    "estimated_used": plan["budget"]["estimated_used"],
-                    "old_budget": plan["budget"]["total"],
-                    "new_budget": expanded_budget,
-                },
-            )
-            plan = ExecutionPlanner(self.workspace).plan(
-                request,
-                effective_budget,
-                profile,
-                task_id=task_id,
-                resume=True,
-            )
-        if plan["budget"]["over_budget"] and not allow_over_budget:
-            diagnostic = {
-                "category": "context_budget",
-                "message": f"Context packet is over budget: used {plan['budget']['estimated_used']} / {plan['budget']['total']} tokens.",
-                "suggestion": "Use a leaner profile, run /compact, or pass a larger explicit --budget when you intentionally want a hard budget.",
-            }
-            return {
-                "index": index,
-                "status": "blocked",
-                "continue": False,
-                "stop_reason": "Agent loop stopped: context packet is over budget.",
-                "reason": "context packet is over budget",
-                "diagnostic": diagnostic,
-                "plan": summarize_plan(plan),
-                "trace_id": None,
-                "tool_trace_id": None,
-                "action": None,
-                "tokens": {},
-                "verifier_ok": False,
-            }
+        if budget_block is not None:
+            return budget_block
 
         emit_agent_progress(
             progress_callback,
@@ -284,141 +248,48 @@ class AgentLoop:
             routing_reason=routing_reason,
         )
 
-        try:
-            trace = AgentRunner(self.workspace).run(
-                request,
-                provider_name=provider_name,
-                budget=effective_budget,
-                profile=profile,
-                model=selected_model,
-                base_url=base_url,
-                allow_over_budget=allow_over_budget,
-                expect_json=True,
-                remember=False,
-                task_id=task_id,
-                resume=True,
-                packet_overrides=build_agent_packet(
-                    request,
-                    index,
-                    max_steps,
-                    expect_json=expect_json,
-                    model_role=selected_role,
-                    routing_reason=routing_reason,
-                ),
-            )
-        except Exception as exc:
-            diagnostic = diagnose_agent_exception(exc)
-            self.tasks.step(
-                task_id,
-                f"Agent step {index} failed before action execution: {diagnostic['message']}",
-                kind="agent_step",
-            )
-            return {
-                "index": index,
-                "status": "failed",
-                "continue": False,
-                "stop_reason": f"Agent loop stopped: {diagnostic['category']}.",
-                "reason": str(exc),
-                "diagnostic": diagnostic,
-                "plan": summarize_plan(plan),
-                "trace_id": None,
-                "model_role": selected_role,
-                "model": selected_model,
-                "routing_reason": routing_reason,
-                "aux_review": review,
-                "tool_trace_id": None,
-                "action": None,
-                "tokens": {},
-                "verifier_ok": False,
-            }
+        trace, provider_failure = run_provider_agent_step(
+            self.workspace,
+            self.tasks,
+            request=request,
+            task_id=task_id,
+            index=index,
+            max_steps=max_steps,
+            provider_name=provider_name,
+            budget=effective_budget,
+            profile=profile,
+            model=selected_model,
+            base_url=base_url,
+            allow_over_budget=allow_over_budget,
+            expect_json=expect_json,
+            plan=plan,
+            selected_role=selected_role,
+            routing_reason=routing_reason,
+            aux_review=review,
+        )
+        if provider_failure is not None:
+            return provider_failure
         attach_trace_outputs(self.tasks, task_id, trace)
-        tokens = trace.get("response", {})
+        tokens = response_token_counts(trace)
 
         verifier_ok = bool(trace.get("verifier", {}).get("ok"))
-        contract_recovered = False
-        try:
-            action = parse_agent_action(trace["response"]["text"], expect_json=expect_json)
-        except (ValueError, KeyError, TypeError) as exc:
-            stop_reason = "provider returned an invalid action payload"
-            if not verifier_ok:
-                stop_reason = "provider response failed JSON action verification"
-            self.tasks.step(
-                task_id,
-                f"Agent step {index} needs review: invalid action payload ({compact(str(exc), limit=240)}).",
-                kind="agent_step",
-                refs={"run_traces": [trace["id"]]},
-            )
-            return {
-                "index": index,
-                "status": "needs_review",
-                "continue": False,
-                "stop_reason": f"Agent loop stopped: {stop_reason}.",
-                "reason": str(exc),
-                "diagnostic": {
-                    "category": "provider_response",
-                    "message": compact(str(exc), limit=240),
-                    "suggestion": "Retry with the same task, or use a stricter/stronger model if the provider keeps returning malformed agent actions.",
-                },
-                "plan": summarize_plan(plan),
-                "trace_id": trace["id"],
-                "model_role": selected_role,
-                "model": selected_model,
-                "routing_reason": routing_reason,
-                "aux_review": review,
-                "tool_trace_id": None,
-                "action": None,
-                "tokens": {
-                    "input_tokens": tokens.get("input_tokens", 0),
-                    "output_tokens": tokens.get("output_tokens", 0),
-                    "total_tokens": tokens.get("total_tokens", 0),
-                },
-                "verifier_ok": verifier_ok,
-                "contract_recovered": False,
-            }
-        if not verifier_ok:
-            contract_recovered = True
-            self.tasks.step(
-                task_id,
-                f"Agent step {index} recovered a valid action from non-strict provider JSON.",
-                kind="agent_step",
-                refs={"run_traces": [trace["id"]]},
-            )
-
-        repeated_action = repeated_agent_action(report_steps=prior_steps, action=action)
-        if repeated_action:
-            self.tasks.step(
-                task_id,
-                f"Agent step {index} stopped: repeated action detected for {action['action']}.",
-                kind="agent_step",
-                refs={"run_traces": [trace["id"]]},
-            )
-            return {
-                "index": index,
-                "status": "needs_review",
-                "continue": False,
-                "stop_reason": "Agent loop stopped: repeated identical actions would likely cause a loop.",
-                "reason": "repeated identical actions detected",
-                "diagnostic": {
-                    "category": "loop_guard",
-                    "message": "The provider returned the same action repeatedly.",
-                    "suggestion": "Inspect the saved agent run and linked traces, then retry with more specific instructions, a fresh task, or a larger step budget.",
-                },
-                "plan": summarize_plan(plan),
-                "trace_id": trace["id"],
-                "model_role": selected_role,
-                "model": selected_model,
-                "routing_reason": routing_reason,
-                "aux_review": review,
-                "tool_trace_id": None,
-                "action": summarize_action(action),
-                "tokens": {
-                    "input_tokens": tokens.get("input_tokens", 0),
-                    "output_tokens": tokens.get("output_tokens", 0),
-                    "total_tokens": tokens.get("total_tokens", 0),
-                },
-                "verifier_ok": verifier_ok,
-                "contract_recovered": contract_recovered,
-            }
+        action, contract_recovered, action_failure = parse_agent_step_action(
+            self.tasks,
+            task_id=task_id,
+            index=index,
+            trace=trace,
+            expect_json=expect_json,
+            verifier_ok=verifier_ok,
+            prior_steps=prior_steps,
+            plan=plan,
+            model_role=selected_role,
+            model=selected_model,
+            routing_reason=routing_reason,
+            aux_review=review,
+            tokens=tokens,
+        )
+        if action_failure is not None:
+            return action_failure
 
         if action["action"] == "respond":
             response_text = render_agent_response(action)
@@ -471,29 +342,25 @@ class AgentLoop:
                 kind="agent_response",
                 refs={"run_traces": [trace["id"]]},
             )
-            return {
-                "index": index,
-                "status": "responded",
-                "continue": False,
-                "stop_reason": "Agent loop stopped: a final response was produced.",
-                "plan": summarize_plan(plan),
-                "trace_id": trace["id"],
-                "model_role": selected_role,
-                "model": selected_model,
-                "routing_reason": routing_reason,
-                "aux_review": review,
-                "tool_trace_id": None,
-                "action": summarize_action(action),
-                "tokens": {
-                    "input_tokens": tokens.get("input_tokens", 0),
-                    "output_tokens": tokens.get("output_tokens", 0),
-                    "total_tokens": tokens.get("total_tokens", 0),
-                },
-                "verifier_ok": verifier_ok,
-                "contract_recovered": contract_recovered,
-                "final_response": response_text,
-                "materialized_files": materialized["paths"] if materialized else [],
-            }
+            return agent_step_result(
+                index=index,
+                status="responded",
+                can_continue=False,
+                plan=plan,
+                stop_reason="Agent loop stopped: a final response was produced.",
+                trace_id=trace["id"],
+                model_role=selected_role,
+                model=selected_model,
+                routing_reason=routing_reason,
+                aux_review=review,
+                tool_trace_id=None,
+                action=summarize_action(action),
+                tokens=tokens,
+                verifier_ok=verifier_ok,
+                contract_recovered=contract_recovered,
+                final_response=response_text,
+                materialized_files=materialized["paths"] if materialized else [],
+            )
 
         emit_agent_progress(
             progress_callback,
@@ -572,21 +439,21 @@ class AgentLoop:
         else:
             status = "ok" if can_continue else "stopped"
         diagnostic = diagnose_tool_result(tool_result) if not can_continue and not tool_result["ok"] else None
-        return {
-            "index": index,
-            "status": status,
-            "continue": can_continue,
-            "stop_reason": final_tool_stop_reason(tool_result, recovery_tools=recovery_tools, max_steps=max_steps) if not can_continue else "",
-            "diagnostic": diagnostic,
-            "plan": summarize_plan(plan),
-            "trace_id": trace["id"],
-            "model_role": selected_role,
-            "model": selected_model,
-            "routing_reason": routing_reason,
-            "aux_review": review,
-            "tool_trace_id": tool_result["id"],
-            "action": summarize_action(action),
-            "tool": {
+        return agent_step_result(
+            index=index,
+            status=status,
+            can_continue=can_continue,
+            plan=plan,
+            stop_reason=final_tool_stop_reason(tool_result, recovery_tools=recovery_tools, max_steps=max_steps) if not can_continue else "",
+            diagnostic=diagnostic,
+            trace_id=trace["id"],
+            model_role=selected_role,
+            model=selected_model,
+            routing_reason=routing_reason,
+            aux_review=review,
+            tool_trace_id=tool_result["id"],
+            action=summarize_action(action),
+            tool={
                 "id": tool_result["id"],
                 "name": tool_result["tool"],
                 "ok": tool_result["ok"],
@@ -594,7 +461,7 @@ class AgentLoop:
                 "error": tool_result.get("error"),
                 "summary": tool_summary,
             },
-            "recovery_tools": [
+            recovery_tools=[
                 {
                     "id": item["id"],
                     "name": item["tool"],
@@ -604,14 +471,307 @@ class AgentLoop:
                 }
                 for item in recovery_tools
             ],
-            "tokens": {
-                "input_tokens": tokens.get("input_tokens", 0),
-                "output_tokens": tokens.get("output_tokens", 0),
-                "total_tokens": tokens.get("total_tokens", 0),
+            tokens=tokens,
+            verifier_ok=verifier_ok,
+            contract_recovered=contract_recovered,
+        )
+
+
+def response_token_counts(trace: dict[str, Any]) -> dict[str, int]:
+    response = trace.get("response", {})
+    return {
+        "input_tokens": int(response.get("input_tokens", 0) or 0),
+        "output_tokens": int(response.get("output_tokens", 0) or 0),
+        "total_tokens": int(response.get("total_tokens", 0) or 0),
+    }
+
+
+def prepare_agent_step_plan(
+    workspace: Workspace,
+    *,
+    request: str,
+    task_id: str,
+    budget: int | None,
+    profile: str,
+    index: int,
+    max_steps: int,
+    allow_over_budget: bool,
+    progress_callback: Callable[[dict[str, Any]], None] | None,
+) -> tuple[dict[str, Any], int | None, dict[str, Any] | None]:
+    effective_budget = budget
+    plan = ExecutionPlanner(workspace).plan(
+        request,
+        effective_budget,
+        profile,
+        task_id=task_id,
+        resume=True,
+    )
+    if plan["budget"]["over_budget"] and budget is None:
+        expanded_budget = adaptive_context_budget(plan)
+        effective_budget = expanded_budget
+        emit_agent_progress(
+            progress_callback,
+            {
+                "event": "budget_expand",
+                "step": index,
+                "max_steps": max_steps,
+                "estimated_used": plan["budget"]["estimated_used"],
+                "old_budget": plan["budget"]["total"],
+                "new_budget": expanded_budget,
             },
-            "verifier_ok": verifier_ok,
-            "contract_recovered": contract_recovered,
+        )
+        plan = ExecutionPlanner(workspace).plan(
+            request,
+            effective_budget,
+            profile,
+            task_id=task_id,
+            resume=True,
+        )
+    if plan["budget"]["over_budget"] and not allow_over_budget:
+        diagnostic = {
+            "category": "context_budget",
+            "message": f"Context packet is over budget: used {plan['budget']['estimated_used']} / {plan['budget']['total']} tokens.",
+            "suggestion": "Use a leaner profile, run /compact, or pass a larger explicit --budget when you intentionally want a hard budget.",
         }
+        return plan, effective_budget, agent_step_result(
+            index=index,
+            status="blocked",
+            can_continue=False,
+            plan=plan,
+            stop_reason="Agent loop stopped: context packet is over budget.",
+            reason="context packet is over budget",
+            diagnostic=diagnostic,
+            trace_id=None,
+            tool_trace_id=None,
+            action=None,
+            tokens={},
+            verifier_ok=False,
+        )
+    return plan, effective_budget, None
+
+
+def run_provider_agent_step(
+    workspace: Workspace,
+    tasks: TaskStore,
+    *,
+    request: str,
+    task_id: str,
+    index: int,
+    max_steps: int,
+    provider_name: str,
+    budget: int | None,
+    profile: str,
+    model: str,
+    base_url: str | None,
+    allow_over_budget: bool,
+    expect_json: bool,
+    plan: dict[str, Any],
+    selected_role: str,
+    routing_reason: str,
+    aux_review: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    try:
+        trace = AgentRunner(workspace).run(
+            request,
+            provider_name=provider_name,
+            budget=budget,
+            profile=profile,
+            model=model,
+            base_url=base_url,
+            allow_over_budget=allow_over_budget,
+            expect_json=True,
+            remember=False,
+            task_id=task_id,
+            resume=True,
+            packet_overrides=build_agent_packet(
+                request,
+                index,
+                max_steps,
+                expect_json=expect_json,
+                model_role=selected_role,
+                routing_reason=routing_reason,
+            ),
+        )
+        return trace, None
+    except Exception as exc:
+        diagnostic = diagnose_agent_exception(exc)
+        tasks.step(
+            task_id,
+            f"Agent step {index} failed before action execution: {diagnostic['message']}",
+            kind="agent_step",
+        )
+        return {}, agent_step_result(
+            index=index,
+            status="failed",
+            can_continue=False,
+            plan=plan,
+            stop_reason=f"Agent loop stopped: {diagnostic['category']}.",
+            reason=str(exc),
+            diagnostic=diagnostic,
+            trace_id=None,
+            model_role=selected_role,
+            model=model,
+            routing_reason=routing_reason,
+            aux_review=aux_review,
+            tool_trace_id=None,
+            action=None,
+            tokens={},
+            verifier_ok=False,
+        )
+
+
+def parse_agent_step_action(
+    tasks: TaskStore,
+    *,
+    task_id: str,
+    index: int,
+    trace: dict[str, Any],
+    expect_json: bool,
+    verifier_ok: bool,
+    prior_steps: list[dict[str, Any]],
+    plan: dict[str, Any],
+    model_role: str,
+    model: str,
+    routing_reason: str,
+    aux_review: dict[str, Any],
+    tokens: dict[str, int],
+) -> tuple[dict[str, Any], bool, dict[str, Any] | None]:
+    contract_recovered = False
+    try:
+        action = parse_agent_action(trace["response"]["text"], expect_json=expect_json)
+    except (ValueError, KeyError, TypeError) as exc:
+        stop_reason = "provider returned an invalid action payload"
+        if not verifier_ok:
+            stop_reason = "provider response failed JSON action verification"
+        tasks.step(
+            task_id,
+            f"Agent step {index} needs review: invalid action payload ({compact(str(exc), limit=240)}).",
+            kind="agent_step",
+            refs={"run_traces": [trace["id"]]},
+        )
+        return {}, False, agent_step_result(
+            index=index,
+            status="needs_review",
+            can_continue=False,
+            plan=plan,
+            stop_reason=f"Agent loop stopped: {stop_reason}.",
+            reason=str(exc),
+            diagnostic={
+                "category": "provider_response",
+                "message": compact(str(exc), limit=240),
+                "suggestion": "Retry with the same task, or use a stricter/stronger model if the provider keeps returning malformed agent actions.",
+            },
+            trace_id=trace["id"],
+            model_role=model_role,
+            model=model,
+            routing_reason=routing_reason,
+            aux_review=aux_review,
+            tool_trace_id=None,
+            action=None,
+            tokens=tokens,
+            verifier_ok=verifier_ok,
+            contract_recovered=False,
+        )
+    if not verifier_ok:
+        contract_recovered = True
+        tasks.step(
+            task_id,
+            f"Agent step {index} recovered a valid action from non-strict provider JSON.",
+            kind="agent_step",
+            refs={"run_traces": [trace["id"]]},
+        )
+
+    if repeated_agent_action(report_steps=prior_steps, action=action):
+        tasks.step(
+            task_id,
+            f"Agent step {index} stopped: repeated action detected for {action['action']}.",
+            kind="agent_step",
+            refs={"run_traces": [trace["id"]]},
+        )
+        return action, contract_recovered, agent_step_result(
+            index=index,
+            status="needs_review",
+            can_continue=False,
+            plan=plan,
+            stop_reason="Agent loop stopped: repeated identical actions would likely cause a loop.",
+            reason="repeated identical actions detected",
+            diagnostic={
+                "category": "loop_guard",
+                "message": "The provider returned the same action repeatedly.",
+                "suggestion": "Inspect the saved agent run and linked traces, then retry with more specific instructions, a fresh task, or a larger step budget.",
+            },
+            trace_id=trace["id"],
+            model_role=model_role,
+            model=model,
+            routing_reason=routing_reason,
+            aux_review=aux_review,
+            tool_trace_id=None,
+            action=summarize_action(action),
+            tokens=tokens,
+            verifier_ok=verifier_ok,
+            contract_recovered=contract_recovered,
+        )
+    return action, contract_recovered, None
+
+
+def agent_step_result(
+    *,
+    index: int,
+    status: str,
+    can_continue: bool,
+    plan: dict[str, Any],
+    stop_reason: str = "",
+    reason: str | None = None,
+    diagnostic: dict[str, Any] | None = None,
+    trace_id: str | None = None,
+    model_role: str | None = None,
+    model: str | None = None,
+    routing_reason: str | None = None,
+    aux_review: dict[str, Any] | None = None,
+    tool_trace_id: str | None = None,
+    action: dict[str, Any] | None = None,
+    tool: dict[str, Any] | None = None,
+    recovery_tools: list[dict[str, Any]] | None = None,
+    tokens: dict[str, Any] | None = None,
+    verifier_ok: bool = False,
+    contract_recovered: bool | None = None,
+    final_response: str | None = None,
+    materialized_files: list[str] | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "index": index,
+        "status": status,
+        "continue": can_continue,
+        "stop_reason": stop_reason,
+        "diagnostic": diagnostic,
+        "plan": summarize_plan(plan),
+        "trace_id": trace_id,
+        "tool_trace_id": tool_trace_id,
+        "action": action,
+        "tokens": tokens or {},
+        "verifier_ok": verifier_ok,
+    }
+    if reason is not None:
+        result["reason"] = reason
+    if model_role is not None:
+        result["model_role"] = model_role
+    if model is not None:
+        result["model"] = model
+    if routing_reason is not None:
+        result["routing_reason"] = routing_reason
+    if aux_review is not None:
+        result["aux_review"] = aux_review
+    if contract_recovered is not None:
+        result["contract_recovered"] = contract_recovered
+    if tool is not None:
+        result["tool"] = tool
+    if recovery_tools is not None:
+        result["recovery_tools"] = recovery_tools
+    if final_response is not None:
+        result["final_response"] = final_response
+    if materialized_files is not None:
+        result["materialized_files"] = materialized_files
+    return result
 
 
 def build_agent_packet(

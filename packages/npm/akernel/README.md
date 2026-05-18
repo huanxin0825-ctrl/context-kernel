@@ -10,6 +10,8 @@ akernel setup
 akernel
 ```
 
+Bare `akernel` opens the interactive agent cockpit: Mission, Session Deck, Launch Paths, slash commands, file attachment with `@path`, policy-checked shell context with `!command`, run timelines, token cost reports, and task resume state.
+
 The launcher forwards arguments to `python -m context_kernel.cli`. If the Python package is missing or older than this npm launcher, it attempts a user-level bootstrap or upgrade with:
 
 ```bash

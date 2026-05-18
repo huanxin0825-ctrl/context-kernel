@@ -52,9 +52,9 @@ Next bar:
 Current alpha:
 
 - Bare `akernel` starts an interactive session.
-- The shell view shows workspace, model roles, commands, task progress, run summaries, costs, and diagnostics.
+- The classic shell view shows Mission, Session Deck, Launch Paths, Packet Plan, run Timeline, token meter, model roles, costs, and diagnostics.
 - `--ui auto|classic|tui` switches between classic stream output and the full-screen ANSI terminal UI.
-- The TUI keeps a transcript, command strip, cockpit sidebar, task mission panel, model stack, last-run action timeline, diagnostics, pending context count, and bottom input hint without adding runtime dependencies.
+- The TUI keeps a transcript, command strip, Mission/Flow cockpit sidebar, Task panel, Ready Queue, model stack, last-run action timeline, diagnostics, pending context count, and bottom input hint without adding runtime dependencies.
 
 Next bar:
 

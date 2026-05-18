@@ -8,21 +8,66 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
-import shlex
 import sys
 import threading
 import time
-import unicodedata
 from typing import Any
 
 from .agent_reports import build_agent_cost_report, load_agent_report, render_agent_cost_report
 from .benchmarks import BenchmarkRunner, benchmark_ref, render_benchmark_evidence_markdown
 from .budget import DEFAULT_PROFILE, profile_names
+from .chat_commands import (
+    attach_chat_file_command,
+    attach_inline_file_references,
+    expand_custom_chat_command,
+    find_workspace_files,
+    load_custom_chat_commands,
+    print_custom_commands_panel,
+    run_chat_command,
+)
+from .chat_extensions import (
+    extension_summary,
+    handle_chat_mcp_command,
+    handle_chat_skills_command,
+    print_extensions_panel,
+    print_mcp_panel,
+    print_skills_panel,
+)
+from .chat_tui import (
+    build_chat_tui_screen,
+    render_chat_tui_message,
+    render_chat_tui_screen,
+    render_chat_tui_status,
+    render_chat_tui_update,
+    tui_prompt,
+)
+from .chat_ui import (
+    chat_help_groups,
+    format_agent_timeline,
+    format_chat_help_text,
+    format_tui_report,
+    token_meter_text,
+    tui_flow_summary,
+)
+from .cli_output import parse_json_object, print_json, print_mcp_call_result
+from .cli_reports import (
+    aux_review_summary,
+    benchmark_report_ok,
+    enforce_benchmark_report_gate,
+    enforce_regression_gate,
+    list_agent_reports,
+    model_routing_summary,
+    print_agent_report,
+    print_benchmark_check_summary,
+    print_benchmark_diff,
+    print_benchmark_report,
+    print_policy_result,
+    print_tool_result,
+)
 from .context import ContextBuilder
 from .evals import EvalRunner
 from .global_memory import pull_global_memories, push_global_memories
-from .loop import AgentLoop, summarize_tool_result
+from .loop import AgentLoop
 from .marketplace import install_marketplace_skill, is_remote_reference, list_marketplace_skills
 from .mcp import (
     add_mcp_server,
@@ -34,6 +79,7 @@ from .mcp import (
     set_mcp_server_enabled,
 )
 from .memory import ALLOWED_KINDS, MemoryStore
+from .model_config import DEFAULT_AUXILIARY_MODEL, DEFAULT_PRIMARY_MODEL, auxiliary_model, primary_model
 from .planner import ExecutionPlanner
 from .policy import FILE_OPERATIONS, check_command_policy, check_file_policy, summarize_command_policy
 from .project import load_project_profile, scan_project
@@ -50,12 +96,24 @@ from .skills import (
 from .state_writer import StateWriter
 from .storage import Workspace
 from .tasks import MILESTONE_STATUSES, TASK_STATUSES, TaskStore
+from .terminal import (
+    ascii_meter,
+    chat_banner,
+    chat_color,
+    chat_notice,
+    chat_panel,
+    chat_rule,
+    chat_width,
+    compact_path,
+    display_width,
+    truncate_line,
+    wrap_chat_text,
+)
 from .tools import ToolExecutor
 from .verifier import verify_trace
+from .workspace_summary import workspace_state_summary
 
 
-DEFAULT_PRIMARY_MODEL = "gpt-5.5"
-DEFAULT_AUXILIARY_MODEL = "gpt-5.3-codex"
 CHAT_COMMANDS: list[tuple[str, str]] = [
     ("/help", "show command palette"),
     ("/status", "show workspace and runtime status"),
@@ -76,7 +134,6 @@ CHAT_COMMANDS: list[tuple[str, str]] = [
     ("/clear", "clear transcript"),
     ("/exit", "leave interactive session"),
 ]
-INLINE_FILE_REF_RE = re.compile(r"(?<![\w@])@([^\s,;:]+)")
 OPENAI_ENV_KEYS = {
     "api_key": "AKERNEL_OPENAI_API_KEY",
     "base_url": "AKERNEL_OPENAI_BASE_URL",
@@ -376,7 +433,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_cost.add_argument("--json", action="store_true")
     agent_cost.set_defaults(func=cmd_agent_cost)
 
-    chat_parser = subparsers.add_parser("chat", help="Start an interactive Claude Code-style task session.")
+    chat_parser = subparsers.add_parser("chat", help="Start an interactive agent cockpit task session.")
     add_provider_args(chat_parser)
     add_budget_args(chat_parser)
     chat_parser.add_argument("--task", default=None, help="Continue an existing task session.")
@@ -1379,11 +1436,19 @@ def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespa
     base_url = args.base_url or env_value("AKERNEL_OPENAI_BASE_URL") or ""
     api_key_set = bool(env_value("AKERNEL_OPENAI_API_KEY"))
     chat_banner(
-        "Context Kernel Agent",
-        "Token-frugal task runner for long-lived AI workspaces.",
+        "Context Kernel Agent Cockpit",
+        "Plan the packet. Watch the tools. Keep the trace.",
     )
     chat_panel(
-        "Session",
+        "Mission",
+        [
+            ("focus", "small context, visible actions, durable task state"),
+            ("flow", "task brief -> context packet -> model action -> tool trace -> report"),
+            ("proof", "/runs and /cost show what happened after each task"),
+        ],
+    )
+    chat_panel(
+        "Session Deck",
         [
             ("cwd", compact_path(Path.cwd())),
             ("workspace", compact_path(workspace.root)),
@@ -1401,13 +1466,13 @@ def print_chat_header(workspace: Workspace, task_id: str, args: argparse.Namespa
     if args.provider == "openai" and (not api_key_set or not base_url):
         chat_notice("Setup needed", "Run `akernel setup` before sending OpenAI-backed tasks.")
     chat_panel(
-        "Start",
+        "Launch Paths",
         [
-            ("type", "Describe a task in natural language and press Enter."),
-            ("include", "@path attaches a workspace file; !cmd runs a policy-checked command."),
-            ("compose", "/paste captures a multi-line task; /compact shows the task brief."),
-            ("extend", "/extensions shows MCP servers, tools, and skills."),
-            ("inspect", "/status, /model, /task, /runs, /cost"),
+            ("inspect", "@README.md, @src/context_kernel/cli.py, or /status"),
+            ("compose", "/paste for multi-line work; /commands for saved prompts"),
+            ("verify", "!python -m unittest discover -s tests -p test_runtime.py"),
+            ("extend", "/extensions, /skills recommend <task>, /mcp"),
+            ("observe", "/compact for task state; /runs and /cost for evidence"),
             ("control", "/help, /config, /clear, /exit"),
         ],
     )
@@ -1800,20 +1865,6 @@ def chat_action_label(action: str) -> str:
     return labels.get(action, action or "running action")
 
 
-def format_chat_help_text() -> str:
-    rows = [
-        *CHAT_COMMANDS,
-        ("/mcp refresh <name>", "refresh a configured MCP server without leaving chat"),
-        ("/mcp call <server> <tool>", "call a discovered MCP tool; add --args '{...}' when needed"),
-        ("/skills recommend <task>", "rank registered skills for a task"),
-        ("/skills install <id>", "install a packaged marketplace skill"),
-        ("@query", "search current workspace files; use @1, @2... to attach a listed match"),
-        ("@path", "mention an exact file path inside a task to attach it automatically"),
-        ("!command", "run a policy-checked command and attach its summary"),
-    ]
-    return "\n".join(f"{name:<10} {description}" for name, description in rows)
-
-
 def read_chat_input(prompt: str, workspace: Workspace) -> str:
     if not should_use_prompt_toolkit():
         return input(prompt)
@@ -1896,404 +1947,19 @@ def chat_completion_items(root: Path, text: str, *, limit: int = 12) -> list[tup
     return []
 
 
-def tui_prompt(args: argparse.Namespace) -> str:
-    return chat_color("\nakernel", "cyan", bold=True) + chat_color(f" [{primary_model(args)}]", "dim") + "> "
-
-
-def render_chat_tui_screen(
-    workspace: Workspace,
-    task_id: str,
-    args: argparse.Namespace,
-    transcript: list[dict[str, str]],
-    last_report: dict[str, Any] | None,
-    pending_context: list[str],
-    *,
-    status: str,
-    state: dict[str, Any] | None = None,
-    clear: bool = True,
-) -> None:
-    screen = build_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status=status, state=state)
-    prefix = "\033[2J\033[H" if clear else "\n"
-    print(prefix + screen + ("\n" if not clear else ""), end="")
-    if state is not None:
-        state["rendered_count"] = len(transcript)
-
-
-def render_chat_tui_update(
-    workspace: Workspace,
-    task_id: str,
-    args: argparse.Namespace,
-    transcript: list[dict[str, str]],
-    last_report: dict[str, Any] | None,
-    pending_context: list[str],
-    *,
-    status: str,
-    state: dict[str, Any] | None = None,
-    clear: bool = True,
-) -> None:
-    if clear:
-        render_chat_tui_screen(workspace, task_id, args, transcript, last_report, pending_context, status=status, state=state, clear=True)
-        return
-    start = int((state or {}).get("rendered_count", max(0, len(transcript) - 1)))
-    for item in transcript[start:]:
-        render_chat_tui_message(item)
-    if state is not None:
-        state["rendered_count"] = len(transcript)
-    render_chat_tui_status(status, args, pending_context, last_report=last_report)
-
-
-def render_chat_tui_message(item: dict[str, str]) -> None:
-    width = chat_width()
-    role = item.get("role", "system")
-    title = item.get("title", role)
-    label = tui_role_label(role, title)
-    prefix = "  " if role != "user" else "> "
-    print("")
-    print(chat_color(truncate_line(label, width), "cyan" if role == "system" else "green" if role == "assistant" else "yellow", bold=True))
-    for line in wrap_plain(item.get("text", ""), width=max(20, width - len(prefix))).splitlines():
-        print(truncate_line(prefix + line, width))
-
-
-def render_chat_tui_status(
-    status: str,
-    args: argparse.Namespace,
-    pending_context: list[str],
-    *,
-    last_report: dict[str, Any] | None = None,
-) -> None:
-    if last_report:
-        tokens = last_report.get("totals", {}).get("total_tokens", 0)
-        run_id = str(last_report.get("id", ""))[:12]
-        run_status = str(last_report.get("status", status))
-        summary = f"{run_status} | {tokens} tokens | run {run_id} | /cost"
-    elif status == "running":
-        attached = f" | ctx {len(pending_context)}" if pending_context else ""
-        summary = f"running | primary {primary_model(args)} | route {getattr(args, 'model_routing', 'primary')}{attached}"
-    else:
-        attached = f" | ctx {len(pending_context)}" if pending_context else ""
-        summary = f"{status} | primary {primary_model(args)} | route {getattr(args, 'model_routing', 'primary')}{attached} | / commands | @ files"
-    print(chat_color(truncate_line(summary, chat_width()), "dim"), flush=True)
-
-
-def build_chat_tui_screen(
-    workspace: Workspace,
-    task_id: str,
-    args: argparse.Namespace,
-    transcript: list[dict[str, str]],
-    last_report: dict[str, Any] | None,
-    pending_context: list[str],
-    *,
-    status: str,
-    state: dict[str, Any] | None = None,
-) -> str:
-    width = chat_width()
-    if (state or {}).get("scrollback_mode"):
-        return "\n".join(tui_compact_start_lines(workspace, task_id, args, last_report, pending_context, status=status, width=width))
-    height = max(24, shutil.get_terminal_size((width, 32)).lines)
-    right_width = min(40, max(32, width // 3))
-    left_width = max(46, width - right_width - 3)
-    header = tui_header_lines(workspace, args, last_report, status=status, width=width)
-    footer = tui_footer_lines(width)
-    body_height = max(10, height - len(header) - len(footer) - 1)
-    lines = header
-    body = tui_body_lines(transcript, left_width, status=status)
-    side = tui_sidebar_lines(workspace, task_id, args, last_report, pending_context, right_width)
-    scroll_offset = max(0, int((state or {}).get("scroll_offset", 0)))
-    body = slice_tui_body(body, body_height, scroll_offset, left_width)
-    side = side[:body_height]
-    for index in range(body_height):
-        left = body[index] if index < len(body) else ""
-        right = side[index] if index < len(side) else ""
-        lines.append(f"{pad_display(left, left_width)} {chat_color('|', 'dim')} {pad_display(right, right_width)}")
-    lines.extend(footer)
-    return "\n".join(lines)
-
-
-def tui_compact_start_lines(
-    workspace: Workspace,
-    task_id: str,
-    args: argparse.Namespace,
-    last_report: dict[str, Any] | None,
-    pending_context: list[str],
-    *,
-    status: str,
-    width: int,
-) -> list[str]:
-    tokens = 0 if not last_report else last_report.get("totals", {}).get("total_tokens", 0)
-    task_short = task_id[:12]
-    return [
-        "",
-        chat_color(truncate_line("AKERNEL", width), "cyan", bold=True),
-        chat_color(truncate_line("Token-frugal agent workspace. Focused chat, explicit context, durable memory.", width), "dim"),
-        "",
-        truncate_line(f"cwd      {compact_path(Path.cwd())}", width),
-        truncate_line(f"work     {compact_path(workspace.root)}", width),
-        truncate_line(f"models   primary {primary_model(args)} | aux {auxiliary_model(args)} | routing {args.model_routing}", width),
-        truncate_line(f"session  task {task_short} | provider {args.provider} | profile {args.profile} | tokens {tokens} | status {status}", width),
-        truncate_line(f"context  attached {len(pending_context)} | type @ to search files, or mention @path inside a task", width),
-        "",
-        chat_color(truncate_line("shortcuts /help /status /model /commands /extensions /compact /runs /cost /clear /exit", width), "dim"),
-        chat_color(truncate_line("input     ask one concrete task; use !command for checked shell context", width), "dim"),
-    ]
-
-
-def tui_header_lines(
-    workspace: Workspace,
-    args: argparse.Namespace,
-    last_report: dict[str, Any] | None,
-    *,
-    status: str,
-    width: int,
-) -> list[str]:
-    status_label = status.upper()
-    status_color = "green" if status == "ready" else "yellow" if status == "running" else "cyan"
-    tokens = 0 if not last_report else last_report.get("totals", {}).get("total_tokens", 0)
-    title = f" AKERNEL // {status_label} "
-    subtitle = (
-        f"{compact_path(workspace.root)}  |  provider {args.provider}  |  "
-        f"primary {primary_model(args)}  |  aux {auxiliary_model(args)}  |  tokens {tokens}"
-    )
-    return [
-        chat_color(tui_rule(title, width), status_color, bold=True),
-        truncate_line(subtitle, width),
-        tui_command_strip(width),
-    ]
-
-
-def tui_footer_lines(width: int) -> list[str]:
-    return [
-        tui_rule(" Input ", width),
-        truncate_line("Type a task. @ finds files, @1 attaches a match, /up and /down move transcript view, /latest returns to now.", width),
-        "",
-    ]
-
-
-def tui_command_strip(width: int) -> str:
-    commands = " /help  /status  /model  /extensions  /compact  /runs  /cost  /up  /down  @file  !cmd "
-    return chat_color(truncate_line(commands.center(width, "-"), width), "dim")
-
-
-def tui_body_lines(transcript: list[dict[str, str]], width: int, *, status: str = "ready") -> list[str]:
-    if not transcript:
-        return ["No messages yet. Start with one concrete task."]
-    lines: list[str] = []
-    lines.append(f"Conversation [{status}]")
-    lines.append("-" * min(width, 24))
-    for item in transcript:
-        title = item.get("title", item.get("role", "message"))
-        role = item.get("role", "system")
-        label = tui_role_label(role, title)
-        lines.append("")
-        lines.append(truncate_line(f"{label}", width))
-        prefix = "  " if role != "user" else "> "
-        for line in wrap_plain(item.get("text", ""), width=max(20, width - len(prefix))).splitlines():
-            lines.append(truncate_line(prefix + line, width))
-    return lines
-
-
-def tui_role_label(role: str, title: str) -> str:
-    labels = {
-        "user": "YOU",
-        "assistant": "AKERNEL",
-        "system": "SYSTEM",
-    }
-    base = labels.get(role, role.upper())
-    if role == "assistant" and title.casefold() in {"assistant", "akernel"}:
-        return base
-    return f"{base}: {title}" if title and title.casefold() != base.casefold() else base
-
-
-def tui_sidebar_lines(
-    workspace: Workspace,
-    task_id: str,
-    args: argparse.Namespace,
-    last_report: dict[str, Any] | None,
-    pending_context: list[str],
-    width: int,
-) -> list[str]:
-    rows = tui_section("Session", width)
-    rows.extend(
-        [
-            tui_kv("provider", args.provider, width),
-            tui_kv("profile", getattr(args, "profile", DEFAULT_PROFILE), width),
-            tui_kv("routing", getattr(args, "model_routing", "auto"), width),
-            tui_kv("steps", getattr(args, "max_steps", "?"), width),
-            tui_kv("attached", len(pending_context), width),
-            tui_kv("extend", compact_extension_label(workspace), width),
-            "",
-        ]
-    )
-    rows.extend(tui_section("Models", width))
-    rows.extend(
-        [
-            tui_kv("primary", primary_model(args), width),
-            tui_kv("aux", auxiliary_model(args), width),
-            tui_kv("review", getattr(args, "aux_review", "auto"), width),
-            "",
-        ]
-    )
-    rows.extend(tui_task_panel(workspace, task_id, width))
-    if last_report:
-        rows.extend(tui_last_run_panel(last_report, width))
-        diagnostic = last_report.get("diagnostic")
-        if isinstance(diagnostic, dict) and diagnostic:
-            rows.extend([""])
-            rows.extend(tui_section("Diagnostic", width))
-            rows.append(str(diagnostic.get("category", "")))
-            rows.extend(wrap_plain(str(diagnostic.get("suggestion", "")), width=max(20, width)).splitlines())
-        rows.append("")
-    rows.extend(tui_section("Workspace", width))
-    rows.extend(wrap_plain(workspace_state_summary(workspace), width=max(20, width)).splitlines())
-    return [truncate_line(line, width) for line in rows]
-
-
-def compact_extension_label(workspace: Workspace) -> str:
-    summary = extension_summary(workspace)
-    return f"{summary['skills']} skills | {summary['mcp_enabled']}/{summary['mcp_total']} mcp | /extensions"
-
-
-def tui_section(title: str, width: int) -> list[str]:
-    label = f"{title}"
-    return [label, "-" * min(width, max(10, len(label) + 4))]
-
-
-def tui_kv(key: str, value: Any, width: int) -> str:
-    return truncate_line(f"{key:<9} {value}", width)
-
-
-def tui_task_panel(workspace: Workspace, task_id: str, width: int) -> list[str]:
-    rows = tui_section("Task", width)
-    try:
-        task = TaskStore(workspace).get(task_id)
-    except (KeyError, FileNotFoundError):
-        rows.extend([tui_kv("id", task_id, width), tui_kv("status", "unknown", width), ""])
-        return rows
-    rows.extend(
-        [
-            tui_kv("id", task.get("id", task_id), width),
-            tui_kv("status", task.get("status", "unknown"), width),
-            tui_kv("title", task.get("title", ""), width),
-        ]
-    )
-    plan = task.get("plan")
-    if isinstance(plan, dict):
-        progress = plan.get("milestones", [])
-        completed = sum(1 for item in progress if item.get("status") == "completed")
-        active = next((item for item in progress if item.get("status") == "active"), None)
-        rows.append(tui_kv("plan", f"{completed}/{len(progress)} done", width))
-        if active:
-            rows.append(tui_kv("active", f"{active.get('id')} {active.get('title', '')}", width))
-    rows.append("")
-    return rows
-
-
-def tui_last_run_panel(report: dict[str, Any], width: int) -> list[str]:
-    rows = tui_section("Last Run", width)
-    steps = report.get("steps", [])
-    if steps:
-        compact_actions = " -> ".join(str((step.get("action") or {}).get("action") or "none") for step in steps)
-        rows.append(tui_kv("actions", compact_actions, width))
-    rows.extend(
-        [
-            tui_kv("id", report.get("id"), width),
-            tui_kv("status", report.get("status"), width),
-            tui_kv("tokens", report.get("totals", {}).get("total_tokens", 0), width),
-        ]
-    )
-    if steps:
-        for step in steps[:4]:
-            action = str((step.get("action") or {}).get("action") or "none")
-            ok = "ok" if step.get("verifier_ok", True) else "check"
-            rows.append(f"  {step.get('index', '?')}. {action} [{ok}]")
-        if len(steps) > 4:
-            rows.append(f"  ... +{len(steps) - 4} more")
-    return rows
-
-
-def slice_tui_body(lines: list[str], height: int, scroll_offset: int, width: int) -> list[str]:
-    if len(lines) <= height:
-        return lines
-    offset = max(0, min(scroll_offset, len(lines) - height))
-    end = len(lines) - offset
-    start = max(0, end - height)
-    window = lines[start:end]
-    if offset:
-        window = [truncate_line(f"History view: {offset} line(s) above latest. Use /down or /latest.", width)] + window[1:]
-    return window
-
-
-def format_tui_report(report: dict[str, Any]) -> str:
-    final_response = str(report.get("final_response") or "").strip()
-    if final_response:
-        return final_response
-
-    diagnostic = report.get("diagnostic")
-    if isinstance(diagnostic, dict) and diagnostic:
-        category = diagnostic.get("category") or "unknown"
-        message = str(diagnostic.get("message") or "").strip()
-        suggestion = diagnostic.get("suggestion") or "Use /runs for details."
-        lines = [f"Run failed: {category}"]
-        if message:
-            lines.append(f"Reason: {message}")
-        lines.append(f"Next: {suggestion}")
-        return "\n".join(lines)
-
-    status = report.get("status", "finished")
-    run_id = report.get("id", "")
-    return f"Run {status}. Use /runs for details. run={run_id}"
-
-
-def tui_rule(title: str, width: int) -> str:
-    text = title[:width]
-    remaining = max(0, width - len(text))
-    left = remaining // 2
-    right = remaining - left
-    return "=" * left + text + "=" * right
-
-
-def wrap_plain(text: str, *, width: int) -> str:
-    return "\n".join(wrap_chat_text(text, width=width).splitlines())
-
-
-def truncate_line(text: str, width: int) -> str:
-    value = str(text)
-    if display_width(value) <= width:
-        return value
-    if width <= 3:
-        return "." * max(0, width)
-    result = ""
-    used = 0
-    for char in value:
-        char_width = char_display_width(char)
-        if used + char_width > width - 3:
-            break
-        result += char
-        used += char_width
-    return result + "..."
-
-
-def pad_display(text: str, width: int) -> str:
-    value = truncate_line(text, width)
-    return value + " " * max(0, width - display_width(value))
-
-
-def display_width(text: str) -> int:
-    return sum(char_display_width(char) for char in str(text))
-
-
-def char_display_width(char: str) -> int:
-    if unicodedata.combining(char):
-        return 0
-    return 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
-
-
 def print_chat_turn_start(request: str, args: argparse.Namespace) -> None:
     preview = request if len(request) <= chat_width() - 14 else request[: chat_width() - 17] + "..."
     print("")
     print(chat_rule("New Task"))
-    print(chat_color(f"you      {preview}", "bold"))
-    print(chat_color("agent    building minimal context -> planning -> running bounded loop", "dim"))
-    print(chat_color(f"runtime  provider={args.provider} primary={primary_model(args)} route={args.model_routing} max_steps={args.max_steps}", "dim"), flush=True)
+    chat_panel(
+        "Packet Plan",
+        [
+            ("task", preview),
+            ("flow", "minimal context -> model action -> policy tool -> trace"),
+            ("runtime", f"provider={args.provider} primary={primary_model(args)} route={args.model_routing} max_steps={args.max_steps}"),
+        ],
+    )
+    print(chat_color("status  assembling context packet", "dim"), flush=True)
 
 
 def print_chat_report(report: dict[str, Any]) -> None:
@@ -2308,13 +1974,14 @@ def print_chat_report(report: dict[str, Any]) -> None:
         [
             ("status", str(report["status"])),
             ("steps", f"{len(report['steps'])}/{report['max_steps']}"),
-            ("tokens", str(report["totals"]["total_tokens"])),
+            ("tokens", f"{report['totals']['total_tokens']} {token_meter_text(int(report['totals']['total_tokens']), report)}"),
             ("agent_run:", str(report["id"])),
         ],
     )
     if actions:
-        print(chat_color("Actions", "cyan"))
-        print(wrap_chat_text(" -> ".join(actions), indent="  "))
+        print(chat_color("Timeline", "cyan", bold=True))
+        for line in format_agent_timeline(report):
+            print("  " + line)
     print(chat_color("Models", "cyan"))
     print(wrap_chat_text(model_routing_summary(report), indent="  "))
     review_text = aux_review_summary(report)
@@ -2332,36 +1999,8 @@ def print_chat_report(report: dict[str, Any]) -> None:
 
 
 def print_chat_help() -> None:
-    chat_panel(
-        "Command Palette",
-        [
-            ("/help", "show this command palette"),
-            ("/status", "show workspace and runtime status"),
-            ("/model", "show primary and auxiliary model roles"),
-            ("/config", "show setup and environment guidance"),
-            ("/extensions", "show MCP servers and registered skills"),
-            ("/mcp", "show MCP server/tool availability"),
-            ("/mcp refresh <name>", "refresh a configured MCP server"),
-            ("/mcp call <server> <tool>", "call a discovered MCP tool"),
-            ("/skills", "show registered skills"),
-            ("/skills recommend <task>", "rank useful skills for a task"),
-            ("/skills install <id>", "install a packaged marketplace skill"),
-            ("/compact", "show the compact task brief used for resume context"),
-            ("/commands", "list saved project and user slash commands"),
-            ("/paste", "enter a multi-line task; finish with /end"),
-            ("@query", "search workspace files; use @1, @2... to attach a listed match"),
-            ("@path", "mention an exact file path inside a task to attach it automatically"),
-            ("!command", "run a policy-checked command and attach its summary"),
-            ("/task", "print the current task session JSON"),
-            ("/runs", "list recent agent runs"),
-            ("/cost", "print the last agent run cost report"),
-            ("/up", "show older transcript lines in the TUI viewport"),
-            ("/down", "move the TUI viewport back toward latest messages"),
-            ("/latest", "jump the TUI viewport to the latest messages"),
-            ("/clear", "clear and redraw the session header"),
-            ("/exit", "leave the interactive session"),
-        ],
-    )
+    for title, rows in chat_help_groups():
+        chat_panel(title, rows)
     print(chat_color("Tip     Ask one concrete task at a time; Context Kernel keeps the packet lean.", "dim"))
 
 
@@ -2382,279 +2021,6 @@ def print_recent_agent_runs(workspace: Workspace, *, limit: int) -> None:
             f"tokens={report.get('totals', {}).get('total_tokens', 0):<5}  "
             f"{request}"
         )
-
-
-def load_custom_chat_commands(root: Path) -> dict[str, dict[str, str]]:
-    commands: dict[str, dict[str, str]] = {}
-    for directory, scope in custom_command_directories(root):
-        if not directory.exists():
-            continue
-        for path in sorted(directory.rglob("*.md"))[:80]:
-            try:
-                relative = path.relative_to(directory).with_suffix("").as_posix()
-                body = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError, ValueError):
-                continue
-            name = "/" + relative.strip("/")
-            if not re.fullmatch(r"/[A-Za-z0-9][A-Za-z0-9_\-/]*", name):
-                continue
-            description, prompt = parse_custom_command(body)
-            commands.setdefault(
-                name,
-                {
-                    "description": description or first_non_empty_line(prompt) or "run saved prompt",
-                    "path": str(path),
-                    "prompt": prompt,
-                    "scope": scope,
-                },
-            )
-    return commands
-
-
-def custom_command_directories(root: Path) -> list[tuple[Path, str]]:
-    return [
-        (root / ".akernel" / "commands", "project"),
-        (Path.home() / ".akernel" / "commands", "user"),
-    ]
-
-
-def parse_custom_command(text: str) -> tuple[str, str]:
-    description = ""
-    body = text.strip()
-    if body.startswith("---"):
-        parts = body.split("---", 2)
-        if len(parts) == 3:
-            meta = parts[1]
-            body = parts[2].strip()
-            for line in meta.splitlines():
-                key, _, value = line.partition(":")
-                if key.strip().casefold() == "description":
-                    description = value.strip().strip('"').strip("'")
-                    break
-    return description, body
-
-
-def first_non_empty_line(text: str) -> str:
-    for line in text.splitlines():
-        value = line.strip().lstrip("#").strip()
-        if value:
-            return value[:80]
-    return ""
-
-
-def print_custom_commands_panel(root: Path) -> None:
-    commands = load_custom_chat_commands(root)
-    if not commands:
-        chat_notice(
-            "Slash Commands",
-            "No custom commands yet. Add Markdown prompts under .akernel/commands or ~/.akernel/commands.",
-        )
-        return
-    chat_panel(
-        "Slash Commands",
-        [
-            (name, f"{spec['description']} ({spec['scope']})")
-            for name, spec in sorted(commands.items())
-        ],
-    )
-
-
-def expand_custom_chat_command(root: Path, request: str) -> str | None:
-    command, _, arguments = request.strip().partition(" ")
-    if not command.startswith("/"):
-        return None
-    spec = load_custom_chat_commands(root).get(command)
-    if not spec:
-        return None
-    prompt = spec["prompt"]
-    if not prompt:
-        return arguments.strip() or f"Run custom command {command}."
-    arguments = arguments.strip()
-    return (
-        prompt.replace("{{args}}", arguments)
-        .replace("{{arguments}}", arguments)
-        .replace("$ARGUMENTS", arguments)
-        .strip()
-    )
-
-
-IGNORED_FILE_FINDER_DIRS = {
-    ".git",
-    ".hg",
-    ".svn",
-    ".akernel",
-    ".venv",
-    "venv",
-    "node_modules",
-    "__pycache__",
-    ".pytest_cache",
-    "dist",
-    "build",
-}
-
-
-def attach_inline_file_references(
-    workspace: Workspace,
-    tasks: TaskStore,
-    task_id: str,
-    request: str,
-    pending_context: list[str],
-) -> int:
-    attached = 0
-    seen: set[str] = set()
-    for match in INLINE_FILE_REF_RE.finditer(request):
-        path = match.group(1).strip("`'\".,;:!?)]}")
-        if not path or path.isdigit() or path in seen:
-            continue
-        seen.add(path)
-        if (workspace.root / path).is_file():
-            attach_chat_file(workspace, tasks, task_id, path, pending_context)
-            attached += 1
-    return attached
-
-
-def attach_chat_file_command(
-    workspace: Workspace,
-    tasks: TaskStore,
-    task_id: str,
-    query: str,
-    pending_context: list[str],
-    state: dict[str, Any] | None = None,
-) -> None:
-    state = state if state is not None else {}
-    query = query.strip().strip('"').strip("'")
-    if query.isdigit() and state.get("file_matches"):
-        matches = list(state.get("file_matches") or [])
-        index = int(query) - 1
-        if 0 <= index < len(matches):
-            attach_chat_file(workspace, tasks, task_id, str(matches[index]), pending_context)
-            return
-        chat_notice("File Search", f"No cached match @{query}. Use @ to list files again.")
-        return
-
-    if query and (workspace.root / query).is_file():
-        attach_chat_file(workspace, tasks, task_id, query, pending_context)
-        return
-
-    matches = find_workspace_files(workspace.root, query, limit=12)
-    state["file_matches"] = matches
-    if not matches:
-        hint = "Try @readme, @pyproject, or a filename fragment."
-        chat_notice("File Search", f"No files matched `{query or '*'}`. {hint}")
-        return
-    if query and len(matches) == 1:
-        attach_chat_file(workspace, tasks, task_id, matches[0], pending_context)
-        return
-
-    print("")
-    print(chat_color("[ File Search ]", "cyan", bold=True))
-    print(wrap_chat_text("Type @1, @2, ... to attach a result, or keep typing a narrower @query.", indent="  "))
-    for index, path in enumerate(matches, start=1):
-        print(f"  @{index:<2} {path}")
-
-
-def find_workspace_files(root: Path, query: str, *, limit: int = 12, max_scan: int = 2500) -> list[str]:
-    normalized_query = query.casefold().replace("\\", "/")
-    candidates: list[tuple[int, str]] = []
-    scanned = 0
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if name not in IGNORED_FILE_FINDER_DIRS and not name.startswith(".mypy_cache")
-        ]
-        for filename in filenames:
-            scanned += 1
-            if scanned > max_scan:
-                break
-            path = Path(dirpath) / filename
-            try:
-                relative = path.relative_to(root).as_posix()
-            except ValueError:
-                continue
-            haystack = relative.casefold()
-            name = filename.casefold()
-            if normalized_query and normalized_query not in haystack:
-                continue
-            score = 0
-            if normalized_query:
-                if name == normalized_query:
-                    score -= 40
-                elif name.startswith(normalized_query):
-                    score -= 25
-                elif haystack.startswith(normalized_query):
-                    score -= 15
-                score += haystack.find(normalized_query)
-            score += relative.count("/") * 2
-            score += len(relative) // 20
-            candidates.append((score, relative))
-        if scanned > max_scan:
-            break
-    return [path for _, path in sorted(candidates, key=lambda item: (item[0], item[1]))[:limit]]
-
-
-def attach_chat_file(
-    workspace: Workspace,
-    tasks: TaskStore,
-    task_id: str,
-    path: str,
-    pending_context: list[str],
-) -> None:
-    if not path:
-        chat_notice("Attach File", "Usage: @relative/path.txt")
-        return
-    result = ToolExecutor(workspace).read_file(path)
-    tasks.attach(task_id, "tool", result["id"])
-    summary = summarize_tool_result(result)
-    tasks.step(
-        task_id,
-        f"User attached file {path}: {summary}",
-        kind="chat_file",
-        refs={"tool_traces": [result["id"]]},
-    )
-    if result["ok"] and not result["blocked"]:
-        output = result.get("output", {})
-        content = str(output.get("content", ""))
-        pending_context.append(
-            f"Attached file `{path}` ({output.get('size_chars', len(content))} chars, "
-            f"truncated={bool(output.get('truncated'))}):\n{content}"
-        )
-        chat_notice("Attached File", f"{path} is attached to the next task.")
-    else:
-        chat_notice("Attach Failed", summary)
-
-
-def run_chat_command(
-    workspace: Workspace,
-    tasks: TaskStore,
-    task_id: str,
-    command: str,
-    pending_context: list[str],
-) -> None:
-    if not command:
-        chat_notice("Command", "Usage: !python -c \"print(123)\"")
-        return
-    result = ToolExecutor(workspace).run_command(command)
-    tasks.attach(task_id, "tool", result["id"])
-    summary = summarize_tool_result(result)
-    tasks.step(
-        task_id,
-        f"User ran command `{command}`: {summary}",
-        kind="chat_command",
-        refs={"tool_traces": [result["id"]]},
-    )
-    output = result.get("output", {})
-    pending_context.append(
-        "Command result attached to the next task:\n"
-        f"command: {command}\n"
-        f"ok: {result.get('ok')}\n"
-        f"blocked: {result.get('blocked')}\n"
-        f"summary: {summary}\n"
-        f"stdout: {str(output.get('stdout', ''))[:1200]}\n"
-        f"stderr: {str(output.get('stderr', ''))[:800]}"
-    )
-    title = "Command Complete" if result.get("ok") else "Command Blocked" if result.get("blocked") else "Command Failed"
-    chat_notice(title, summary)
 
 
 def read_paste_block() -> str:
@@ -2688,7 +2054,7 @@ def print_task_brief_panel(tasks: TaskStore, task_id: str) -> None:
         ("task", brief["task"]["id"]),
         ("title", brief["task"]["title"]),
         ("status", brief["task"]["status"]),
-        ("estimated_tokens", str(brief.get("estimated_tokens", 0))),
+        ("budget", f"{brief.get('estimated_tokens', 0)} tokens {ascii_meter(int(brief.get('estimated_tokens', 0) or 0), 1200, 16)}"),
         ("recent_steps", str(len(brief.get("recent_steps", [])))),
         ("run_traces", str(len(brief.get("linked_run_traces", [])))),
         ("tool_traces", str(len(brief.get("linked_tool_traces", [])))),
@@ -2709,8 +2075,8 @@ def print_model_panel(args: argparse.Namespace) -> None:
             ("provider", args.provider),
             ("primary", primary_model(args)),
             ("auxiliary", auxiliary_model(args)),
-            ("routing", "auto can delegate low/medium first-step planning to auxiliary"),
-            ("review_role", "auxiliary reviews primary-model steps when enabled"),
+            ("routing", "primary by default; auto can delegate low/medium first-step planning"),
+            ("review_role", "auxiliary can review primary-model steps before tool action"),
             ("mode", args.model_routing),
             ("review", args.aux_review),
             ("base_url", args.base_url or env_value("AKERNEL_OPENAI_BASE_URL") or "default"),
@@ -2719,26 +2085,32 @@ def print_model_panel(args: argparse.Namespace) -> None:
 
 
 def print_status_panel(workspace: Workspace, task_id: str, args: argparse.Namespace) -> None:
+    summary = extension_summary(workspace)
     chat_panel(
-        "Status",
+        "Status Runway",
         [
             ("cwd", compact_path(Path.cwd())),
             ("workspace", compact_path(workspace.root)),
             ("task", task_id),
             ("provider", args.provider),
-            ("primary", primary_model(args)),
-            ("auxiliary", auxiliary_model(args)),
-            ("routing", args.model_routing),
-            ("review", args.aux_review),
             ("profile", args.profile),
             ("state", workspace_state_summary(workspace)),
+        ],
+    )
+    chat_panel(
+        "Runtime Deck",
+        [
+            ("models", f"primary {primary_model(args)} | aux {auxiliary_model(args)}"),
+            ("route", f"{args.model_routing} | review {args.aux_review}"),
+            ("extensions", f"{summary['skills']} skills | {summary['mcp_enabled']}/{summary['mcp_total']} mcp | {summary['mcp_tools']} tools"),
+            ("next", "attach context with @, inspect /compact, or run a concrete task"),
         ],
     )
 
 
 def print_config_panel() -> None:
     chat_panel(
-        "Config",
+        "Config Runway",
         [
             ("setup", "akernel setup"),
             ("env", "AKERNEL_OPENAI_API_KEY, AKERNEL_OPENAI_BASE_URL"),
@@ -2749,265 +2121,9 @@ def print_config_panel() -> None:
     )
 
 
-def print_extensions_panel(workspace: Workspace) -> None:
-    summary = extension_summary(workspace)
-    chat_panel(
-        "Extensions",
-        [
-            ("skills", f"{summary['skills']} registered"),
-            ("mcp", f"{summary['mcp_enabled']}/{summary['mcp_total']} enabled servers"),
-            ("mcp_tools", f"{summary['mcp_tools']} discovered tools"),
-            ("manage", "akernel skill list | akernel mcp list | akernel mcp refresh <name>"),
-        ],
-    )
-    print_skills_panel(workspace, limit=6)
-    print_mcp_panel(workspace, limit=6)
-
-
-def print_skills_panel(workspace: Workspace, *, limit: int = 10) -> None:
-    skills = safe_registered_skills(workspace)
-    if not skills:
-        chat_notice("Skills", "No skills registered yet. Use `akernel skill register <skill.json>` or `akernel skill market-list`.")
-        return
-    print("")
-    print(chat_color("[ Skills ]", "cyan", bold=True))
-    for skill in skills[:limit]:
-        line = f"  {skill.id:<22} {skill.name} - {skill.summary}"
-        print(truncate_line(line, chat_width()))
-    if len(skills) > limit:
-        print(chat_color(f"  ... +{len(skills) - limit} more", "dim"))
-
-
-def print_mcp_panel(workspace: Workspace, *, limit: int = 10) -> None:
-    servers = safe_mcp_servers(workspace)
-    if not servers:
-        chat_notice("MCP", "No MCP servers configured. Add one with `akernel mcp add <name> --command ...`, then run `akernel mcp refresh <name>`.")
-        return
-    print("")
-    print(chat_color("[ MCP ]", "cyan", bold=True))
-    for server in servers[:limit]:
-        enabled = "enabled" if server.get("enabled", True) else "disabled"
-        tools = server.get("tools", [])
-        tool_names = ", ".join(str(tool.get("name", "")) for tool in tools[:4] if isinstance(tool, dict) and tool.get("name"))
-        suffix = f" tools={len(tools)}"
-        if tool_names:
-            suffix += f" [{tool_names}]"
-        elif server.get("enabled", True):
-            suffix += " [run refresh]"
-        print(truncate_line(f"  {server.get('name', ''):<18} {enabled:<8} root={server.get('command_root', '')}{suffix}", chat_width()))
-    if len(servers) > limit:
-        print(chat_color(f"  ... +{len(servers) - limit} more", "dim"))
-
-
-def handle_chat_mcp_command(workspace: Workspace, request: str) -> None:
-    try:
-        tokens = shlex.split(request, posix=True)
-    except ValueError as exc:
-        chat_notice("MCP", f"Could not parse command: {exc}")
-        return
-    if len(tokens) <= 1:
-        print_mcp_panel(workspace)
-        print(chat_color("  actions: /mcp refresh <name> | /mcp call <server> <tool> --args \"{...}\" | /mcp enable <name> | /mcp disable <name>", "dim"))
-        return
-    command = tokens[1].casefold()
-    if command in {"list", "ls"}:
-        print_mcp_panel(workspace)
-        return
-    if command == "refresh":
-        if len(tokens) < 3:
-            chat_notice("MCP", "Usage: /mcp refresh <name>")
-            return
-        timeout = parse_option_float(tokens[3:], "--timeout", default=10.0)
-        server = refresh_mcp_server_tools(workspace, tokens[2], timeout_seconds=timeout)
-        print(f"refreshed MCP server: {server['name']}")
-        print(f"tools: {len(server.get('tools', []))}")
-        for tool in server.get("tools", [])[:12]:
-            print(f"  {tool['name']}\t{tool.get('description', '')}")
-        return
-    if command in {"enable", "disable"}:
-        if len(tokens) < 3:
-            chat_notice("MCP", f"Usage: /mcp {command} <name>")
-            return
-        server = set_mcp_server_enabled(workspace, tokens[2], command == "enable")
-        state = "enabled" if server.get("enabled", True) else "disabled"
-        print(f"{state} MCP server: {server['name']}")
-        return
-    if command == "call":
-        if len(tokens) < 4:
-            chat_notice("MCP", "Usage: /mcp call <server> <tool> --args \"{...}\"")
-            return
-        args_text = parse_option_value(tokens[4:], "--args", default="{}")
-        timeout = parse_option_float(tokens[4:], "--timeout", default=10.0)
-        allow_unknown = "--allow-unknown" in [token.casefold() for token in tokens[4:]]
-        arguments = parse_json_object(strip_wrapping_quotes(args_text), label="MCP tool arguments")
-        call = call_mcp_tool(
-            workspace,
-            tokens[2],
-            tokens[3],
-            arguments,
-            timeout_seconds=timeout,
-            allow_unknown=allow_unknown,
-        )
-        trace = ToolExecutor(workspace).record_external_tool(
-            "mcp_call",
-            subject=f"{tokens[2]}.{tokens[3]}",
-            output=call,
-            ok=True,
-        )
-        print(f"mcp call: {tokens[2]}.{tokens[3]}")
-        print(f"trace: {trace['id']}")
-        print_mcp_call_result(call["result"])
-        return
-    chat_notice("MCP", f"Unknown MCP chat command: {command}. Try /mcp, /mcp refresh <name>, or /mcp call <server> <tool>.")
-
-
-def handle_chat_skills_command(workspace: Workspace, request: str) -> None:
-    try:
-        tokens = shlex.split(request, posix=True)
-    except ValueError as exc:
-        chat_notice("Skills", f"Could not parse command: {exc}")
-        return
-    if len(tokens) <= 1 or tokens[1].casefold() in {"list", "ls"}:
-        print_skills_panel(workspace)
-        print(chat_color("  actions: /skills show <id> | /skills inspect <id> | /skills recommend <task> | /skills install <id>", "dim"))
-        return
-    command = tokens[1].casefold()
-    registry = SkillRegistry(workspace)
-    if command == "show":
-        if len(tokens) < 3:
-            chat_notice("Skills", "Usage: /skills show <id> [--level l0|l1|l2|l3]")
-            return
-        level = parse_option_value(tokens[3:], "--level", default="l1")
-        print_json(registry.get(tokens[2]).render_level(level))
-        return
-    if command == "inspect":
-        if len(tokens) < 3:
-            chat_notice("Skills", "Usage: /skills inspect <id> [--budget 300]")
-            return
-        budget = int(parse_option_float(tokens[3:], "--budget", default=300))
-        print_json(inspect_skill(registry.get(tokens[2]), budget))
-        return
-    if command == "recommend":
-        query = request.partition("recommend")[2].strip()
-        if not query:
-            chat_notice("Skills", "Usage: /skills recommend <task>")
-            return
-        selected = registry.select(query, budget_tokens=900, limit=5)
-        if not selected:
-            print("no matching skills")
-            return
-        print("recommended skills:")
-        for item in selected:
-            print(f"  {item.skill.id}\tlevel={item.level}\tscore={item.score}\t{item.reason}")
-        return
-    if command in {"market-list", "market"}:
-        skills = list_marketplace_skills()
-        if not skills:
-            print("no marketplace skills")
-            return
-        print("marketplace skills:")
-        for skill in skills[:12]:
-            print(f"  {skill.get('id')}\t{skill.get('name')}\t{skill.get('summary', '')}")
-        return
-    if command in {"install", "market-install"}:
-        if len(tokens) < 3:
-            chat_notice("Skills", "Usage: /skills install <marketplace-skill-id>")
-            return
-        result = install_marketplace_skill(workspace, tokens[2])
-        print(f"installed marketplace skill: {result['id']} ({result['name']})")
-        print(f"version: {result.get('version')}")
-        print(f"compatibility: {'ok' if result.get('compatibility', {}).get('ok') else 'warning'}")
-        return
-    chat_notice("Skills", f"Unknown skills chat command: {command}. Try /skills, /skills recommend <task>, or /skills install <id>.")
-
-
-def parse_option_value(tokens: list[str], name: str, *, default: str) -> str:
-    for index, token in enumerate(tokens):
-        if token == name and index + 1 < len(tokens):
-            return tokens[index + 1]
-        if token.startswith(name + "="):
-            return token.split("=", 1)[1]
-    return default
-
-
-def parse_option_float(tokens: list[str], name: str, *, default: float) -> float:
-    value = parse_option_value(tokens, name, default=str(default))
-    try:
-        return float(strip_wrapping_quotes(value))
-    except ValueError:
-        return default
-
-
-def strip_wrapping_quotes(value: str) -> str:
-    text = value.strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
-        return text[1:-1]
-    return text
-
-
-def extension_summary(workspace: Workspace) -> dict[str, int]:
-    servers = safe_mcp_servers(workspace)
-    return {
-        "skills": len(safe_registered_skills(workspace)),
-        "mcp_total": len(servers),
-        "mcp_enabled": sum(1 for server in servers if server.get("enabled", True)),
-        "mcp_tools": sum(len(server.get("tools", [])) for server in servers if server.get("enabled", True)),
-    }
-
-
-def safe_registered_skills(workspace: Workspace) -> list[Any]:
-    try:
-        return SkillRegistry(workspace).all()
-    except Exception:
-        return []
-
-
-def safe_mcp_servers(workspace: Workspace) -> list[dict[str, Any]]:
-    try:
-        return list_mcp_servers(workspace, include_disabled=True)
-    except Exception:
-        return []
-
-
 def chat_prompt(args: argparse.Namespace) -> str:
     model = primary_model(args)
     return "\n" + chat_color("akernel", "cyan", bold=True) + chat_color(f" [{model}]", "dim") + "> "
-
-
-def primary_model(args: argparse.Namespace) -> str:
-    return args.model or env_value("AKERNEL_OPENAI_MODEL") or DEFAULT_PRIMARY_MODEL
-
-
-def auxiliary_model(args: argparse.Namespace) -> str:
-    return getattr(args, "aux_model", None) or env_value("AKERNEL_OPENAI_AUX_MODEL") or DEFAULT_AUXILIARY_MODEL
-
-
-def model_routing_summary(report: dict[str, Any]) -> str:
-    parts = []
-    for step in report.get("steps", []):
-        role = step.get("model_role") or "primary"
-        model = step.get("model") or "default"
-        reason = step.get("routing_reason") or ""
-        label = f"step {step.get('index')}: {role} ({model})"
-        parts.append(f"{label} - {reason}" if reason else label)
-    if not parts:
-        routing = report.get("model_routing", {})
-        return f"{routing.get('mode', 'auto')}: no provider step was executed"
-    return "; ".join(parts)
-
-
-def aux_review_summary(report: dict[str, Any]) -> str:
-    parts = []
-    for step in report.get("steps", []):
-        review = step.get("aux_review", {})
-        if not isinstance(review, dict) or not review.get("enabled"):
-            continue
-        parts.append(
-            f"step {step.get('index')}: {review.get('risk')} risk, "
-            f"{review.get('recommendation')} via {review.get('model')} "
-            f"({review.get('tokens', {}).get('total_tokens', 0)}t)"
-        )
-    return "; ".join(parts)
 
 
 def clear_chat_screen() -> None:
@@ -3015,109 +2131,6 @@ def clear_chat_screen() -> None:
         print("\033[2J\033[H", end="")
     else:
         print("\n" * 30)
-
-
-def chat_width() -> int:
-    return max(88, min(shutil.get_terminal_size((112, 20)).columns, 132))
-
-
-def chat_color(text: str, color: str, *, bold: bool = False) -> str:
-    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
-        return text
-    codes = {
-        "cyan": "36",
-        "green": "32",
-        "yellow": "33",
-        "red": "31",
-        "dim": "2",
-        "bold": "1",
-    }
-    selected: list[str] = []
-    if bold:
-        selected.append("1")
-    selected.append(codes.get(color, "0"))
-    return f"\033[{';'.join(selected)}m{text}\033[0m"
-
-
-def chat_banner(title: str, subtitle: str) -> None:
-    width = chat_width()
-    print("")
-    print(chat_color("=" * width, "cyan", bold=True))
-    print(chat_color(title, "cyan", bold=True))
-    print(chat_color(subtitle, "dim"))
-    print(chat_color("=" * width, "cyan", bold=True))
-
-
-def chat_rule(title: str) -> str:
-    width = chat_width()
-    label = f" {title} "
-    remaining = max(0, width - len(label))
-    left = remaining // 2
-    right = remaining - left
-    return chat_color("-" * left + label + "-" * right, "cyan")
-
-
-def chat_panel(title: str, rows: list[tuple[str, str]]) -> None:
-    width = chat_width()
-    print("")
-    print(chat_color(f"[ {title} ]", "cyan", bold=True))
-    key_width = max(len(key) for key, _ in rows)
-    for key, value in rows:
-        prefix = f"  {key:<{key_width}}  "
-        wrapped = wrap_chat_text(str(value), indent=" " * len(prefix), width=width)
-        lines = wrapped.splitlines() or [""]
-        print(chat_color(prefix, "dim") + lines[0].lstrip())
-        for line in lines[1:]:
-            print(line)
-
-
-def chat_notice(title: str, message: str) -> None:
-    print("")
-    print(chat_color(f"! {title}", "yellow", bold=True))
-    print(wrap_chat_text(message, indent="  "))
-
-
-def wrap_chat_text(text: str, *, indent: str = "", width: int | None = None) -> str:
-    width = width or chat_width()
-    usable = max(30, width - len(indent))
-    lines: list[str] = []
-    for paragraph in text.splitlines() or [""]:
-        words = paragraph.split()
-        if not words:
-            lines.append(indent.rstrip())
-            continue
-        current = words[0]
-        for word in words[1:]:
-            if len(current) + 1 + len(word) > usable:
-                lines.append(indent + current)
-                current = word
-            else:
-                current += " " + word
-        lines.append(indent + current)
-    return "\n".join(lines)
-
-
-def compact_path(path: Path) -> str:
-    text = str(path)
-    width = chat_width() - 18
-    if len(text) <= width:
-        return text
-    return "..." + text[-max(12, width - 3) :]
-
-
-def workspace_state_summary(workspace: Workspace) -> str:
-    skills = len(list(workspace.skills_dir.glob("*.json"))) if workspace.skills_dir.exists() else 0
-    runs = len(list(workspace.agent_runs_dir.glob("*.json"))) if workspace.agent_runs_dir.exists() else 0
-    project = 1 if workspace.project_file.exists() else 0
-    extensions = extension_summary(workspace)
-    try:
-        memories = len(MemoryStore(workspace).all())
-    except Exception:
-        memories = 0
-    return (
-        f"{skills} skills, {extensions['mcp_enabled']}/{extensions['mcp_total']} mcp, "
-        f"{memories} memories, {runs} runs, {project} project profiles"
-    )
 
 
 def print_project_scan_summary(profile: dict[str, Any], *, config_updated: bool) -> None:
@@ -3136,55 +2149,6 @@ def print_project_scan_summary(profile: dict[str, Any], *, config_updated: bool)
     print(f"instructions: {', '.join(item.get('path', '') for item in instructions[:4]) if instructions else 'none'}")
     print(f"command_roots: {', '.join(profile.get('command_roots', [])[:16])}")
     print(f"config_updated: {config_updated}")
-
-
-def print_agent_report(report: dict[str, Any]) -> None:
-    print(f"agent_run: {report['id']}")
-    print(f"task: {report['task_id']}")
-    print(f"status: {report['status']}")
-    print(f"steps: {len(report['steps'])}/{report['max_steps']}")
-    print(f"tokens: total={report['totals']['total_tokens']} input={report['totals']['input_tokens']} output={report['totals']['output_tokens']}")
-    routing = report.get("model_routing", {})
-    if routing:
-        print(
-            "model_routing: "
-            f"mode={routing.get('mode')} "
-            f"primary={routing.get('primary_model')} "
-            f"auxiliary={routing.get('auxiliary_model')} "
-            f"review={routing.get('aux_review')}"
-        )
-    if report.get("state", {}).get("enabled"):
-        print(f"state: wrote {report['state']['written_count']} memory record(s)")
-    print_agent_diagnostic(report.get("diagnostic"))
-    for step in report["steps"]:
-        trace = step["trace_id"] or "none"
-        tokens = step.get("tokens", {}).get("total_tokens", 0)
-        action = (step.get("action") or {}).get("action", "none")
-        model_part = f" model={step.get('model_role')}:{step.get('model') or 'default'}" if step.get("model_role") else ""
-        review = step.get("aux_review", {})
-        review_part = ""
-        if isinstance(review, dict) and review.get("enabled"):
-            review_part = f" review={review.get('risk')}:{review.get('recommendation')}"
-        tool = step.get("tool", {})
-        tool_part = f" tool={tool.get('name')}:{tool.get('id')}" if tool else ""
-        print(f"- step {step['index']}: {step['status']} action={action} trace={trace} tokens={tokens}{model_part}{review_part}{tool_part}")
-        print_agent_diagnostic(step.get("diagnostic"), prefix="  ")
-    if report.get("final_response"):
-        print("")
-        print(report["final_response"])
-
-
-def print_agent_diagnostic(diagnostic: Any, *, prefix: str = "") -> None:
-    if not isinstance(diagnostic, dict) or not diagnostic:
-        return
-    category = diagnostic.get("category") or "unknown"
-    message = diagnostic.get("message") or ""
-    suggestion = diagnostic.get("suggestion") or ""
-    print(f"{prefix}diagnostic: {category}")
-    if message:
-        print(f"{prefix}reason: {message}")
-    if suggestion:
-        print(f"{prefix}next: {suggestion}")
 
 
 def cmd_agent_list(args: argparse.Namespace) -> None:
@@ -3378,30 +2342,6 @@ def load_batch_patch_specs(path: Path) -> list[dict[str, object]]:
     if not all(isinstance(edit, dict) for edit in edits):
         raise ValueError("batch-patch edits must be JSON objects.")
     return edits
-
-
-def parse_json_object(text: str, *, label: str) -> dict[str, Any]:
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{label} must be valid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"{label} must be a JSON object.")
-    return data
-
-
-def print_mcp_call_result(result: dict[str, Any]) -> None:
-    content = result.get("content")
-    if isinstance(content, list):
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "text":
-                print(str(item.get("text", "")))
-            else:
-                print(json.dumps(item, ensure_ascii=False))
-        return
-    print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
 
 
 def cmd_tool_delete(args: argparse.Namespace) -> None:
@@ -3959,131 +2899,6 @@ def cmd_trace_remember(args: argparse.Namespace) -> None:
     trace["state"] = result
     Workspace.write_json(path, trace)
     print(f"state: wrote {result['written_count']} memory record(s)")
-
-
-def print_policy_result(result: dict[str, Any], as_json: bool) -> None:
-    if as_json:
-        print_json(result)
-        return
-    print(f"{result['status']}: {result['kind']} {result['operation']} {result['subject']}")
-    for reason in result["reasons"]:
-        print(f"- {reason}")
-
-
-def print_tool_result(result: dict[str, Any]) -> None:
-    status = "blocked" if result["blocked"] else "ok" if result["ok"] else "failed"
-    print(f"{status}: {result['tool']} trace={result['id']}")
-    if result.get("error"):
-        print(f"error: {result['error']}")
-    print(f"policy: {result['policy']['status']}")
-
-
-def list_agent_reports(workspace: Workspace) -> list[dict[str, Any]]:
-    workspace.agent_runs_dir.mkdir(parents=True, exist_ok=True)
-    reports = [Workspace.read_json(path) for path in sorted(workspace.agent_runs_dir.glob("*.json"))]
-    return sorted(reports, key=lambda report: report.get("created_at", ""), reverse=True)
-
-
-def print_benchmark_report(report: dict[str, Any]) -> None:
-    summary = report["summary"]
-    print(f"report: {report['id']}")
-    print(f"benchmark: {report['benchmark']}")
-    print(f"fixtures: {summary['fixture_count']}")
-    print(f"tasks: {summary['task_count']}")
-    print(f"avg_savings: {summary['average_savings_percent']}%")
-    print(f"total_kernel_tokens: {summary['total_kernel_tokens']}")
-    print(f"total_baseline_tokens: {summary['total_baseline_tokens']}")
-    if summary["executed_tasks"]:
-        print(f"executed_tasks: {summary['executed_tasks']}")
-        print(f"execution_tokens: {summary['total_execution_tokens']}")
-    if summary.get("blocked_tasks"):
-        print(f"blocked_tasks: {summary['blocked_tasks']}")
-    print(f"checks: {summary['passed_checks']}/{summary['total_checks']}")
-    for fixture in report["fixtures"]:
-        fixture_summary = fixture["summary"]
-        print(
-            f"{Path(fixture['fixture']).name}\t"
-            f"tasks={fixture_summary['task_count']}\t"
-            f"avg_savings={fixture_summary['average_savings_percent']}%\t"
-            f"checks={fixture_summary['passed_checks']}/{fixture_summary['total_checks']}"
-        )
-
-
-def print_benchmark_check_summary(report: dict[str, Any]) -> None:
-    summary = report.get("summary", {})
-    print(f"current_checks: {summary.get('passed_checks', 0)}/{summary.get('total_checks', 0)}")
-
-
-def benchmark_report_ok(report: dict[str, Any]) -> bool:
-    return bool(report.get("summary", {}).get("ok", False))
-
-
-def enforce_benchmark_report_gate(report: dict[str, Any], *, label: str) -> None:
-    if benchmark_report_ok(report):
-        return
-    summary = report.get("summary", {})
-    passed = summary.get("passed_checks", 0)
-    total = summary.get("total_checks", 0)
-    raise RuntimeError(f"{label} current benchmark checks failed: {passed}/{total}")
-
-
-def print_benchmark_diff(diff: dict[str, Any]) -> None:
-    summary = diff["summary_delta"]
-    print(f"before: {diff['before']['id']}")
-    print(f"after: {diff['after']['id']}")
-    print(f"fixtures_delta: {summary['fixtures']}")
-    print(f"tasks_delta: {summary['tasks']}")
-    print(f"kernel_tokens_delta: {summary['kernel_tokens']}")
-    print(f"baseline_tokens_delta: {summary['baseline_tokens']}")
-    print(f"savings_tokens_delta: {summary['savings_tokens']}")
-    print(f"savings_percent_delta: {summary['savings_percent']}")
-    print(f"checks_delta: {summary['passed_checks']}/{summary['total_checks']}")
-    print(f"execution_tokens_delta: {summary['execution_tokens']}")
-    print(f"regressions: {len(diff['regressions'])}")
-    cost_diff = diff.get("cost_diff", {})
-    if cost_diff:
-        hotspot = cost_diff.get("hotspot_change", {})
-        weakest = cost_diff.get("weakest_savings_change", {})
-        print(f"cost_regressions: {len(diff.get('cost_regressions', []))}")
-        print(
-            f"hotspot_delta: {hotspot.get('before_scope', '')} -> {hotspot.get('after_scope', '')} "
-            f"({hotspot.get('metric_delta', 0)})"
-        )
-        print(
-            f"weakest_savings_delta: {weakest.get('before_scope', '')} -> {weakest.get('after_scope', '')} "
-            f"({weakest.get('metric_delta', 0)})"
-        )
-    for fixture in diff["fixtures"]:
-        if fixture["status"] != "changed":
-            print(f"{fixture['fixture']}\t{fixture['status']}")
-            continue
-        fixture_summary = fixture["summary_delta"]
-        print(
-            f"{fixture['fixture']}\t"
-            f"kernel_delta={fixture_summary['kernel_tokens']}\t"
-            f"savings_delta={fixture_summary['savings_percent']}%\t"
-            f"checks_delta={fixture_summary['passed_checks']}/{fixture_summary['total_checks']}\t"
-            f"regressions={len(fixture['regressions'])}"
-        )
-
-
-def enforce_regression_gate(diff: dict[str, Any], *, enabled: bool, label: str) -> None:
-    if not enabled or diff.get("ok", True):
-        return
-    reasons: list[str] = []
-    regressions = diff.get("regressions", [])
-    cost_regressions = diff.get("cost_regressions", [])
-    if regressions:
-        reasons.append(f"{len(regressions)} behavior regression(s)")
-    if cost_regressions:
-        reasons.append(f"{len(cost_regressions)} cost regression(s)")
-    if not reasons:
-        reasons.append("regressions detected")
-    raise RuntimeError(f"{label} found regressions: {', '.join(reasons)}")
-
-
-def print_json(data: dict[str, Any]) -> None:
-    print(json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True))
 
 
 if __name__ == "__main__":

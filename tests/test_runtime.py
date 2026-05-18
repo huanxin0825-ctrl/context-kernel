@@ -14,17 +14,18 @@ from unittest.mock import patch
 from context_kernel.agent_reports import build_agent_cost_report, render_agent_cost_report
 from context_kernel.benchmarks import BenchmarkRunner, render_benchmark_evidence_markdown, render_benchmark_markdown
 from context_kernel.budget import allocate_budget
+from context_kernel.chat_commands import expand_custom_chat_command
+from context_kernel.chat_tui import build_chat_tui_screen
+from context_kernel.chat_ui import format_tui_report
 from context_kernel.cli import (
-    build_chat_tui_screen,
     chat_completion_items,
-    expand_custom_chat_command,
-    format_tui_report,
     load_batch_patch_specs,
     main,
-    print_agent_report,
+    print_chat_report,
     run_agent_with_spinner,
     spinner_message_from_event,
 )
+from context_kernel.cli_reports import print_agent_report
 from context_kernel.context import ContextBuilder
 from context_kernel.evals import EvalRunner
 from context_kernel.global_memory import pull_global_memories, push_global_memories
@@ -1548,7 +1549,7 @@ class RuntimeTests(unittest.TestCase):
             workspace = Workspace(Path(tmp))
             workspace.init()
 
-            with patch("builtins.input", side_effect=["/status", "/model", "/config", "Continue the runtime work", "/cost", "/exit"]):
+            with patch("builtins.input", side_effect=["/help", "/status", "/model", "/config", "Continue the runtime work", "/cost", "/exit"]):
                 with patch("sys.stdout", new=io.StringIO()) as stdout:
                     main(
                         [
@@ -1571,11 +1572,17 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(reports), 1)
             self.assertEqual(len(tasks), 1)
             self.assertIn("Context Kernel Agent", output)
+            self.assertIn("Context Kernel Agent Cockpit", output)
+            self.assertIn("Launch Paths", output)
+            self.assertIn("Command Palette - Context", output)
+            self.assertIn("Status Runway", output)
+            self.assertIn("Runtime Deck", output)
             self.assertIn("Model Roles", output)
             self.assertIn("auxiliary", output)
             self.assertIn("Models", output)
             self.assertIn("AKERNEL_OPENAI_AUX_MODEL", output)
             self.assertIn("agent_run:", output)
+            self.assertIn("Timeline", output)
             self.assertIn("Mock agent response", output)
             self.assertIn("contacting primary model", output)
             self.assertIn("route=primary", output)
@@ -1777,7 +1784,14 @@ class RuntimeTests(unittest.TestCase):
                 "id": "run123",
                 "status": "responded",
                 "max_steps": 2,
-                "steps": [{"action": {"action": "respond"}}],
+                "steps": [
+                    {
+                        "index": 1,
+                        "action": {"action": "respond"},
+                        "plan": {"budget": {"total": 2400}},
+                        "tokens": {"total_tokens": 42},
+                    }
+                ],
                 "totals": {"total_tokens": 42},
                 "final_response": "ready",
             }
@@ -1794,9 +1808,45 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertIn("AKERNEL // READY", screen)
             self.assertIn("provider  mock", screen)
+            self.assertIn("Mission", screen)
+            self.assertIn("Flow", screen)
             self.assertIn("Last Run", screen)
+            self.assertIn("Timeline", screen)
             self.assertIn("actions   respond", screen)
+            self.assertIn("meter", screen)
+            self.assertIn("42/2400", screen)
             self.assertIn("/extensions", screen)
+
+    def test_chat_report_meter_uses_report_budget(self) -> None:
+        report = {
+            "id": "run123",
+            "status": "responded",
+            "max_steps": 2,
+            "steps": [
+                {
+                    "index": 1,
+                    "status": "responded",
+                    "trace_id": "trace123",
+                    "model_role": "primary",
+                    "action": {"action": "respond"},
+                    "plan": {"budget": {"total": 2400}},
+                    "tokens": {"total_tokens": 600},
+                }
+            ],
+            "totals": {"total_tokens": 600},
+            "model_routing": {"mode": "primary"},
+            "final_response": "ready",
+            "state": {"enabled": False},
+        }
+
+        with patch("sys.stdout", new=io.StringIO()) as stdout:
+            print_chat_report(report)
+
+        output = stdout.getvalue()
+
+        self.assertIn("Timeline", output)
+        self.assertIn("600", output)
+        self.assertIn("[####..............]", output)
 
     def test_tui_chat_runs_agent_loop_after_user_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2016,6 +2066,9 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertIn("AKERNEL // READY", screen)
             self.assertIn("/compact", screen)
+            self.assertIn("small context, visible actions", screen)
+            self.assertIn("Ready Queue", screen)
+            self.assertIn("plan -> action -> trace", screen)
             self.assertIn("Task", screen)
             self.assertIn("plan", screen)
             self.assertIn("active", screen)

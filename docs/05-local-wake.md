@@ -45,14 +45,14 @@ If your machine already allows local PowerShell scripts, you can still call `.\s
 
 ## Interactive Chat
 
-After waking the project and initializing a workspace, start the Claude Code-style CLI loop with:
+After waking the project and initializing a workspace, start the interactive agent cockpit with:
 
 ```powershell
 akernel
 akernel chat
 ```
 
-Type a task and press Enter. Use `/cost` to inspect the last run's token pressure, `/task` to print the current task session, and `/exit` to leave.
+Type a task and press Enter. Use `/status` for the workspace runway, `/extensions` for MCP and skill availability, `/compact` for the task brief, `/cost` to inspect the last run's token pressure, `/task` to print the current task session, and `/exit` to leave.
 
 ## Check Configuration
 
