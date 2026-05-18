@@ -1,73 +1,139 @@
 # Context Kernel
 
-Context Kernel is a CLI-first agent runtime for reducing prompt bloat, memory drift, and unnecessary token spending.
+[![CI](https://github.com/huanxin0825-ctrl/context-akernel/actions/workflows/ci.yml/badge.svg)](https://github.com/huanxin0825-ctrl/context-akernel/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/akernel-runtime.svg)](https://pypi.org/project/akernel-runtime/)
+[![npm](https://img.shields.io/npm/v/@context-akernel/akernel.svg)](https://www.npmjs.com/package/@context-akernel/akernel)
+[![License](https://img.shields.io/github/license/huanxin0825-ctrl/context-akernel.svg)](LICENSE)
 
-Most agent systems treat the prompt as the runtime. Context Kernel treats the prompt as a small working set assembled from structured state, scoped skill contracts, explicit policy checks, and measurable token budgets.
+**Context Kernel is a context-native agent runtime for building cheaper, sharper, and more controllable AI agents.**
 
-The project is currently an alpha CLI release. It is ready for local experimentation, benchmark-driven iteration, and early contributor feedback.
+Most agent tools still treat the prompt as the runtime: put the system rules, memory, skills, tool manuals, safety policy, chat history, and task state into one huge message, then ask the model to sort it out. That works, but it gets expensive, noisy, and fragile as the agent grows.
+
+Context Kernel takes a different position:
+
+> The prompt should be a small working set, not a warehouse.
+
+`akernel` assembles only the context needed for the current step from structured memory, scoped skill contracts, project profiles, MCP/tool summaries, policy checks, and token budgets. Every inclusion is explainable. Every run is traced. Every token-saving claim can be benchmarked.
+
+The project is currently an alpha CLI release, but the core idea is already usable: a local agent shell with OpenAI-compatible models, primary/auxiliary model roles, policy-gated tools, MCP and skill support, structured memory, benchmark evidence, and release-ready PyPI/npm distribution.
+
+## Why Star This Project?
+
+- **It attacks the real bottleneck under agent systems:** context explosion, not just UI polish.
+- **It makes token usage auditable:** budgets, traces, cost reports, eval diffs, and benchmark gates are first-class runtime objects.
+- **It keeps memory out of the prompt by default:** memory is typed, searchable state, not an endlessly compressed transcript.
+- **It treats skills as contracts:** load the minimum useful skill layer instead of dumping full manuals into every call.
+- **It is provider-flexible:** any OpenAI-compatible `/v1` endpoint can be used through project-local configuration.
+- **It is built for serious local work:** file edits, safe commands, MCP calls, task checkpoints, and traceable recovery are part of the CLI loop.
+
+If you believe future agents need operating-system-like runtime layers instead of ever-larger prompts, this project is exploring that path.
+
+## The Problem
+
+Modern agent workflows often become expensive for reasons that are hard to see:
+
+- Large skill packs are loaded even when a task is simple.
+- Long conversation history is repeatedly compressed, replayed, and reinterpreted.
+- Memory is mixed with chat transcript instead of stored as typed state.
+- Tool instructions and safety rules are duplicated across every model call.
+- Agents spend expensive model tokens rediscovering project structure.
+- Token regressions are noticed only after costs have already climbed.
+
+The result is a narrowing loop: the more capable an agent becomes, the more scaffolding it carries, and the more context is spent before the model even starts reasoning.
+
+Context Kernel moves those responsibilities into a runtime layer that can be inspected, tested, versioned, and improved.
+
+## What Makes It Different
+
+Context Kernel is not just another chat wrapper. It is a runtime architecture for context discipline.
+
+| Common agent pattern | What usually happens | Context Kernel approach |
+| --- | --- | --- |
+| Long system prompts | Rules, tools, memory, and procedures accumulate forever. | Build a compact context packet for each step. |
+| Chat-history memory | The transcript becomes the database. | Store typed memory records with relevance gates and pruning. |
+| Full skill loading | A task gets entire skill documents even when it needs one constraint. | Use progressive skill contracts: summary, capability, constraints, then full procedure only when justified. |
+| Tool prompts | Tool rules live mostly as natural-language instructions. | Route tool use through policy-gated runtime actions and saved traces. |
+| Hidden token costs | Users discover cost regressions after the fact. | Estimate budgets before calls and generate cost reports after runs. |
+| One-shot agent loops | Failure often means vague retry prompts. | Save run traces, tool traces, recovery context, and task checkpoints. |
+| Provider lock-in | Agent behavior is tied to one hosted model surface. | Use an OpenAI-compatible provider interface with project-local `.env` config. |
+
+This does not replace strong models. It helps strong models spend less attention on boilerplate and more attention on the actual task.
+
+## Core Capabilities
+
+- **Interactive agent CLI:** run `akernel` from any directory and start a Claude Code-style task session.
+- **Primary + auxiliary model stack:** use a strong primary model for execution and an auxiliary model for cheaper planning or review.
+- **Structured memory:** typed records backed by local SQLite and recoverable traces.
+- **Progressive skill contracts:** load only the level of a skill that the task needs.
+- **MCP integration:** register, refresh, enable, disable, inspect, and call MCP tools from the CLI or chat.
+- **Policy-gated tools:** keep file and command execution behind explicit runtime checks.
+- **Multi-file coding actions:** support `read_file`, `write_file`, `patch_file`, `batch_patch`, `run_command`, `mcp_call`, and `respond`.
+- **Code materialization guard:** code-writing tasks are steered into workspace files instead of being left as chat-only code blocks.
+- **Resumable task planning:** keep long work in milestones and compact checkpoints instead of replaying the whole conversation.
+- **Token budgets and cost reports:** estimate context pressure before provider calls and report actual run costs afterward.
+- **Benchmark and eval gates:** compare behavior and token-cost regressions with reproducible local fixtures.
+- **PyPI + npm distribution:** install as `akernel-runtime` or launch through `@context-akernel/akernel`.
+
+## Benchmark Evidence
+
+Context Kernel includes deterministic benchmark fixtures that compare its compact context packet against a full-load baseline.
+
+Current reproducible scale snapshot:
+
+| Metric | Result |
+| --- | ---: |
+| Fixtures | `3` |
+| Tasks | `6` |
+| Checks | `12/12` |
+| Pass rate | `100.0%` |
+| Kernel tokens | `1235` |
+| Full-load baseline tokens | `2447` |
+| Total savings | `49.53%` |
+
+These numbers come from the local mock-provider benchmark path, so they are reproducible without external API keys. They are not a final production-wide claim; they are the proof mechanism. The goal is to make every token-saving improvement measurable rather than vibes-based.
+
+See [Benchmark Evidence](docs/10-benchmark-evidence.md) for reproduction commands and fixture details.
+
+## Architecture
+
+```text
+user request
+  -> intent router
+  -> project profile
+  -> context budgeter
+  -> memory retriever
+  -> skill contract selector
+  -> MCP/tool summary selector
+  -> provider adapter
+  -> response verifier
+  -> policy-gated tool executor
+  -> trace store
+  -> cost report
+```
+
+The guiding rule is simple: every context inclusion should be explainable before the model runs, and every optimization should have a trace or benchmark behind it.
 
 ## Naming
 
-`akernel` means **Agent Kernel**. The project name is Context Kernel because the runtime focuses on context assembly, memory, policy, skills, and token budgets; the executable is `akernel` because users invoke the agent-facing kernel directly from the terminal.
+`akernel` means **Agent Kernel**. The project name is Context Kernel because the runtime focuses on context assembly, memory, policy, skills, tools, and token budgets; the executable is `akernel` because users invoke the agent-facing kernel directly from the terminal.
 
 The shorter `kernel` command is intentionally avoided because it is too broad and already carries strong meanings in operating systems, Jupyter, and other AI projects. `akernel` keeps the kernel idea while giving the CLI a distinct, searchable identity.
 
 Package and command names map to the same idea:
 
-- GitHub repository: `context-kernel`
+- GitHub repository: `context-akernel`
 - Python distribution: `akernel-runtime`
 - Python import package: `context_kernel`
 - CLI command: `akernel`
 - npm launcher: `@context-akernel/akernel`
-
-## Why This Exists
-
-Modern agent workflows often become expensive for reasons that are hard to see:
-
-- large skill packs are loaded even when a task is simple
-- long conversation history is repeatedly compressed and replayed
-- memory is mixed with chat transcript instead of stored as typed state
-- tool instructions and safety rules are duplicated across every call
-- token regressions are noticed only after costs have already climbed
-
-Context Kernel is an experiment in moving those responsibilities into a runtime layer that can be inspected, tested, and improved.
-
-## Core Capabilities
-
-- Structured memory: typed records backed by local SQLite and JSONL state.
-- Progressive skill contracts: load only the level of a skill that the task needs.
-- Token budgets: estimate and report context pressure before provider calls.
-- Resumable task planning: keep long work in structured milestones and compact checkpoints instead of replaying chat history.
-- Bounded agent loop: support `read_file`, `write_file`, `patch_file`, `batch_patch`, `run_command`, `mcp_call`, and `respond` actions.
-- Code materialization guard: code-writing tasks are steered into file tools, and code-block-only replies are automatically saved to explicit files or safe `generated/` paths.
-- Policy-gated tools: keep file and command execution behind explicit runtime checks.
-- Traceability: write run traces, tool traces, compact agent reports, and token cost reports.
-- Regression gates: compare evals and benchmarks, including behavior and token cost regressions.
-- OpenAI-compatible provider: use project-local `.env` config with any compatible `/v1` endpoint.
-
-## Architecture
-
-```text
-request
-  -> router
-  -> budgeter
-  -> memory retriever
-  -> skill contract loader
-  -> provider adapter
-  -> verifier
-  -> state writer
-  -> trace and cost reports
-```
-
-The guiding rule is simple: every context inclusion should be explainable before the model runs, and every optimization should have a trace or benchmark behind it.
 
 ## Install
 
 ### Windows One-Command Setup
 
 ```powershell
-git clone <repository-url>
-cd context-kernel
+git clone https://github.com/huanxin0825-ctrl/context-akernel.git
+cd context-akernel
 .\setup.cmd
 akernel setup
 akernel
@@ -108,7 +174,7 @@ akernel
 
 ### npm Launcher
 
-The npm launcher is published as `@context-akernel/akernel`. It provides a Node-style entrypoint and bootstraps the Python package if it is missing:
+The npm launcher is published as `@context-akernel/akernel`. It provides a Node-style entrypoint and bootstraps or upgrades the Python package if it is missing or stale:
 
 ```powershell
 npm install -g @context-akernel/akernel
