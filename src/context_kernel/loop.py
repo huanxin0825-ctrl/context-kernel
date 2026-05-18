@@ -4,7 +4,6 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .models import utc_now
-from .planner import ExecutionPlanner
 from .runner import AgentRunner
 from .storage import Workspace
 from .tasks import TaskStore
@@ -32,6 +31,7 @@ from .loop_reports import (
     render_agent_response,
     write_agent_run_memory,
 )
+from .loop_planning import prepare_agent_step_plan
 from .loop_recovery import (
     auto_recovery_tools,
     diagnose_agent_exception,
@@ -45,6 +45,7 @@ from .loop_routing import (
     run_auxiliary_review,
     select_model_role,
 )
+from .loop_steps import agent_step_result
 
 
 def emit_agent_progress(callback: Callable[[dict[str, Any]], None] | None, event: dict[str, Any]) -> None:
@@ -507,70 +508,6 @@ def response_token_counts(trace: dict[str, Any]) -> dict[str, int]:
     }
 
 
-def prepare_agent_step_plan(
-    workspace: Workspace,
-    *,
-    request: str,
-    task_id: str,
-    budget: int | None,
-    profile: str,
-    index: int,
-    max_steps: int,
-    allow_over_budget: bool,
-    progress_callback: Callable[[dict[str, Any]], None] | None,
-) -> tuple[dict[str, Any], int | None, dict[str, Any] | None]:
-    effective_budget = budget
-    plan = ExecutionPlanner(workspace).plan(
-        request,
-        effective_budget,
-        profile,
-        task_id=task_id,
-        resume=True,
-    )
-    if plan["budget"]["over_budget"] and budget is None:
-        expanded_budget = adaptive_context_budget(plan)
-        effective_budget = expanded_budget
-        emit_agent_progress(
-            progress_callback,
-            {
-                "event": "budget_expand",
-                "step": index,
-                "max_steps": max_steps,
-                "estimated_used": plan["budget"]["estimated_used"],
-                "old_budget": plan["budget"]["total"],
-                "new_budget": expanded_budget,
-            },
-        )
-        plan = ExecutionPlanner(workspace).plan(
-            request,
-            effective_budget,
-            profile,
-            task_id=task_id,
-            resume=True,
-        )
-    if plan["budget"]["over_budget"] and not allow_over_budget:
-        diagnostic = {
-            "category": "context_budget",
-            "message": f"Context packet is over budget: used {plan['budget']['estimated_used']} / {plan['budget']['total']} tokens.",
-            "suggestion": "Use a leaner profile, run /compact, or pass a larger explicit --budget when you intentionally want a hard budget.",
-        }
-        return plan, effective_budget, agent_step_result(
-            index=index,
-            status="blocked",
-            can_continue=False,
-            plan=plan,
-            stop_reason="Agent loop stopped: context packet is over budget.",
-            reason="context packet is over budget",
-            diagnostic=diagnostic,
-            trace_id=None,
-            tool_trace_id=None,
-            action=None,
-            tokens={},
-            verifier_ok=False,
-        )
-    return plan, effective_budget, None
-
-
 def run_provider_agent_step(
     workspace: Workspace,
     tasks: TaskStore,
@@ -733,66 +670,6 @@ def parse_agent_step_action(
             contract_recovered=contract_recovered,
         )
     return action, contract_recovered, None
-
-
-def agent_step_result(
-    *,
-    index: int,
-    status: str,
-    can_continue: bool,
-    plan: dict[str, Any],
-    stop_reason: str = "",
-    reason: str | None = None,
-    diagnostic: dict[str, Any] | None = None,
-    trace_id: str | None = None,
-    model_role: str | None = None,
-    model: str | None = None,
-    routing_reason: str | None = None,
-    aux_review: dict[str, Any] | None = None,
-    tool_trace_id: str | None = None,
-    action: dict[str, Any] | None = None,
-    tool: dict[str, Any] | None = None,
-    recovery_tools: list[dict[str, Any]] | None = None,
-    tokens: dict[str, Any] | None = None,
-    verifier_ok: bool = False,
-    contract_recovered: bool | None = None,
-    final_response: str | None = None,
-    materialized_files: list[str] | None = None,
-) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "index": index,
-        "status": status,
-        "continue": can_continue,
-        "stop_reason": stop_reason,
-        "diagnostic": diagnostic,
-        "plan": summarize_plan(plan),
-        "trace_id": trace_id,
-        "tool_trace_id": tool_trace_id,
-        "action": action,
-        "tokens": tokens or {},
-        "verifier_ok": verifier_ok,
-    }
-    if reason is not None:
-        result["reason"] = reason
-    if model_role is not None:
-        result["model_role"] = model_role
-    if model is not None:
-        result["model"] = model
-    if routing_reason is not None:
-        result["routing_reason"] = routing_reason
-    if aux_review is not None:
-        result["aux_review"] = aux_review
-    if contract_recovered is not None:
-        result["contract_recovered"] = contract_recovered
-    if tool is not None:
-        result["tool"] = tool
-    if recovery_tools is not None:
-        result["recovery_tools"] = recovery_tools
-    if final_response is not None:
-        result["final_response"] = final_response
-    if materialized_files is not None:
-        result["materialized_files"] = materialized_files
-    return result
 
 
 def build_agent_packet(
@@ -978,26 +855,6 @@ def attach_trace_outputs(tasks: TaskStore, task_id: str, trace: dict[str, Any]) 
     tasks.attach(task_id, "run", trace["id"])
     for record in trace.get("state", {}).get("records", []):
         tasks.attach(task_id, "memory", record["id"])
-
-
-def summarize_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "route": plan["route"],
-        "budget": plan["budget"],
-        "task": plan["task"],
-        "selection": {
-            "memory_count": len(plan["selection"]["memory"]),
-            "skill_count": len(plan["selection"]["skills"]),
-        },
-        "warnings": plan["warnings"],
-    }
-
-
-def adaptive_context_budget(plan: dict[str, Any]) -> int:
-    used = int(plan.get("budget", {}).get("estimated_used", 0) or 0)
-    current = int(plan.get("budget", {}).get("total", 0) or 0)
-    cushion = max(800, int(used * 0.25))
-    return min(32000, max(current * 2, used + cushion, 6000))
 
 
 def is_patch_verify_request(request: str) -> bool:
