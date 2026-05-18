@@ -934,23 +934,102 @@ def build_messages(packet: dict[str, Any]) -> list[dict[str, str]]:
 
 def extract_text(response: dict[str, Any]) -> str:
     choices = response.get("choices") or []
-    if not choices:
-        return ""
-    choice = choices[0]
-    message = choice.get("message") if isinstance(choice, dict) else None
-    if isinstance(message, dict):
-        content = message.get("content", "")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    parts.append(str(item.get("text") or item.get("content") or ""))
-                else:
-                    parts.append(str(item))
-            return "".join(parts)
-    return str(choice.get("text", "")) if isinstance(choice, dict) else ""
+    if choices:
+        choice = choices[0]
+        message = choice.get("message") if isinstance(choice, dict) else None
+        if isinstance(message, dict):
+            tool_text = extract_tool_call_text(message)
+            if tool_text:
+                return tool_text
+            content = message.get("content", "")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                tool_text = extract_content_tool_use_text(content)
+                if tool_text:
+                    return tool_text
+                parts: list[str] = []
+                for item in content:
+                    if isinstance(item, dict):
+                        parts.append(str(item.get("text") or item.get("content") or ""))
+                    else:
+                        parts.append(str(item))
+                return "".join(parts)
+        return str(choice.get("text", "")) if isinstance(choice, dict) else ""
+    return extract_responses_output_text(response)
+
+
+def extract_tool_call_text(message: dict[str, Any]) -> str:
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list) and tool_calls:
+        return render_tool_call_action(tool_calls[0])
+    function_call = message.get("function_call")
+    if isinstance(function_call, dict):
+        return render_tool_call_action({"function": function_call})
+    return ""
+
+
+def extract_content_tool_use_text(content: list[Any]) -> str:
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type", "")).lower()
+        if item_type in {"tool_use", "function_call"} or ("name" in item and "input" in item):
+            return render_tool_call_action(item)
+    return ""
+
+
+def extract_responses_output_text(response: dict[str, Any]) -> str:
+    output = response.get("output")
+    if isinstance(output, list):
+        text_parts: list[str] = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type", "")).lower()
+            if item_type in {"function_call", "tool_use"}:
+                return render_tool_call_action(item)
+            if item_type in {"message", "assistant_message"} and isinstance(item.get("content"), list):
+                tool_text = extract_content_tool_use_text(item["content"])
+                if tool_text:
+                    return tool_text
+                text_parts.extend(
+                    str(part.get("text") or part.get("content") or "")
+                    for part in item["content"]
+                    if isinstance(part, dict)
+                )
+            elif item.get("text"):
+                text_parts.append(str(item["text"]))
+        if text_parts:
+            return "".join(text_parts)
+    output_text = response.get("output_text")
+    return str(output_text) if output_text is not None else ""
+
+
+def render_tool_call_action(call: dict[str, Any]) -> str:
+    function = call.get("function") if isinstance(call.get("function"), dict) else {}
+    name = function.get("name") or call.get("name") or call.get("tool") or call.get("tool_name")
+    arguments = (
+        function.get("arguments")
+        if "arguments" in function
+        else call.get("arguments", call.get("input", call.get("parameters", {})))
+    )
+    payload = parse_tool_call_arguments(arguments)
+    if name:
+        payload["action"] = name
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def parse_tool_call_arguments(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {"arguments": value}
+    return parsed if isinstance(parsed, dict) else {"arguments": parsed}
 
 
 def get_provider(name: str, model: str | None = None, base_url: str | None = None) -> ModelProvider:

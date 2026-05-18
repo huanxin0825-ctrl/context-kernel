@@ -3031,10 +3031,56 @@ class RuntimeTests(unittest.TestCase):
         packet = {"request": "test", "budget": {"estimated_used": 12}}
         messages = build_messages(packet)
         response = {"choices": [{"message": {"content": "hello"}}]}
+        openai_tool_call_response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": json.dumps({"path": "notes/openai.txt", "text": "hello"}),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        claude_tool_use_response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "I will edit the file."},
+                            {
+                                "type": "tool_use",
+                                "name": "patch_file",
+                                "input": {"path": "notes/openai.txt", "old": "hello", "new": "hi"},
+                            },
+                        ]
+                    }
+                }
+            ]
+        }
+        responses_api_function_call = {
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "run_command",
+                    "arguments": json.dumps({"command": "python -V", "timeout_seconds": 5}),
+                }
+            ]
+        }
 
         self.assertEqual(messages[0]["role"], "system")
         self.assertIn("Context packet", messages[1]["content"])
         self.assertEqual(extract_text(response), "hello")
+        self.assertEqual(parse_agent_action(extract_text(openai_tool_call_response))["action"], "write_file")
+        self.assertEqual(parse_agent_action(extract_text(claude_tool_use_response))["action"], "patch_file")
+        self.assertEqual(parse_agent_action(extract_text(responses_api_function_call))["action"], "run_command")
 
     def test_openai_provider_retries_transient_network_error(self) -> None:
         provider = OpenAICompatibleProvider(
