@@ -3082,6 +3082,34 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(parse_agent_action(extract_text(claude_tool_use_response))["action"], "patch_file")
         self.assertEqual(parse_agent_action(extract_text(responses_api_function_call))["action"], "run_command")
 
+    def test_provider_tool_call_golden_fixtures(self) -> None:
+        fixtures_path = Path(__file__).parent / "fixtures" / "provider_tool_calls.json"
+        fixtures = json.loads(fixtures_path.read_text(encoding="utf-8"))
+
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture["name"]):
+                if fixture.get("expected_extract_error"):
+                    with self.assertRaisesRegex(ValueError, fixture["expected_extract_error"]):
+                        extract_text(fixture["response"])
+                    continue
+
+                text = extract_text(fixture["response"])
+                if "expected_text" in fixture:
+                    self.assertEqual(text, fixture["expected_text"])
+                    continue
+
+                if fixture.get("expected_error"):
+                    with self.assertRaisesRegex(ValueError, fixture["expected_error"]):
+                        parse_agent_action(text)
+                    continue
+
+                action = parse_agent_action(text)
+                self.assertEqual(action["action"], fixture["expected_action"])
+                if fixture.get("expected_path"):
+                    self.assertEqual(action["path"], fixture["expected_path"])
+                if fixture.get("expected_command"):
+                    self.assertEqual(action["command"], fixture["expected_command"])
+
     def test_openai_provider_retries_transient_network_error(self) -> None:
         provider = OpenAICompatibleProvider(
             model="gpt-test",

@@ -17,6 +17,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Added a cross-platform installed-command smoke and a first-real-file-task guide for onboarding and release validation.
 - Extended local release checks and npm launcher smoke to run the same real file-task validation path.
 - Added a release dry-run record with package, launcher, fresh-wheel install, and benchmark evidence results.
+- Added provider tool-call golden fixtures for OpenAI-compatible, Claude/Hermes-style, Responses API, empty-content, invalid-argument, unknown-tool, and multi-tool-call responses.
 
 ## 0.1.25 - 2026-05-15
 

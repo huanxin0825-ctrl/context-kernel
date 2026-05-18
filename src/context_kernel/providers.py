@@ -961,7 +961,11 @@ def extract_text(response: dict[str, Any]) -> str:
 
 def extract_tool_call_text(message: dict[str, Any]) -> str:
     tool_calls = message.get("tool_calls")
-    if isinstance(tool_calls, list) and tool_calls:
+    if isinstance(tool_calls, list):
+        if len(tool_calls) > 1:
+            raise ValueError("Provider returned multiple tool calls; one tool action per step is supported.")
+        if not tool_calls:
+            return ""
         return render_tool_call_action(tool_calls[0])
     function_call = message.get("function_call")
     if isinstance(function_call, dict):
@@ -970,29 +974,26 @@ def extract_tool_call_text(message: dict[str, Any]) -> str:
 
 
 def extract_content_tool_use_text(content: list[Any]) -> str:
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        item_type = str(item.get("type", "")).lower()
-        if item_type in {"tool_use", "function_call"} or ("name" in item and "input" in item):
-            return render_tool_call_action(item)
-    return ""
+    tool_items = content_tool_call_items(content)
+    if len(tool_items) > 1:
+        raise ValueError("Provider returned multiple tool calls; one tool action per step is supported.")
+    return render_tool_call_action(tool_items[0]) if tool_items else ""
 
 
 def extract_responses_output_text(response: dict[str, Any]) -> str:
     output = response.get("output")
     if isinstance(output, list):
         text_parts: list[str] = []
+        tool_items: list[dict[str, Any]] = []
         for item in output:
             if not isinstance(item, dict):
                 continue
             item_type = str(item.get("type", "")).lower()
             if item_type in {"function_call", "tool_use"}:
-                return render_tool_call_action(item)
+                tool_items.append(item)
+                continue
             if item_type in {"message", "assistant_message"} and isinstance(item.get("content"), list):
-                tool_text = extract_content_tool_use_text(item["content"])
-                if tool_text:
-                    return tool_text
+                tool_items.extend(content_tool_call_items(item["content"]))
                 text_parts.extend(
                     str(part.get("text") or part.get("content") or "")
                     for part in item["content"]
@@ -1000,10 +1001,25 @@ def extract_responses_output_text(response: dict[str, Any]) -> str:
                 )
             elif item.get("text"):
                 text_parts.append(str(item["text"]))
+        if len(tool_items) > 1:
+            raise ValueError("Provider returned multiple tool calls; one tool action per step is supported.")
+        if tool_items:
+            return render_tool_call_action(tool_items[0])
         if text_parts:
             return "".join(text_parts)
     output_text = response.get("output_text")
     return str(output_text) if output_text is not None else ""
+
+
+def content_tool_call_items(content: list[Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type", "")).lower()
+        if item_type in {"tool_use", "function_call"} or ("name" in item and "input" in item):
+            items.append(item)
+    return items
 
 
 def render_tool_call_action(call: dict[str, Any]) -> str:
