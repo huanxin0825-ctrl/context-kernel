@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from .cli_output import print_json
+from .loop_actions import compact
 from .storage import Workspace
 
 
@@ -41,6 +42,8 @@ def print_agent_report(report: dict[str, Any]) -> None:
     print(f"status: {report['status']}")
     print(f"steps: {len(report['steps'])}/{report['max_steps']}")
     print(f"tokens: total={report['totals']['total_tokens']} input={report['totals']['input_tokens']} output={report['totals']['output_tokens']}")
+    for line in agent_report_outcome_lines(report):
+        print(line)
     routing = report.get("model_routing", {})
     if routing:
         print(
@@ -69,6 +72,33 @@ def print_agent_report(report: dict[str, Any]) -> None:
     if report.get("final_response"):
         print("")
         print(report["final_response"])
+
+
+def agent_report_outcome_lines(report: dict[str, Any]) -> list[str]:
+    status = str(report.get("status") or "unknown")
+    steps = report.get("steps", [])
+    last_step = steps[-1] if steps else {}
+    stop_reason = str(last_step.get("stop_reason") or "")
+    diagnostic = report.get("diagnostic") if isinstance(report.get("diagnostic"), dict) else last_step.get("diagnostic")
+    if not isinstance(diagnostic, dict):
+        diagnostic = {}
+    if not stop_reason:
+        stop_reason = str(diagnostic.get("message") or "")
+
+    lines: list[str] = []
+    if status in {"failed", "blocked", "needs_review", "stopped"}:
+        suffix = f" - {compact(stop_reason, limit=220)}" if stop_reason else ""
+        lines.append(f"outcome: {status}{suffix}")
+    if status in {"failed", "blocked", "needs_review"}:
+        task_id = report.get("task_id")
+        category = diagnostic.get("category") or status
+        if category in {"provider_configuration", "provider_auth", "provider_endpoint"}:
+            lines.append("resume: fix provider setup, then rerun this task with `akernel agent run --task <task-id> ...`")
+        elif category == "policy_block":
+            lines.append("resume: adjust the requested path/command or project policy, then rerun with the same task id")
+        elif task_id:
+            lines.append(f"resume: continue with `akernel agent run --task {task_id} \"...\"`")
+    return lines
 
 
 def print_agent_diagnostic(diagnostic: Any, *, prefix: str = "") -> None:

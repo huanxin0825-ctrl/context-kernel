@@ -761,8 +761,10 @@ class RuntimeTests(unittest.TestCase):
                 print_agent_report(report)
 
             output = stdout.getvalue()
+            self.assertIn("outcome: failed - Agent loop stopped: provider_configuration.", output)
             self.assertIn("diagnostic: provider_configuration", output)
             self.assertIn("next: Run `akernel setup`", output)
+            self.assertIn("resume: fix provider setup", output)
 
     def test_eval_runner_reports_checks_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2876,6 +2878,13 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(report["steps"][0]["action"]["action"], "run_command")
             self.assertTrue(report["steps"][0]["tool"]["blocked"])
             self.assertEqual(report["steps"][0]["recovery_tools"], [])
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                print_agent_report(report)
+
+            output = stdout.getvalue()
+            self.assertIn("outcome: blocked - Agent loop stopped: the final tool action was blocked by policy.", output)
+            self.assertIn("resume: adjust the requested path/command or project policy", output)
 
     def test_execution_planner_surfaces_policy_warnings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
