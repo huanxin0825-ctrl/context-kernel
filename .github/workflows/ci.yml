@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.10", "3.12"]
 
     steps:
@@ -33,6 +33,9 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -p test_runtime.py
+
+      - name: Installed command smoke
+        run: python scripts/install_smoke.py --command akernel
 
       - name: CLI smoke
         run: |

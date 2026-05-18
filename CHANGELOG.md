@@ -14,6 +14,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Added folded previews for long `tool exec` stdout/stderr with trace hints, plus copyable task continuation commands in `task brief`.
 - Added a reusable file transaction primitive and transaction metadata for file mutation commit/rollback reporting.
 - Added golden coverage for native OpenAI-compatible tool calls, Claude/Hermes-style tool-use blocks, and Responses API function calls.
+- Added a cross-platform installed-command smoke and a first-real-file-task guide for onboarding and release validation.
 
 ## 0.1.25 - 2026-05-15
 

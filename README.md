@@ -93,6 +93,7 @@ Current reproducible scale snapshot:
 These numbers come from the local mock-provider benchmark path, so they are reproducible without external API keys. They are not a final production-wide claim; they are the proof mechanism. The goal is to make every token-saving improvement measurable rather than vibes-based.
 
 See [Benchmark Evidence](docs/10-benchmark-evidence.md) for reproduction commands and fixture details.
+See [First Real File Task](docs/12-first-real-file-task.md) for a start-to-finish path from first launch to a traceable file edit.
 
 ## Architecture
 

@@ -63,6 +63,7 @@ jobs:
           . .release-smoke/bin/activate
           python -m pip install dist/*.whl
           akernel --help
+          python scripts/install_smoke.py --command akernel
 
       - name: Upload Python artifacts
         uses: actions/upload-artifact@v4
