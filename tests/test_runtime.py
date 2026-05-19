@@ -3321,6 +3321,12 @@ class RuntimeTests(unittest.TestCase):
                     self.assertEqual(action["command"], fixture["expected_command"])
                 if fixture.get("expected_step_count"):
                     self.assertEqual(len(action["steps"]), fixture["expected_step_count"])
+                if fixture.get("expected_step_actions"):
+                    self.assertEqual([step["action"] for step in action["steps"]], fixture["expected_step_actions"])
+                if fixture.get("expected_last_command"):
+                    self.assertEqual(action["steps"][-1]["command"], fixture["expected_last_command"])
+                if fixture.get("expected_last_timeout"):
+                    self.assertEqual(action["steps"][-1]["timeout_seconds"], fixture["expected_last_timeout"])
 
     def test_openai_provider_retries_transient_network_error(self) -> None:
         provider = OpenAICompatibleProvider(

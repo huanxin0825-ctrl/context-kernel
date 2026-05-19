@@ -108,7 +108,120 @@
       ]
     },
     "expected_action": "transaction",
-    "expected_step_count": 2
+    "expected_step_count": 2,
+    "expected_step_actions": ["append_file", "run_command"],
+    "expected_last_command": "python -V",
+    "expected_last_timeout": 5
+  },
+  {
+    "name": "openai_compatible_dict_arguments_transaction",
+    "response": {
+      "choices": [
+        {
+          "message": {
+            "content": null,
+            "tool_calls": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "transaction",
+                  "arguments": {
+                    "steps": [
+                      { "action": "write_file", "path": "notes/dict.txt", "text": "hello" },
+                      { "action": "run_command", "command": "python -m py_compile notes/dict.txt", "timeout": 9 }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected_action": "transaction",
+    "expected_step_count": 2,
+    "expected_step_actions": ["write_file", "run_command"],
+    "expected_last_command": "python -m py_compile notes/dict.txt",
+    "expected_last_timeout": 9
+  },
+  {
+    "name": "claude_tool_use_transaction_input",
+    "response": {
+      "choices": [
+        {
+          "message": {
+            "content": [
+              { "type": "text", "text": "I will apply the edits atomically." },
+              {
+                "type": "tool_use",
+                "id": "toolu_123",
+                "name": "transaction",
+                "input": {
+                  "steps": [
+                    { "action": "patch_file", "path": "notes/claude.txt", "old": "old", "new": "new" },
+                    { "action": "run_command", "command": "python -V" }
+                  ],
+                  "reason": "patch then verify"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected_action": "transaction",
+    "expected_step_count": 2,
+    "expected_step_actions": ["patch_file", "run_command"],
+    "expected_last_command": "python -V",
+    "expected_last_timeout": 30
+  },
+  {
+    "name": "hermes_tool_transaction_alias_with_blocked_command",
+    "response": {
+      "choices": [
+        {
+          "message": {
+            "content": [
+              {
+                "name": "tool_transaction",
+                "input": {
+                  "steps": [
+                    { "tool": "append", "path": "notes/hermes.txt", "text": " risky" },
+                    { "tool": "shell", "command": "git reset --hard" }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected_action": "transaction",
+    "expected_step_count": 2,
+    "expected_step_actions": ["append_file", "run_command"],
+    "expected_last_command": "git reset --hard"
+  },
+  {
+    "name": "responses_message_transaction_function_call",
+    "response": {
+      "output": [
+        {
+          "type": "message",
+          "content": [
+            { "type": "output_text", "text": "Running a guarded transaction." },
+            {
+              "type": "function_call",
+              "name": "transaction",
+              "arguments": "{\"steps\":[{\"action\":\"create_file\",\"path\":\"notes/responses.txt\",\"text\":\"created\"},{\"action\":\"run_command\",\"command\":\"python -V\"}]}"
+            }
+          ]
+        }
+      ]
+    },
+    "expected_action": "transaction",
+    "expected_step_count": 2,
+    "expected_step_actions": ["create_file", "run_command"],
+    "expected_last_command": "python -V"
   },
   {
     "name": "responses_api_function_call",
