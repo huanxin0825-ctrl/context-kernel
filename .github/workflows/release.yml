@@ -51,6 +51,22 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install build twine
 
+      - name: Validate release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            args+=(--strict-release --tag "${GITHUB_REF_NAME}")
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.publish }}" == "true" ]]; then
+            if [[ -z "${{ github.event.inputs.release_tag }}" ]]; then
+              echo "release_tag must be set when publishing manually." >&2
+              exit 1
+            fi
+            args+=(--strict-release --tag "${{ github.event.inputs.release_tag }}")
+          fi
+          python scripts/release_guard.py "${args[@]}"
+
       - name: Build package
         run: python -m build
 

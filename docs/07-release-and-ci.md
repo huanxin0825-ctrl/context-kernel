@@ -31,6 +31,7 @@ The release workflow lives at `.github/workflows/release.yml`.
 
 It runs:
 
+- release metadata validation for version parity, release notes, changelog section, and strict tag readiness
 - Python source distribution and wheel builds
 - `twine check` metadata validation
 - wheel smoke installation in a fresh virtual environment, followed by the real file-task smoke
@@ -71,6 +72,14 @@ For release preparation, run the bundled check:
 ```
 
 It runs the unit test suite, builds the Python package, checks package metadata, checks the CLI entrypoint, verifies that packaged marketplace skills can be listed, runs the real file-task smoke through the Python module and installed `akernel` command when available, performs an npm dry-run pack and npm launcher smoke when npm is available, and generates benchmark evidence for the deterministic scale suite.
+
+The local release check calls `python scripts\release_guard.py` in non-strict mode, so active `Unreleased` changelog work is reported as a warning instead of blocking development checks. Before tagging or publishing, run:
+
+```powershell
+python scripts\release_guard.py --strict-release --tag v0.1.26
+```
+
+Strict mode fails if the package versions, tag, release notes, changelog version section, or empty `Unreleased` state are not aligned.
 
 ## Release Shape
 

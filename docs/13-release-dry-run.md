@@ -77,6 +77,14 @@ Benchmark evidence summary from the dry run:
 - No publish credentials, trusted-publisher environments, GitHub Release creation, PyPI upload, or npm publish were exercised in this rehearsal.
 - The existing `.github/release-notes/v0.1.25.md` covers the prior `0.1.25` loop-guard fix only. The current branch has substantial `Unreleased` changes, so publishing this branch should first bump the version and add matching release notes for the next tag.
 
+## Post Dry-Run Hardening
+
+Date: 2026-05-19
+
+- Added `scripts/release_guard.py` to verify Python runtime, Python package, and npm package versions stay aligned.
+- The guard also verifies matching release notes, changelog version headings, optional tag matching, and strict pre-publish `Unreleased` cleanup.
+- The local release check runs the guard in non-strict mode, so development branches get a warning while publish/tag paths can fail closed.
+
 ## Release Gate
 
 Current status: dry-run pass, not ready to tag unchanged.
@@ -86,5 +94,6 @@ Before a real public release:
 - Move relevant `Unreleased` changelog entries into a new version section.
 - Bump `pyproject.toml` and `packages/npm/akernel/package.json` together.
 - Add `.github/release-notes/<new-tag>.md`.
+- Run `python scripts/release_guard.py --strict-release --tag <new-tag>` and fix any metadata error before tagging.
 - Confirm PyPI Trusted Publishing and npm publishing configuration are active.
 - Run `powershell -ExecutionPolicy Bypass -File scripts\release_check.ps1` again after the version bump.

@@ -1,7 +1,8 @@
 param(
   [switch]$SkipBuild,
   [switch]$SkipNpm,
-  [switch]$SkipBenchmarkEvidence
+  [switch]$SkipBenchmarkEvidence,
+  [switch]$StrictReleaseMetadata
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,6 +29,12 @@ function Invoke-Checked {
 Write-Host "== Context Kernel release check =="
 $env:PYTHONPATH = "src"
 Write-Host "Python:" (& $PythonCommand --version)
+
+$releaseGuardArgs = @((Join-Path $RepoRoot "scripts\release_guard.py"))
+if ($StrictReleaseMetadata) {
+  $releaseGuardArgs += "--strict-release"
+}
+Invoke-Checked $PythonCommand $releaseGuardArgs
 
 Invoke-Checked $PythonCommand @("-m", "unittest", "discover", "-s", "tests", "-p", "test_runtime.py")
 

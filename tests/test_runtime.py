@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 import os
@@ -65,6 +66,43 @@ from context_kernel.verifier import verify_trace
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_release_guard_module():
+    path = ROOT / "scripts" / "release_guard.py"
+    spec = importlib.util.spec_from_file_location("release_guard", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def write_release_guard_repo(
+    repo: Path,
+    *,
+    version: str,
+    npm_version: str | None = None,
+    unreleased: bool,
+) -> Path:
+    npm_version = npm_version or version
+    (repo / "src" / "context_kernel").mkdir(parents=True)
+    (repo / "packages" / "npm" / "akernel").mkdir(parents=True)
+    (repo / ".github" / "release-notes").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text(f'[project]\nname = "akernel-runtime"\nversion = "{version}"\n', encoding="utf-8")
+    (repo / "src" / "context_kernel" / "__init__.py").write_text(f'__version__ = "{version}"\n', encoding="utf-8")
+    (repo / "packages" / "npm" / "akernel" / "package.json").write_text(
+        json.dumps({"version": npm_version}),
+        encoding="utf-8",
+    )
+    unreleased_section = "- Pending item\n" if unreleased else ""
+    (repo / "CHANGELOG.md").write_text(
+        f"# Changelog\n\n## Unreleased\n\n{unreleased_section}\n## {version} - 2026-05-19\n\n- Released.\n",
+        encoding="utf-8",
+    )
+    (repo / ".github" / "release-notes" / f"v{version}.md").write_text(f"# v{version}\n\nReleased.\n", encoding="utf-8")
+    return repo
 
 
 class RuntimeTests(unittest.TestCase):
@@ -461,6 +499,28 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("context_kernel.__version__", text)
         self.assertIn("versionAtLeast", text)
         self.assertIn("akernel-runtime>=", text)
+
+    def test_release_guard_accepts_consistent_release_metadata(self) -> None:
+        module = load_release_guard_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = write_release_guard_repo(Path(tmp), version="0.2.0", unreleased=False)
+
+            result = module.check_release_metadata(repo, strict_release=True, tag="v0.2.0")
+
+            self.assertTrue(result.ok, result.errors)
+            self.assertEqual(result.warnings, [])
+
+    def test_release_guard_reports_unreleased_and_version_mismatch(self) -> None:
+        module = load_release_guard_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = write_release_guard_repo(Path(tmp), version="0.2.0", npm_version="0.1.9", unreleased=True)
+
+            relaxed = module.check_release_metadata(repo)
+            strict = module.check_release_metadata(repo, strict_release=True)
+
+            self.assertTrue(any("Version mismatch" in error for error in relaxed.errors))
+            self.assertTrue(any("Unreleased" in warning for warning in relaxed.warnings))
+            self.assertTrue(any("Unreleased" in error for error in strict.errors))
 
     def test_loop_guard_allows_one_duplicate_tool_step(self) -> None:
         action = {"action": "run_command", "command": "python -m pytest"}
