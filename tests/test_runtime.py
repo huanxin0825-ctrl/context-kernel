@@ -2985,7 +2985,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(report["status"], "responded")
             self.assertTrue(target.exists())
             self.assertIn("excel export ready", target.read_text(encoding="utf-8"))
-            self.assertEqual(report["materialized_files"], [str(target)])
+            self.assertEqual([Path(path).resolve() for path in report["materialized_files"]], [target.resolve()])
             self.assertIn("Wrote code to file", report["final_response"])
 
     def test_agent_loop_materializes_code_block_response_to_generated_file(self) -> None:
@@ -3021,7 +3021,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(report["status"], "responded")
             self.assertEqual(len(generated), 1)
             self.assertIn("print(123)", generated[0].read_text(encoding="utf-8"))
-            self.assertEqual(report["materialized_files"], [str(generated[0])])
+            self.assertEqual([Path(path).resolve() for path in report["materialized_files"]], [generated[0].resolve()])
             self.assertTrue(any(event.get("event") == "materialize_start" for event in events))
             self.assertTrue(any(event.get("event") == "materialize_end" for event in events))
 
