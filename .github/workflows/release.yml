@@ -70,6 +70,28 @@ jobs:
       - name: Build package
         run: python -m build
 
+      - name: Verify source distribution contents
+        run: |
+          python - <<'PY'
+          import tarfile
+          from pathlib import Path
+
+          archives = sorted(Path("dist").glob("akernel_runtime-*.tar.gz"))
+          if len(archives) != 1:
+              raise SystemExit(f"expected one source distribution, found {len(archives)}")
+          with tarfile.open(archives[0], "r:gz") as tar:
+              names = set(tar.getnames())
+          root = archives[0].name.removesuffix(".tar.gz")
+          required = [
+              f"{root}/scripts/install_smoke.py",
+              f"{root}/scripts/release_guard.py",
+          ]
+          missing = [name for name in required if name not in names]
+          if missing:
+              raise SystemExit(f"missing source distribution files: {missing}")
+          print("source distribution scripts: ok")
+          PY
+
       - name: Check package metadata
         run: python -m twine check dist/*
 
@@ -100,9 +122,18 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Validate npm package
         working-directory: packages/npm/akernel
         run: npm pack --dry-run
+
+      - name: Smoke npm launcher
+        working-directory: packages/npm/akernel
+        run: npm run smoke
 
   benchmark-evidence:
     name: Build Benchmark Evidence

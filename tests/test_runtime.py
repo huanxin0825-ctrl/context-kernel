@@ -529,6 +529,15 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue((ROOT / "scripts" / "release_guard.py").exists())
         self.assertTrue((ROOT / "scripts" / "install_smoke.py").exists())
 
+    def test_release_workflow_checks_sdist_and_npm_launcher_smoke(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+        self.assertIn("Verify source distribution contents", workflow)
+        self.assertIn("scripts/install_smoke.py", workflow)
+        self.assertIn("scripts/release_guard.py", workflow)
+        self.assertIn("Smoke npm launcher", workflow)
+        self.assertIn("npm run smoke", workflow)
+
     def test_loop_guard_allows_one_duplicate_tool_step(self) -> None:
         action = {"action": "run_command", "command": "python -m pytest"}
 

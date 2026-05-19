@@ -32,6 +32,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 ### Fixed
 
 - Fixed source distributions missing Python release helper scripts used by local release checks and install smoke validation.
+- Fixed release workflow coverage so source distribution helper scripts and the npm launcher smoke are validated before publishing.
 
 ## 0.1.25 - 2026-05-15
 
