@@ -522,6 +522,13 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(any("Unreleased" in warning for warning in relaxed.warnings))
             self.assertTrue(any("Unreleased" in error for error in strict.errors))
 
+    def test_source_distribution_includes_python_release_scripts(self) -> None:
+        manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+
+        self.assertIn("recursive-include scripts *.ps1 *.py", manifest)
+        self.assertTrue((ROOT / "scripts" / "release_guard.py").exists())
+        self.assertTrue((ROOT / "scripts" / "install_smoke.py").exists())
+
     def test_loop_guard_allows_one_duplicate_tool_step(self) -> None:
         action = {"action": "run_command", "command": "python -m pytest"}
 

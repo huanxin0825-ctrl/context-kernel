@@ -29,6 +29,10 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Expanded provider golden fixtures for transaction tool calls across OpenAI-compatible, Claude-style, Hermes-style, and Responses API shapes.
 - Added a release metadata guard for Python/npm version parity, release notes, changelog headings, tag matching, and strict pre-publish Unreleased checks.
 
+### Fixed
+
+- Fixed source distributions missing Python release helper scripts used by local release checks and install smoke validation.
+
 ## 0.1.25 - 2026-05-15
 
 ### Fixed

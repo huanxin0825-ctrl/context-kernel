@@ -13,6 +13,6 @@ include wake.cmd
 recursive-include .github *.md *.yml
 recursive-include docs *.md
 recursive-include examples *.json *.md
-recursive-include scripts *.ps1
+recursive-include scripts *.ps1 *.py
 recursive-include packages *.json *.js *.md
 recursive-include tests *.py

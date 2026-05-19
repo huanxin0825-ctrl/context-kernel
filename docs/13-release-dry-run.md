@@ -33,7 +33,7 @@ python -m venv <temp-venv>
 | Check | Result |
 | --- | --- |
 | Worktree clean before rehearsal | Passed |
-| Unit tests via release check | Passed, `129` tests |
+| Unit tests via release check | Passed, `130` tests |
 | Python build | Passed |
 | `twine check dist/*` | Passed |
 | CLI entrypoint help | Passed |
@@ -74,6 +74,7 @@ Benchmark evidence summary from the dry run:
 
 - The local release path is healthy: build, metadata checks, real file-task smoke, npm launcher smoke, and benchmark evidence all passed.
 - The wheel can be installed into a fresh virtual environment and can complete the same real file-task smoke outside the editable checkout.
+- The source distribution includes Python release helper scripts for metadata guard and install smoke validation.
 - No publish credentials, trusted-publisher environments, GitHub Release creation, PyPI upload, or npm publish were exercised in this rehearsal.
 - `.github/release-notes/v0.1.26.md` is present and the strict release metadata guard passed for `v0.1.26`.
 
