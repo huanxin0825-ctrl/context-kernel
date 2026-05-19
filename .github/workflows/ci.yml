@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PIP_NO_CACHE_DIR: "1"
+
 jobs:
   test-and-smoke:
     name: Test and Smoke (${{ matrix.os }}, py${{ matrix.python-version }})
