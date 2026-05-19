@@ -2043,6 +2043,11 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertIn("context ready", spinner_message_from_event({"event": "context_ready", "step": 1, "max_steps": 5, "estimated_used": 120, "budget_total": 1800, "memory_count": 2, "skills": [{"id": "edit_file", "level": "l2"}]}, args))
         self.assertIn("creating or updating file", spinner_message_from_event({"event": "action_start", "step": 1, "max_steps": 5, "action": "write_file", "target": "notes/demo.txt"}, args))
+        transaction_start = spinner_message_from_event({"event": "action_start", "step": 2, "max_steps": 5, "action": "transaction", "target": "append notes/plan.txt, verify python -V"}, args)
+        self.assertIn("transaction: append notes/plan.txt", transaction_start)
+        transaction_end = spinner_message_from_event({"event": "action_end", "step": 2, "max_steps": 5, "action": "transaction", "ok": False, "blocked": False, "summary": "run_command exit_code=2; applied_count=2; rolled_back=True; steps=3"}, args)
+        self.assertIn("transaction rolled back", transaction_end)
+        self.assertIn("rolled_back=True", transaction_end)
         self.assertIn("saved 1 file", spinner_message_from_event({"event": "materialize_end", "step": 1, "max_steps": 5, "paths": ["notes/demo.txt"]}, args))
         self.assertIn("recovery ready", spinner_message_from_event({"event": "recovery_end", "step": 1, "max_steps": 5, "count": 1}, args))
 
@@ -2989,7 +2994,8 @@ class RuntimeTests(unittest.TestCase):
             start = next(event for event in events if event.get("event") == "action_start")
             end = next(event for event in events if event.get("event") == "action_end")
             self.assertEqual(start["action"], "transaction")
-            self.assertIn("append_file", start["target"])
+            self.assertIn("append notes/plan.txt", start["target"])
+            self.assertIn("verify python", start["target"])
             self.assertEqual(end["action"], "transaction")
             self.assertFalse(end["ok"])
             self.assertIn("rolled_back=True", end["summary"])

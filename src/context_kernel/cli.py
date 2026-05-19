@@ -1756,8 +1756,13 @@ def spinner_message_from_event(event: dict[str, Any], args: argparse.Namespace) 
     if name == "action_start":
         label = event.get("label") or chat_action_label(str(event.get("action") or ""))
         target = event.get("target")
+        if event.get("action") == "transaction":
+            suffix = f": {target}" if target else ""
+            return f"step {step}/{max_steps}: transaction{suffix}"
         suffix = f" {target}" if target else ""
         return f"step {step}/{max_steps}: {label}{suffix}"
+    if name == "action_end":
+        return progress_action_end_message(event)
     if name == "materialize_start":
         return f"step {step}/{max_steps}: {event.get('label', 'saving files')}"
     if name == "materialize_end":
@@ -1800,8 +1805,15 @@ def print_agent_progress_event(event: dict[str, Any]) -> None:
     if name == "action_start":
         label = event.get("label") or chat_action_label(str(event.get("action") or ""))
         target = event.get("target")
+        if event.get("action") == "transaction":
+            suffix = f": {target}" if target else ""
+            print(chat_color(f"status   step {step}/{max_steps}: transaction{suffix}", "dim"), flush=True)
+            return
         suffix = f" {target}" if target else ""
         print(chat_color(f"status   step {step}/{max_steps}: {label}{suffix}", "dim"), flush=True)
+        return
+    if name == "action_end":
+        print(chat_color(f"status   {progress_action_end_message(event)}", "dim"), flush=True)
         return
     if name == "materialize_start":
         print(chat_color(f"status   step {step}/{max_steps}: {event.get('label', 'saving files')}", "dim"), flush=True)
@@ -1835,11 +1847,33 @@ def chat_action_label(action: str) -> str:
         "write_file": "creating or updating file",
         "patch_file": "applying file patch",
         "batch_patch": "applying multi-file patch",
+        "transaction": "transaction",
         "run_command": "running command",
         "mcp_call": "calling MCP tool",
         "respond": "preparing final response",
     }
     return labels.get(action, action or "running action")
+
+
+def progress_action_end_message(event: dict[str, Any]) -> str:
+    step = event.get("step", "?")
+    max_steps = event.get("max_steps", "?")
+    action = str(event.get("action") or "none")
+    summary = str(event.get("summary") or "").strip()
+    if action == "transaction":
+        if event.get("blocked"):
+            state = "blocked"
+        elif event.get("ok"):
+            state = "committed"
+        elif "rolled_back=True" in summary:
+            state = "rolled back"
+        else:
+            state = "failed"
+        suffix = f": {summary}" if summary else ""
+        return f"step {step}/{max_steps}: transaction {state}{suffix}"
+    status = "ok" if event.get("ok") else "blocked" if event.get("blocked") else "failed"
+    suffix = f": {summary}" if summary else ""
+    return f"step {step}/{max_steps}: {chat_action_label(action)} {status}{suffix}"
 
 
 def read_chat_input(prompt: str, workspace: Workspace) -> str:

@@ -464,7 +464,7 @@ def action_progress_target(action: dict[str, Any]) -> str:
         return compact(", ".join(paths) + suffix, limit=160)
     if action_name == "transaction":
         steps = action.get("steps", [])
-        names = [str(item.get("action", "")) for item in steps[:4] if isinstance(item, dict)]
+        names = [transaction_progress_step(item) for item in steps[:4] if isinstance(item, dict)]
         suffix = f" +{len(steps) - 4}" if isinstance(steps, list) and len(steps) > 4 else ""
         return compact(", ".join(names) + suffix, limit=160)
     if action_name == "run_command":
@@ -519,6 +519,22 @@ def summarize_action(action: dict[str, Any] | None) -> dict[str, Any] | None:
     if action["action"] == "respond":
         summary["message"] = compact(str(action.get("message", "")), limit=240)
     return summary
+
+
+def transaction_progress_step(step: dict[str, Any]) -> str:
+    action = str(step.get("action", ""))
+    path = str(step.get("path", ""))
+    if action == "create_file":
+        return f"create {path}"
+    if action == "write_file":
+        return f"write {path}"
+    if action == "append_file":
+        return f"append {path}"
+    if action == "patch_file":
+        return f"patch {path}"
+    if action == "run_command":
+        return f"verify {compact(str(step.get('command', '')), limit=80)}"
+    return action
 
 
 def summarize_tool_result(result: dict[str, Any]) -> str:
