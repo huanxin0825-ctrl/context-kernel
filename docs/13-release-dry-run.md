@@ -1,6 +1,6 @@
 # Release Dry Run
 
-Date: 2026-05-18
+Date: 2026-05-19
 
 This document records the latest local release rehearsal. It intentionally does not publish to PyPI, npm, or GitHub Releases. The goal is to verify that the artifacts, install paths, launcher smoke, and benchmark evidence are ready before creating a tag.
 
@@ -13,7 +13,7 @@ This document records the latest local release rehearsal. It intentionally does 
 | npm | 11.11.1 |
 | Python package | `akernel-runtime` |
 | npm package | `@context-akernel/akernel` |
-| Package version checked | `0.1.25` |
+| Package version checked | `0.1.26` |
 
 ## Commands Run
 
@@ -21,10 +21,10 @@ This document records the latest local release rehearsal. It intentionally does 
 git status --short
 python --version
 npm --version
-powershell -ExecutionPolicy Bypass -File scripts\release_check.ps1
+powershell -ExecutionPolicy Bypass -File scripts\release_check.ps1 -StrictReleaseMetadata
 python -m venv <temp-venv>
 <temp-venv>\Scripts\python.exe -m pip install --upgrade pip
-<temp-venv>\Scripts\python.exe -m pip install dist\akernel_runtime-0.1.25-py3-none-any.whl
+<temp-venv>\Scripts\python.exe -m pip install dist\akernel_runtime-0.1.26-py3-none-any.whl
 <temp-venv>\Scripts\python.exe scripts\install_smoke.py --command python-module
 ```
 
@@ -33,7 +33,7 @@ python -m venv <temp-venv>
 | Check | Result |
 | --- | --- |
 | Worktree clean before rehearsal | Passed |
-| Unit tests via release check | Passed, `122` tests |
+| Unit tests via release check | Passed, `129` tests |
 | Python build | Passed |
 | `twine check dist/*` | Passed |
 | CLI entrypoint help | Passed |
@@ -49,14 +49,14 @@ python -m venv <temp-venv>
 Generated Python artifacts:
 
 ```text
-dist/akernel_runtime-0.1.25-py3-none-any.whl
-dist/akernel_runtime-0.1.25.tar.gz
+dist/akernel_runtime-0.1.26-py3-none-any.whl
+dist/akernel_runtime-0.1.26.tar.gz
 ```
 
 npm dry-run artifact name:
 
 ```text
-context-akernel-akernel-0.1.25.tgz
+context-akernel-akernel-0.1.26.tgz
 ```
 
 Benchmark evidence summary from the dry run:
@@ -75,25 +75,14 @@ Benchmark evidence summary from the dry run:
 - The local release path is healthy: build, metadata checks, real file-task smoke, npm launcher smoke, and benchmark evidence all passed.
 - The wheel can be installed into a fresh virtual environment and can complete the same real file-task smoke outside the editable checkout.
 - No publish credentials, trusted-publisher environments, GitHub Release creation, PyPI upload, or npm publish were exercised in this rehearsal.
-- The existing `.github/release-notes/v0.1.25.md` covers the prior `0.1.25` loop-guard fix only. The current branch has substantial `Unreleased` changes, so publishing this branch should first bump the version and add matching release notes for the next tag.
-
-## Post Dry-Run Hardening
-
-Date: 2026-05-19
-
-- Added `scripts/release_guard.py` to verify Python runtime, Python package, and npm package versions stay aligned.
-- The guard also verifies matching release notes, changelog version headings, optional tag matching, and strict pre-publish `Unreleased` cleanup.
-- The local release check runs the guard in non-strict mode, so development branches get a warning while publish/tag paths can fail closed.
+- `.github/release-notes/v0.1.26.md` is present and the strict release metadata guard passed for `v0.1.26`.
 
 ## Release Gate
 
-Current status: dry-run pass, not ready to tag unchanged.
+Current status: `0.1.26` local dry-run pass, not published.
 
 Before a real public release:
 
-- Move relevant `Unreleased` changelog entries into a new version section.
-- Bump `pyproject.toml` and `packages/npm/akernel/package.json` together.
-- Add `.github/release-notes/<new-tag>.md`.
-- Run `python scripts/release_guard.py --strict-release --tag <new-tag>` and fix any metadata error before tagging.
+- Confirm the final commit is tagged as `v0.1.26`.
 - Confirm PyPI Trusted Publishing and npm publishing configuration are active.
-- Run `powershell -ExecutionPolicy Bypass -File scripts\release_check.ps1` again after the version bump.
+- Run `python scripts/release_guard.py --strict-release --tag v0.1.26` and `powershell -ExecutionPolicy Bypass -File scripts\release_check.ps1 -StrictReleaseMetadata` one last time on the exact tag commit.

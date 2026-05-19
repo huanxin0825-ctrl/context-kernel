@@ -6,6 +6,8 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 
 ## Unreleased
 
+## 0.1.26 - 2026-05-19
+
 ### Added
 
 - Added productization acceptance goals for thin orchestration, natural interactive states, transactional tools, real-provider golden tests, release confidence, and first-run task guidance.
