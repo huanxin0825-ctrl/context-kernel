@@ -119,6 +119,12 @@ def diagnose_tool_result(tool_result: dict[str, Any]) -> dict[str, str]:
             "message": summary,
             "suggestion": "Inspect stdout/stderr in the linked tool trace, fix the underlying issue, then rerun the task.",
         }
+    if tool == "transaction":
+        return {
+            "category": "transaction_failed",
+            "message": summary,
+            "suggestion": "The transaction was rolled back. Inspect the linked trace, fix the failing step, then rerun the task.",
+        }
     if tool == "mcp_call":
         return {
             "category": "mcp_call_failed",

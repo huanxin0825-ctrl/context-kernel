@@ -21,6 +21,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Refined CLI and TUI failure states with clearer next-step, trace inspection, task-resume, and file transaction summaries.
 - Added a rollback-safe `tool transaction` command for create/write/append/patch plus verification command bundles.
 - Added agent action support for rollback-safe transactions, including provider golden coverage and parser/execution rollback tests.
+- Added AgentLoop coverage and clearer diagnostics for failed agent transactions that roll back file changes.
 
 ## 0.1.25 - 2026-05-15
 

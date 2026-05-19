@@ -2939,6 +2939,66 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("still failed", report["final_response"])
             self.assertIn("hello agent", brief["linked_tool_traces"][-1]["output_summary"])
 
+    def test_agent_loop_transaction_failure_rolls_back_and_reports_clearly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            workspace.init()
+            (Path(tmp) / "notes").mkdir(parents=True, exist_ok=True)
+            (Path(tmp) / "notes" / "plan.txt").write_text("stable", encoding="utf-8")
+            events: list[dict[str, object]] = []
+
+            action = {
+                "action": "transaction",
+                "steps": [
+                    {"action": "append_file", "path": "notes/plan.txt", "text": " changed"},
+                    {"action": "create_file", "path": "notes/temp.txt", "text": "temporary"},
+                    {"action": "run_command", "command": "python -c \"import sys; sys.exit(2)\""},
+                ],
+                "reason": "apply and verify atomically",
+            }
+
+            class TransactionProvider:
+                name = "transaction-provider"
+                model = "test"
+
+                def run(self, packet):
+                    return ProviderResponse(json.dumps(action), input_tokens=10, output_tokens=18)
+
+            with patch("context_kernel.runner.get_provider", return_value=TransactionProvider()):
+                report = AgentLoop(workspace).run(
+                    "Append notes/plan.txt, create notes/temp.txt, then verify atomically.",
+                    provider_name="openai",
+                    budget=1800,
+                    max_steps=1,
+                    remember=True,
+                    progress_callback=events.append,
+                )
+
+            self.assertEqual(report["status"], "needs_review")
+            self.assertEqual(report["steps"][0]["status"], "needs_review")
+            self.assertEqual(report["steps"][0]["action"]["action"], "transaction")
+            self.assertEqual(report["steps"][0]["action"]["step_count"], 3)
+            self.assertEqual(report["steps"][0]["tool"]["name"], "transaction")
+            self.assertFalse(report["steps"][0]["tool"]["ok"])
+            self.assertIn("rolled_back=True", report["steps"][0]["tool"]["summary"])
+            self.assertEqual(report["steps"][0]["diagnostic"]["category"], "transaction_failed")
+            self.assertIn("rolled back", report["steps"][0]["diagnostic"]["suggestion"])
+            self.assertEqual((Path(tmp) / "notes" / "plan.txt").read_text(encoding="utf-8"), "stable")
+            self.assertFalse((Path(tmp) / "notes" / "temp.txt").exists())
+
+            start = next(event for event in events if event.get("event") == "action_start")
+            end = next(event for event in events if event.get("event") == "action_end")
+            self.assertEqual(start["action"], "transaction")
+            self.assertIn("append_file", start["target"])
+            self.assertEqual(end["action"], "transaction")
+            self.assertFalse(end["ok"])
+            self.assertIn("rolled_back=True", end["summary"])
+
+            tui = format_tui_report(report)
+            self.assertIn("Run failed: transaction_failed", tui)
+            self.assertIn("Outcome: needs_review", tui)
+            self.assertIn("rolled_back=True", tui)
+
     def test_agent_loop_blocks_repeated_identical_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp))

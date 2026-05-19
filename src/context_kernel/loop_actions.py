@@ -524,9 +524,18 @@ def summarize_action(action: dict[str, Any] | None) -> dict[str, Any] | None:
 def summarize_tool_result(result: dict[str, Any]) -> str:
     if result["blocked"]:
         return f"blocked by policy; subject={compact(str(result['policy'].get('subject', '')), limit=180)}"
+    output = result.get("output", {})
+    if result["tool"] == "transaction":
+        summary = (
+            f"applied_count={output.get('applied_count')}; "
+            f"rolled_back={output.get('rolled_back')}; "
+            f"steps={len(output.get('results', []))}"
+        )
+        if result.get("error"):
+            return f"{compact(str(result['error']), limit=180)}; {summary}"
+        return summary
     if result.get("error"):
         return compact(str(result["error"]), limit=240)
-    output = result.get("output", {})
     if result["tool"] == "list_dir":
         names = ", ".join(str(item.get("name", "")) for item in output.get("entries", [])[:8])
         suffix = "..." if output.get("truncated") else ""
@@ -562,12 +571,6 @@ def summarize_tool_result(result: dict[str, Any]) -> str:
             f"applied_count={output.get('applied_count')}; "
             f"rolled_back={output.get('rolled_back')}; "
             f"edits={len(output.get('results', []))}"
-        )
-    if result["tool"] == "transaction":
-        return (
-            f"applied_count={output.get('applied_count')}; "
-            f"rolled_back={output.get('rolled_back')}; "
-            f"steps={len(output.get('results', []))}"
         )
     if result["tool"] == "run_command":
         command = compact(str(output.get("command", "")), limit=160)
