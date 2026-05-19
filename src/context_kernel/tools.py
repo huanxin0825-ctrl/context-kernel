@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from .models import utc_now
-from .policy import check_batch_file_policy, check_command_policy, check_file_policy, resolve_target
+from .policy import check_batch_file_policy, check_command_policy, check_file_policy, command_root, resolve_target
 from .storage import Workspace
 from .tool_transactions import begin_file_transaction
 
@@ -512,9 +512,21 @@ class ToolExecutor:
     ) -> dict[str, Any]:
         normalized_steps = normalize_transaction_steps(steps)
         file_paths = transaction_file_paths(normalized_steps)
+        command_policies = transaction_command_policies(
+            self.workspace,
+            normalized_steps,
+            allow_destructive_commands=allow_destructive_commands,
+        )
+        safety = transaction_safety_summary(self.workspace, normalized_steps, command_policies=command_policies)
         policy = transaction_policy(self.workspace, file_paths)
         if not policy["allowed"]:
-            return self._write_trace(blocked_result("transaction", policy))
+            failure = transaction_preflight_failure("file_policy", policy)
+            return self._write_trace(blocked_result("transaction", policy, output={"safety": safety, "failure": failure}))
+
+        command_policy = transaction_command_policy(command_policies)
+        if command_policy is not None and not command_policy["allowed"]:
+            failure = transaction_preflight_failure("command_policy", command_policy)
+            return self._write_trace(blocked_result("transaction", command_policy, output={"safety": safety, "failure": failure}))
 
         transaction = begin_file_transaction(self.workspace, file_paths, label="transaction")
         results: list[dict[str, Any]] = []
@@ -527,6 +539,7 @@ class ToolExecutor:
             if result["blocked"] or not result["ok"]:
                 transaction_output = transaction.rollback_output()
                 failure_reason = child_failure_reason(result)
+                failure = transaction_step_failure(index, step, result, failure_reason)
                 return self._write_trace(
                     tool_result(
                         "transaction",
@@ -535,6 +548,8 @@ class ToolExecutor:
                         output={
                             "applied_count": max(0, index - 1),
                             "rolled_back": True,
+                            "safety": safety,
+                            "failure": failure,
                             "transaction": transaction_output,
                             "results": results,
                             "subtrace_ids": [item["trace_id"] for item in results],
@@ -551,6 +566,7 @@ class ToolExecutor:
                 output={
                     "applied_count": len(results),
                     "rolled_back": False,
+                    "safety": safety,
                     "transaction": transaction.commit_output(),
                     "results": results,
                     "subtrace_ids": [item["trace_id"] for item in results],
@@ -731,7 +747,7 @@ def tool_result(
     }
 
 
-def blocked_result(tool: str, policy: dict[str, Any]) -> dict[str, Any]:
+def blocked_result(tool: str, policy: dict[str, Any], *, output: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "id": uuid4().hex[:12],
         "created_at": utc_now(),
@@ -739,7 +755,7 @@ def blocked_result(tool: str, policy: dict[str, Any]) -> dict[str, Any]:
         "ok": False,
         "blocked": True,
         "policy": policy,
-        "output": {},
+        "output": output or {},
         "error": "blocked by policy",
     }
 
@@ -835,7 +851,7 @@ def normalize_patch_edit(edit: dict[str, Any]) -> dict[str, Any]:
 
 def batch_child_summary(index: int, result: dict[str, Any]) -> dict[str, Any]:
     output = result.get("output", {})
-    return {
+    summary = {
         "index": index,
         "trace_id": result["id"],
         "tool": result["tool"],
@@ -845,7 +861,12 @@ def batch_child_summary(index: int, result: dict[str, Any]) -> dict[str, Any]:
         "mode": output.get("mode"),
         "replacement_count": output.get("replacement_count"),
         "error": result.get("error"),
+        "policy_status": result.get("policy", {}).get("status"),
+        "policy_reasons": result.get("policy", {}).get("reasons", []),
     }
+    if result["blocked"] or not result["ok"]:
+        summary["failure_reason"] = child_failure_reason(result)
+    return summary
 
 
 def child_failure_reason(result: dict[str, Any]) -> str:
@@ -935,6 +956,150 @@ def clamp_transaction_int(value: Any, *, default: int, minimum: int, maximum: in
 
 def transaction_file_paths(steps: list[dict[str, Any]]) -> list[str]:
     return [step["path"] for step in steps if step["action"] in TRANSACTION_FILE_ACTIONS]
+
+
+def transaction_command_policies(
+    workspace: Workspace,
+    steps: list[dict[str, Any]],
+    *,
+    allow_destructive_commands: bool,
+) -> list[dict[str, Any]]:
+    policies: list[dict[str, Any]] = []
+    for index, step in enumerate(steps, start=1):
+        if step["action"] != "run_command":
+            continue
+        policies.append(
+            {
+                "step": index,
+                "command": step["command"],
+                "root": command_root(step["command"]),
+                "policy": check_command_policy(
+                    step["command"],
+                    workspace=workspace,
+                    allow_destructive=allow_destructive_commands,
+                ),
+            }
+        )
+    return policies
+
+
+def transaction_command_policy(command_policies: list[dict[str, Any]]) -> dict[str, Any] | None:
+    blocked = [item for item in command_policies if not item["policy"]["allowed"]]
+    if not blocked:
+        return None
+    reasons: list[str] = []
+    subjects: list[str] = []
+    for item in blocked:
+        subjects.append(str(item["policy"].get("subject") or item["command"]))
+        reasons.extend([f"step {item['step']}: {reason}" for reason in item["policy"].get("reasons", [])])
+    return {
+        "allowed": False,
+        "status": "blocked",
+        "kind": "transaction_command",
+        "operation": "transaction",
+        "subject": "; ".join(subjects),
+        "reasons": reasons or ["transaction contains a blocked command step"],
+        "items": command_policies,
+    }
+
+
+def transaction_safety_summary(
+    workspace: Workspace,
+    steps: list[dict[str, Any]],
+    *,
+    command_policies: list[dict[str, Any]],
+) -> dict[str, Any]:
+    files: list[dict[str, Any]] = []
+    commands: list[dict[str, Any]] = []
+    creates = 0
+    modifies = 0
+    overwrites = 0
+    missing_inputs = 0
+    for index, step in enumerate(steps, start=1):
+        action = step["action"]
+        if action in TRANSACTION_FILE_ACTIONS:
+            target = resolve_target(workspace, Path(step["path"]))
+            exists = target.exists()
+            effect = transaction_file_effect(action, exists, create=bool(step.get("create", True)))
+            if effect == "create":
+                creates += 1
+            if effect in {"modify", "overwrite"}:
+                modifies += 1
+            if effect == "overwrite":
+                overwrites += 1
+            if action == "patch_file" and not exists:
+                missing_inputs += 1
+            files.append(
+                {
+                    "step": index,
+                    "action": action,
+                    "path": step["path"],
+                    "exists": exists,
+                    "effect": effect,
+                }
+            )
+    for item in command_policies:
+        policy = item["policy"]
+        commands.append(
+            {
+                "step": item["step"],
+                "command": item["command"],
+                "root": item["root"],
+                "allowed": policy["allowed"],
+                "reasons": policy.get("reasons", []),
+            }
+        )
+    return {
+        "step_count": len(steps),
+        "file_step_count": len(files),
+        "command_step_count": len(commands),
+        "creates": creates,
+        "modifies": modifies,
+        "overwrites": overwrites,
+        "missing_inputs": missing_inputs,
+        "has_verification": bool(commands),
+        "files": files,
+        "commands": commands,
+    }
+
+
+def transaction_file_effect(action: str, exists: bool, *, create: bool) -> str:
+    if action == "create_file":
+        return "conflict" if exists else "create"
+    if action == "write_file":
+        return "overwrite" if exists else "create"
+    if action == "append_file":
+        if exists:
+            return "modify"
+        return "create" if create else "missing"
+    if action == "patch_file":
+        return "modify" if exists else "missing"
+    return "unknown"
+
+
+def transaction_preflight_failure(kind: str, policy: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "stage": "preflight",
+        "kind": kind,
+        "blocked": True,
+        "reason": "; ".join(str(reason) for reason in policy.get("reasons", [])) or str(policy.get("status") or "blocked"),
+        "policy_status": policy.get("status"),
+        "policy_subject": policy.get("subject"),
+    }
+
+
+def transaction_step_failure(index: int, step: dict[str, Any], result: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {
+        "stage": "execution",
+        "step": index,
+        "action": step["action"],
+        "tool": result.get("tool"),
+        "trace_id": result.get("id"),
+        "blocked": bool(result.get("blocked")),
+        "reason": reason,
+        "policy_status": result.get("policy", {}).get("status"),
+        "policy_subject": result.get("policy", {}).get("subject"),
+    }
 
 
 def transaction_policy(workspace: Workspace, file_paths: list[str]) -> dict[str, Any]:

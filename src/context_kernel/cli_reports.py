@@ -153,6 +153,29 @@ def print_tool_result(result: dict[str, Any]) -> None:
                 f"deleted={deleted}"
             )
             print(f"files: rollback restored={restored} deleted={deleted}")
+    if result.get("tool") == "transaction" and isinstance(output, dict):
+        safety = output.get("safety", {})
+        if isinstance(safety, dict) and safety:
+            print(
+                "safety: "
+                f"steps={safety.get('step_count', 0)} "
+                f"files={safety.get('file_step_count', 0)} "
+                f"commands={safety.get('command_step_count', 0)} "
+                f"creates={safety.get('creates', 0)} "
+                f"modifies={safety.get('modifies', 0)} "
+                f"overwrites={safety.get('overwrites', 0)}"
+            )
+        failure = output.get("failure", {})
+        if isinstance(failure, dict) and failure:
+            step = failure.get("step")
+            step_part = f"step={step} " if step else ""
+            print(
+                "failure: "
+                f"{failure.get('stage', 'unknown')} "
+                f"{step_part}"
+                f"blocked={failure.get('blocked')} "
+                f"reason={failure.get('reason', '')}"
+            )
     for line in tool_result_next_lines(result, status):
         print(line)
 

@@ -538,18 +538,32 @@ def transaction_progress_step(step: dict[str, Any]) -> str:
 
 
 def summarize_tool_result(result: dict[str, Any]) -> str:
-    if result["blocked"]:
-        return f"blocked by policy; subject={compact(str(result['policy'].get('subject', '')), limit=180)}"
     output = result.get("output", {})
     if result["tool"] == "transaction":
+        failure = output.get("failure", {}) if isinstance(output, dict) else {}
+        safety = output.get("safety", {}) if isinstance(output, dict) else {}
+        results = output.get("results", []) if isinstance(output, dict) else []
+        step_count = len(results) if results else safety.get("step_count", 0) if isinstance(safety, dict) else 0
+        failure_part = ""
+        if isinstance(failure, dict) and failure:
+            step = failure.get("step")
+            kind = failure.get("kind") or failure.get("action") or failure.get("stage")
+            reason = compact(str(failure.get("reason", "")), limit=120)
+            prefix = f"failed_step={step}" if step else "failed_preflight"
+            failure_part = f"; {prefix}; failure={kind}"
+            if reason:
+                failure_part += f": {reason}"
         summary = (
-            f"applied_count={output.get('applied_count')}; "
-            f"rolled_back={output.get('rolled_back')}; "
-            f"steps={len(output.get('results', []))}"
+            f"applied_count={output.get('applied_count', 0)}; "
+            f"rolled_back={output.get('rolled_back', False)}; "
+            f"steps={step_count}"
+            f"{failure_part}"
         )
         if result.get("error"):
             return f"{compact(str(result['error']), limit=180)}; {summary}"
         return summary
+    if result["blocked"]:
+        return f"blocked by policy; subject={compact(str(result['policy'].get('subject', '')), limit=180)}"
     if result.get("error"):
         return compact(str(result["error"]), limit=240)
     if result["tool"] == "list_dir":

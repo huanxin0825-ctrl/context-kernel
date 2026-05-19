@@ -23,6 +23,7 @@ The project follows a pragmatic pre-1.0 changelog: breaking changes may occur, b
 - Added agent action support for rollback-safe transactions, including provider golden coverage and parser/execution rollback tests.
 - Added AgentLoop coverage and clearer diagnostics for failed agent transactions that roll back file changes.
 - Refined transaction progress messages so `akernel` shows natural step previews and committed/rolled-back endings.
+- Added transaction safety summaries and preflight blocking for unsafe command or file-path steps before file changes begin.
 
 ## 0.1.25 - 2026-05-15
 

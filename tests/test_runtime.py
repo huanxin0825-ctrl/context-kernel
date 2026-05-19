@@ -1520,17 +1520,42 @@ class RuntimeTests(unittest.TestCase):
                     {"action": "run_command", "command": "python -c \"import sys; sys.exit(2)\""},
                 ]
             )
+            blocked_command = executor.transaction(
+                [
+                    {"action": "append_file", "path": "notes/a.txt", "text": " blocked"},
+                    {"action": "run_command", "command": "git reset --hard"},
+                ]
+            )
+            blocked_path = executor.transaction(
+                [
+                    {"action": "write_file", "path": "../outside.txt", "text": "outside"},
+                ]
+            )
 
             self.assertTrue(success["ok"])
             self.assertFalse(success["output"]["rolled_back"])
             self.assertEqual(success["output"]["transaction"]["status"], "committed")
+            self.assertEqual(success["output"]["safety"]["step_count"], 3)
+            self.assertEqual(success["output"]["safety"]["file_step_count"], 2)
+            self.assertEqual(success["output"]["safety"]["command_step_count"], 1)
             self.assertEqual((Path(tmp) / "notes" / "a.txt").read_text(encoding="utf-8"), "hello agent")
             self.assertFalse(failed["ok"])
             self.assertIn("run_command exit_code=2", failed["error"])
             self.assertTrue(failed["output"]["rolled_back"])
             self.assertEqual(failed["output"]["transaction"]["status"], "rolled_back")
+            self.assertEqual(failed["output"]["failure"]["step"], 3)
+            self.assertEqual(failed["output"]["failure"]["action"], "run_command")
+            self.assertIn("run_command exit_code=2", failed["output"]["results"][-1]["failure_reason"])
             self.assertEqual((Path(tmp) / "notes" / "a.txt").read_text(encoding="utf-8"), "hello agent")
             self.assertFalse((Path(tmp) / "notes" / "new.txt").exists())
+            self.assertTrue(blocked_command["blocked"])
+            self.assertEqual(blocked_command["output"]["failure"]["kind"], "command_policy")
+            self.assertIn("step 2", blocked_command["policy"]["reasons"][0])
+            self.assertEqual(blocked_command["output"]["safety"]["command_step_count"], 1)
+            self.assertEqual((Path(tmp) / "notes" / "a.txt").read_text(encoding="utf-8"), "hello agent")
+            self.assertTrue(blocked_path["blocked"])
+            self.assertEqual(blocked_path["output"]["failure"]["kind"], "file_policy")
+            self.assertFalse((Path(tmp).parent / "outside.txt").exists())
 
             spec = Path(tmp) / "transaction-spec.json"
             spec.write_text(
@@ -1549,6 +1574,7 @@ class RuntimeTests(unittest.TestCase):
             output = stdout.getvalue()
             self.assertIn("ok: transaction", output)
             self.assertIn("files: committed", output)
+            self.assertIn("safety: steps=2 files=1 commands=1", output)
             self.assertIn("applied_count: 2", output)
 
     def test_agent_transaction_action_executes_with_rollback(self) -> None:
